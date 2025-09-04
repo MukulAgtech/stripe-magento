@@ -4,11 +4,16 @@ namespace StripeIntegration\Payments\Test\Integration\Helper;
 
 class Address
 {
+    private $regionCollectionFactory;
+    private $regionFactory;
+
     public function __construct(
-        \Magento\Directory\Model\RegionFactory $regionFactory
+        \Magento\Directory\Model\RegionFactory $regionFactory,
+        \Magento\Directory\Model\ResourceModel\Region\CollectionFactory $regionCollectionFactory
     )
     {
         $this->regionFactory = $regionFactory;
+        $this->regionCollectionFactory = $regionCollectionFactory;
     }
 
     public function getMagentoFormat($identifier)
@@ -20,7 +25,7 @@ class Address
                     'telephone' => "917-535-4022",
                     'postcode' => "10013",
                     'country_id' => 'US',
-                    'region_id' => 43, // 43 = 8.375%
+                    'region_id' => $this->getRegionId("US", "NY"), // 43 = 8.375%
                     'city' => 'New York',
                     'street' => ['1255 Duncan Avenue'],
                     'lastname' => 'Jerry',
@@ -32,19 +37,31 @@ class Address
                     'telephone' => "626-945-7637",
                     'postcode' => "91752",
                     'country_id' => 'US',
-                    'region_id' => 12, // 12 = 8.25%
+                    'region_id' => $this->getRegionId("US", "CA"), // 12 = 8.25%
                     'city' => 'Mira Loma',
                     'street' => ['2974 Providence Lane'],
                     'lastname' => 'Strother',
                     'firstname' => 'Joyce',
                     'email' => 'joyce@example.com',
                 ];
+            case 'Greece':
+                return [
+                    'telephone' => "21 0720 8100",
+                    'postcode' => "115 28",
+                    'country_id' => 'GR',
+                    'region_id' => $this->getRegionId("GR", "GR-I"),
+                    'city' => 'Athina',
+                    'street' => ['Papadiamantopoulou 20'],
+                    'lastname' => 'Γρηγοριάδης',
+                    'firstname' => 'Εφραίμ',
+                    'email' => 'efraim@example.com',
+                ];
             case 'Mexico':
                 return [
                     'telephone' => "771.715-2115",
                     'postcode' => "42000",
                     'country_id' => 'MX',
-                    'region_id' => 934, // Puebla
+                    'region_id' => $this->getRegionId("MX", "PUE"), // Puebla
                     'city' => 'HIDALGO',
                     'street' => ['GUERRERO NO. 521', 'PACHUCA DE SOTO CENTRO'],
                     'lastname' => 'Hopi',
@@ -56,19 +73,31 @@ class Address
                     'telephone' => "701-270-0720",
                     'postcode' => "58259",
                     'country_id' => 'US',
-                    'region_id' => 33, // 33 = 8.25%
+                    'region_id' => $this->getRegionId("US", "MI"), // 33 = 8.25%
                     'city' => 'Michigan',
                     'street' => ['3510 Catherine Drive'],
                     'lastname' => 'Cook',
                     'firstname' => 'Crystal',
                     'email' => 'crystal@example.com',
                 ];
+            case 'SofortGermanySuccess':
+                return [
+                    'telephone' => "030 63 38673",
+                    'postcode' => "13469",
+                    'country_id' => 'DE',
+                    'region_id' => $this->getRegionId("DE", "BER"),
+                    'city' => 'Berlin Lübars',
+                    'street' => ['Brandenburgische Straße 41'],
+                    'lastname' => 'Osterhagen',
+                    'firstname' => 'Mario',
+                    'email' => 'generatedSepaDebitIntentsSucceedGermany@example.com',
+                ];
             case 'Berlin':
                 return [
                     'telephone' => "030 63 38673",
                     'postcode' => "13469",
                     'country_id' => 'DE',
-                    'region_id' => 82,
+                    'region_id' => $this->getRegionId("DE", "BER"),
                     'city' => 'Berlin Lübars',
                     'street' => ['Brandenburgische Straße 41'],
                     'lastname' => 'Osterhagen',
@@ -116,7 +145,7 @@ class Address
                     'telephone' => "(11) 5456-7271",
                     'postcode' => "09051-020",
                     'country_id' => 'BR',
-                    'region_id' => 508,
+                    'region_id' => $this->getRegionId("BR", "SP"), // São Paulo
                     'city' => 'Santo André',
                     'street' => ['Praça Cândido Portinari 1129'],
                     'lastname' => 'Pinto',
@@ -128,7 +157,7 @@ class Address
                     'telephone' => "250-384-2275",
                     'postcode' => "V8W 2H9",
                     'country_id' => 'CA',
-                    'region_id' => 67, // British Columbia
+                    'region_id' => $this->getRegionId("CA", "BC"), // British Columbia
                     'city' => 'Victoria',
                     'street' => ['2181 Blanshard'],
                     'lastname' => 'Hamon',
@@ -140,16 +169,39 @@ class Address
                     'telephone' => "(07) 4916 6836",
                     'postcode' => "4680",
                     'country_id' => 'AU',
-                    'region_id' => 608, // Queensland
+                    'region_id' => $this->getRegionId("AU", "QLD"), // Queensland
                     'city' => 'O\'CONNELL',
                     'street' => ['66 Ronald Crescent'],
                     'lastname' => 'Kidman',
                     'firstname' => 'Declan',
                     'email' => 'declan@example.com'
                 ];
+            case "Tokyo":
+                return [
+                    'telephone' => "+8153-632-1172",
+                    'postcode' => null,
+                    'country_id' => 'JP',
+                    'region_id' => null,
+                    'city' => 'Toshima-ku',
+                    'street' => ['21-21, Higashi Ikebukuro 3-chome'],
+                    'lastname' => 'Shimei',
+                    'firstname' => 'Nihonjin',
+                    'email' => 'shimei@example.com'
+                ];
             default:
                 throw new \Exception("No such address $identifier");
         }
+    }
+
+    public function getRegionId($countryCode, $regionCode)
+    {
+        $region = $this->regionCollectionFactory->create()
+            ->addFieldToSelect('region_id')
+            ->addFieldToFilter('country_id', ['eq' => $countryCode])
+            ->addFieldToFilter('code', ['eq' => $regionCode])
+            ->getFirstItem();
+
+        return $region->getRegionId() ?: null;
     }
 
     public function getStripeFormat($identifier)
@@ -166,7 +218,7 @@ class Address
             $state = null;
         }
 
-        return [
+        $params = [
             'address' => [
                 'city' => $address['city'],
                 'country' => $address['country_id'],
@@ -178,12 +230,58 @@ class Address
             'name' => $address['firstname'] . " " . $address['lastname'],
             'phone' => $address['telephone']
         ];
+
+        switch ($identifier)
+        {
+            case "SofortGermanySuccess":
+                $params["name"] = "succeeding_charge";
+                break;
+        }
+
+        return $params;
     }
 
     public function getStripeShippingFormat($identifier)
     {
         $address = $this->getStripeFormat($identifier);
         unset($address["email"]);
+        return $address;
+    }
+
+    public function getExpressCheckoutElementFormat($identifier)
+    {
+        $address = $this->getMagentoFormat($identifier);
+        $address["country"] = $address["country_id"];
+        unset($address["country_id"]);
+
+        if ($address['region_id'])
+        {
+            $region = $this->regionFactory->create()->load($address['region_id']);
+            $address["region"] = $region->getName();
+        }
+        else
+        {
+            $address["region"] = null;
+        }
+        unset($address["region_id"]);
+
+        $address["postalCode"] = $address["postcode"];
+        unset($address["postcode"]);
+
+        $address["recipient"] = $address["firstname"] . " " . $address["lastname"];
+        unset($address["firstname"]);
+        unset($address["lastname"]);
+
+        $address["phone"] = $address["telephone"];
+        unset($address["telephone"]);
+
+        $address["addressLine"] = $address["street"];
+        unset($address["street"]);
+
+        $address["sortingCode"] = "";
+        $address["dependentLocality"] = "";
+        $address["organization"] = "";
+
         return $address;
     }
 }

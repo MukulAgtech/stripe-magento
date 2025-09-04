@@ -5,9 +5,12 @@ define(
         'Magento_Ui/js/model/messageList',
         'Magento_Checkout/js/model/quote',
         'Magento_Customer/js/model/customer',
-        'StripeIntegration_Payments/js/action/get-payment-url',
-        'StripeIntegration_Payments/js/action/get-installment-plans',
+        'StripeIntegration_Payments/js/action/post-update-cart',
+        'StripeIntegration_Payments/js/action/post-restore-quote',
+        'StripeIntegration_Payments/js/action/post-cancel-order',
+        'StripeIntegration_Payments/js/action/get-requires-action',
         'StripeIntegration_Payments/js/view/checkout/trialing_subscriptions',
+        'StripeIntegration_Payments/js/stripe',
         'stripe_payments_express',
         'mage/translate',
         'mage/url',
@@ -17,7 +20,9 @@ define(
         'Magento_Checkout/js/action/redirect-on-success',
         'mage/storage',
         'mage/url',
-        'Magento_CheckoutAgreements/js/model/agreement-validator'
+        'Magento_CheckoutAgreements/js/model/agreement-validator',
+        'Magento_Customer/js/customer-data',
+        'Magento_Checkout/js/model/payment-service'
     ],
     function (
         ko,
@@ -25,9 +30,12 @@ define(
         globalMessageList,
         quote,
         customer,
-        getPaymentUrlAction,
-        getInstallmentPlans,
+        updateCartAction,
+        restoreQuoteAction,
+        cancelLastOrderAction,
+        getRequiresAction,
         trialingSubscriptions,
+        stripe,
         stripeExpress,
         $t,
         url,
@@ -37,191 +45,535 @@ define(
         redirectOnSuccessAction,
         storage,
         urlBuilder,
-        agreementValidator
+        agreementValidator,
+        customerData,
+        paymentService
     ) {
         'use strict';
 
         return Component.extend({
             externalRedirectUrl: null,
             defaults: {
-                template: 'StripeIntegration_Payments/payment/form',
-                stripePaymentsCardSave: false,
-                stripePaymentsShowApplePaySection: false
+                template: 'StripeIntegration_Payments/payment/element',
+                stripePaymentsShowExpressCheckoutSection: false
             },
+            redirectAfterPlaceOrder: false,
+            elements: null,
+            initParams: null,
+            paymentElement: null,
+            zeroDecimalCurrencies: ['BIF','CLP','DJF','GNF','JPY','KMF','KRW','MGA','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF'],
+            threeDecimalCurrencies: ['BHD','JOD','KWD','OMR','TND'],
 
             initObservable: function ()
             {
                 this._super()
                     .observe([
+                        'paymentElement',
+                        'isPaymentFormComplete',
+                        'isPaymentFormVisible',
+                        'isLoading',
                         'stripePaymentsError',
-                        'stripePaymentsCardName',
-                        'stripePaymentsCardNumber',
-                        'stripePaymentsCardExpMonth',
-                        'stripePaymentsCardExpYear',
-                        'stripePaymentsCardVerificationNumber',
-                        'stripePaymentsStripeJsToken',
-                        'stripePaymentsCardSave',
-                        'stripePaymentsSelectedCard',
-                        'stripePaymentsShowNewCardSection',
-                        'stripePaymentsShowApplePaySection',
-                        'stripeCreatingToken',
-                        'fetchingInstallments',
-                        'isPaymentRequestAPISupported',
-                        'installmentPlans',
-                        'selectedInstallmentPlan'
+                        'permanentError',
+                        'isOrderPlaced',
+                        'isInitializing',
+                        'isInitialized',
+                        'useQuoteBillingAddress',
+                        'cvcToken',
+                        'paymentElementPaymentMethod',
+
+                        // Saved payment methods dropdown
+                        'dropdownOptions',
+                        'selection',
+                        'isDropdownOpen'
                     ]);
-
-                this.stripePaymentsSelectedCard.subscribe(this.onSelectedCardChanged, this);
-                this.stripePaymentsSelectedCard('new_card');
-                if (!this.hasSavedCards())
-                    this.stripePaymentsShowNewCardSection(true);
-                else
-                {
-                    for (var i = 0; i < this.config().savedCards.length; i++)
-                        this.config().savedCards[i].cardType = this.cardType(this.config().savedCards[i].brand);
-                }
-
-                this.showSavedCardsSection = ko.computed(function()
-                {
-                    return this.hasSavedCards() && this.isBillingAddressSet();
-                }, this);
-
-                this.displayAtThisLocation = ko.computed(function()
-                {
-                    return this.config().applePayLocation == 1;
-                }, this);
-
-                this.showNewCardSection = ko.computed(function()
-                {
-                    return this.stripePaymentsShowNewCardSection() &&
-                        this.isBillingAddressSet();
-                }, this);
-
-                this.showSaveCardOption = ko.computed(function()
-                {
-                    return this.config().showSaveCardOption && customer.isLoggedIn() && this.showNewCardSection();
-                }, this);
-
-                this.hasIcons = ko.pureComputed(function()
-                {
-                    return (this.config().icons.length > 0);
-                }, this);
-
-                this.iconsRight = ko.pureComputed(function() {
-                    if (this.config().iconsLocation == "right")
-                        return true;
-                    return false;
-                }, this);
 
                 var self = this;
 
-                stripeExpress.onPaymentSupportedCallbacks.push(function()
-                {
-                    self.isPaymentRequestAPISupported(true);
-                    self.stripePaymentsShowApplePaySection(true);
-                });
-
-                trialingSubscriptions().refresh(quote);
+                this.isPaymentFormVisible(false);
+                this.isOrderPlaced(false);
+                this.isInitializing(true);
+                this.isInitialized(false);
+                this.useQuoteBillingAddress(false);
+                this.cvcToken(null);
+                this.collectCvc = ko.computed(this.shouldCollectCvc.bind(this));
+                this.isAmex = ko.computed(this.isAmexSelected.bind(this));
+                this.cardCvcElement = null;
 
                 var currentTotals = quote.totals();
-
-                quote.billingAddress.subscribe(function(address)
-                {
-                    if (!address)
-                        return;
-
-                    setTimeout(stripe.refreshSetupIntent, 0, false);
-                });
+                var currentShippingAddress = quote.shippingAddress();
+                var currentBillingAddress = quote.billingAddress();
 
                 quote.totals.subscribe(function (totals)
                 {
-                    if (JSON.stringify(totals.total_segments) == JSON.stringify(currentTotals.total_segments))
+                    if (!totals || !totals.grand_total || !totals.quote_currency_code)
+                    {
                         return;
+                    }
+
+                    if (!currentTotals || !currentTotals.grand_total || !currentTotals.quote_currency_code)
+                    {
+                        currentTotals = totals;
+                        return;
+                    }
+
+                    var amount1 = totals.grand_total;
+                    var amount2 = currentTotals.grand_total;
+                    var currency1 = totals.quote_currency_code;
+                    var currency2 = currentTotals.quote_currency_code;
+
+                    if (amount1 === amount2 && currency1 === currency2)
+                    {
+                        return;
+                    }
 
                     currentTotals = totals;
 
-                    // Wait for Magento to commit the changes before re-initializing the PRAPI
-                    setTimeout(this.initPRAPI.bind(this), 500);
+                    self.onQuoteTotalsChanged.bind(self)();
+                    self.isOrderPlaced(false);
+                }, this);
 
-                    trialingSubscriptions().refresh(quote);
-                }
-                , this);
+                quote.paymentMethod.subscribe(function (method)
+                {
+                    if (method && method.method == this.getCode() && !this.isInitializing())
+                    {
+                        // We intentionally re-create the element because its container element may have changed
+                        this.initPaymentForm();
+                    }
+                }, this);
 
-                if (this.config().isSaveCardCheckboxChecked || this.config().alwaysSaveCard)
-                    this.stripePaymentsCardSave(true);
+                quote.billingAddress.subscribe(function(address)
+                {
+                    if (address && self.paymentElement && self.paymentElement.update && !self.isPaymentFormComplete())
+                    {
+                        // Remove the postcode & country fields if a billing address has been specified
+                        self.paymentElement.update(self.getPaymentElementUpdateOptions());
+                    }
+                });
 
                 return this;
             },
 
-            hasSavedCards: function()
+            initSavedPaymentMethods: function()
             {
-                return (typeof this.config().savedCards != 'undefined'
-                    && this.config().savedCards != null
-                    && this.config().savedCards.length);
-            },
+                // If it is already initialized, do not re-initialize
+                if (this.dropdownOptions())
+                {
+                    return;
+                }
 
-            onSelectedCardChanged: function(newValue)
-            {
-                if (newValue == 'new_card')
-                    this.stripePaymentsShowNewCardSection(true);
+                var options = [];
+                var methods = this.getStripeParam("savedMethods");
+                if (methods)
+                {
+                    for (var i in methods)
+                    {
+                        if (methods.hasOwnProperty(i))
+                        {
+                            // We do this because some themes and libraries extend all objects with their own methods
+                            options.push(methods[i]);
+                        }
+                    }
+                }
+
+                if (options.length > 0)
+                {
+                    this.isPaymentFormVisible(false);
+                    this.selection(options[0]);
+                }
                 else
-                    this.stripePaymentsShowNewCardSection(false);
+                {
+                    this.isPaymentFormVisible(true);
+                    this.selection(false);
+                }
+
+                this.dropdownOptions(options);
             },
 
-            onCheckoutFormRendered: function()
+            shouldCollectCvc: function()
+            {
+                var selection = this.selection();
+
+                if (!selection)
+                    return false;
+
+                if (selection.type != 'card')
+                    return false;
+
+                return !!selection.cvc;
+            },
+
+            isAmexSelected: function()
+            {
+                var selection = this.selection();
+
+                if (!selection)
+                    return false;
+
+                if (selection.type != 'card')
+                    return false;
+
+                return (selection.brand == "amex");
+            },
+
+            newPaymentMethod: function()
+            {
+                this.messageContainer.clear();
+
+                this.selection({
+                    type: 'new',
+                    value: 'new',
+                    icon: false,
+                    label: $t('New payment method')
+                });
+                this.isDropdownOpen(false);
+                this.isPaymentFormVisible(true);
+                if (!this.isInitialized())
+                {
+                    this.onContainerRendered();
+                    this.isInitialized(true);
+                }
+            },
+
+            getPaymentMethodId: function()
+            {
+                var selection = this.selection();
+
+                if (selection && typeof selection.value != "undefined" && selection.value != "new")
+                {
+                    return selection.value;
+                }
+
+                var paymentMethod = this.paymentElementPaymentMethod();
+                if (paymentMethod && paymentMethod.id)
+                {
+                    return paymentMethod.id;
+                }
+
+                return null;
+            },
+
+            toggleDropdown: function()
+            {
+                this.isDropdownOpen(!this.isDropdownOpen());
+            },
+
+            getStripeParam: function(param)
+            {
+                var params = this.getInitParams();
+
+                if (!params)
+                {
+                    return null;
+                }
+
+                if (typeof params[param] != "undefined")
+                {
+                    return params[param];
+                }
+
+                return null;
+            },
+
+            onQuoteTotalsChanged: function()
+            {
+                if (!this.elements || !this.elements.update)
+                {
+                    return;
+                }
+
+                try
+                {
+                    this.elements.update(this.getElementsOptions(true));
+                }
+                catch (e)
+                {
+                    this.elements.update(this.getElementsOptions(false));
+                }
+            },
+
+            getInitParams: function()
+            {
+                return window.checkoutConfig.payment.stripe_payments.initParams;
+            },
+
+            onPaymentElementContainerRendered: function()
             {
                 var self = this;
-                var params = window.checkoutConfig.payment["stripe_payments"].initParams;
-                initStripe(params, function(err)
+                this.isLoading(true);
+                stripe.initStripe(this.getInitParams(), function(err)
                 {
                     if (err)
-                    {
-                        self.stripePaymentsError(err);
-                        return self.showError(self.maskError(err));
-                    }
-                    else
-                        self.stripePaymentsError(null);
+                        return self.crash(err);
 
-                    stripe.initStripeElements(params.locale);
-                    stripe.onWindowLoaded(stripe.initStripeElements.bind(stripe, params.locale));
-                    stripe.refreshSetupIntent(false);
+                    self.initSavedPaymentMethods();
+                    self.initPaymentForm();
                 });
             },
 
-            initPRAPI: function()
+            onContainerRendered: function()
             {
-                if (!this.config().isApplePayEnabled)
-                    return;
-
-                if (this.config().applePayLocation != 1)
-                    return;
-
-                var self = this;
-
-                var params = self.config().initParams;
-                stripeExpress.initStripeExpress('#payment-request-button', params, 'checkout', self.config().prapiButtonConfig,
-                    function (paymentRequestButton, paymentRequest, params, prButton) {
-                        stripeExpress.initCheckoutWidget(paymentRequestButton, paymentRequest, prButton, self.validatePRAPI.bind(self));
-                    }
-                );
+                this.onPaymentElementContainerRendered();
             },
 
-            validatePRAPI: function(ev)
+            getCardCVCOptions: function()
             {
-                if (!additionalValidators.validate() || !agreementValidator.validate())
+                return {
+                  style: {
+                    base: {
+                  //     iconColor: '#c4f0ff',
+                  //     color: '#fff',
+                  //     fontWeight: '500',
+                  //     fontFamily: 'Roboto, Open Sans, Segoe UI, sans-serif',
+                      fontSize: '16px',
+                  //     fontSmoothing: 'antialiased',
+                  //     ':-webkit-autofill': {
+                  //       color: '#fce883',
+                  //     },
+                  //     '::placeholder': {
+                  //       color: '#87BBFD',
+                  //     },
+                  //   },
+                  //   invalid: {
+                  //     iconColor: '#FFC7EE',
+                  //     color: '#FFC7EE',
+                    },
+                  },
+                };
+            },
+
+            onCvcContainerRendered: function()
+            {
+                var self = this;
+                var params = this.getInitParams();
+
+                stripe.initStripe(params, function(err)
                 {
-                    ev.preventDefault();
+                    if (err)
+                        return self.crash(err);
 
-                    if (!agreementValidator.validate())
-                        var message = $t("Please agree to the terms and conditions before placing the order.");
-                    else
-                        var message = $t("Please complete all required fields before placing the order.");
+                    var options = {};
+                    if (params && params.locale)
+                    {
+                        options.locale = params.locale;
+                    }
 
-                    if (this.config().applePayLocation == 2)
-                        this.showGlobalError(message)
-                    else
-                        this.showError(message);
+                    try
+                    {
+                        var elements = stripe.stripeJs.elements(options);
+                        self.cardCvcElement = elements.create('cardCvc', self.getCardCVCOptions());
+                        self.cardCvcElement.mount('#stripe-card-cvc-element');
+                        self.cardCvcElement.on('change', self.onCvcChange.bind(self));
+                    }
+                    catch (e)
+                    {
+                        this.crash(e.message);
+                    }
+                });
+            },
+
+            onCvcChange: function(event)
+            {
+                if (event.error)
+                    this.selection().cvcError = event.error.message;
+                else
+                    this.selection().cvcError = null;
+            },
+
+            crash: function(message)
+            {
+                this.isLoading(false);
+                var userError = this.getStripeParam("userError");
+                if (userError)
+                    this.permanentError(userError);
+                else
+                    this.permanentError($t("Sorry, this payment method is not available. Please contact us for assistance."));
+
+                console.error("Error: " + message);
+            },
+
+            softCrash: function(message)
+            {
+                var userError = this.getStripeParam("userError");
+                if (userError)
+                    this.showError(userError);
+                else
+                    this.showError($t("Sorry, this payment method is not available. Please contact us for assistance."));
+
+                console.error("Error: " + message);
+            },
+
+            isCollapsed: function()
+            {
+                if (this.isChecked() == this.getCode())
+                {
+                    return false;
                 }
+                else
+                {
+                    return true;
+                }
+            },
+
+            initPaymentForm: function()
+            {
+                this.isInitializing(false);
+                this.isLoading(false);
+
+                if (this.isCollapsed()) // Don't render PE with a height of 0
+                    return;
+
+                if (document.getElementById('stripe-payment-element') === null)
+                    return this.crash("Cannot initialize Payment Element on a DOM that does not contain a div.stripe-payment-element.");
+
+                if (!stripe.stripeJs)
+                    return this.crash("Stripe.js could not be initialized.");
+
+                if (this.getStripeParam("isOrderPlaced"))
+                    this.isOrderPlaced(true);
+
+                try
+                {
+                    try
+                    {
+                        this.elements = stripe.stripeJs.elements(this.getElementsOptions(true));
+                    }
+                    catch (e)
+                    {
+                        console.warn("Could not filter Stripe payment method types: " + e.message);
+                        this.elements = stripe.stripeJs.elements(this.getElementsOptions(false));
+                    }
+                    this.paymentElement = this.elements.create('payment', this.getPaymentElementOptions());
+                    this.paymentElement.mount('#stripe-payment-element');
+                    this.paymentElement.on('change', this.onChange.bind(this));
+                }
+                catch (e)
+                {
+                    this.crash(e.message);
+                }
+            },
+
+            getElementsOptions: function(filterPaymentMethods)
+            {
+                var options = window.checkoutConfig.payment.stripe_payments.elementOptions;
+
+                if (!filterPaymentMethods && options.payment_method_types)
+                    delete options.payment_method_types;
+
+                if (options.mode != "setup")
+                {
+                    options.amount = this.getElementsAmount();
+                    options.currency = this.getElementsCurrency();
+                }
+
+                return options;
+            },
+
+            getPaymentElementOptions: function()
+            {
+                var options = {};
+
+                var params = this.getInitParams();
+                if (params && typeof params.wallets != "undefined" && params.wallets)
+                    options.wallets = params.wallets;
+
+                var billingAddress = quote.billingAddress();
+
+                if (billingAddress)
+                {
+                    try
+                    {
+                        this.useQuoteBillingAddress(true);
+
+                        var hasState = (billingAddress.region || billingAddress.regionCode || billingAddress.regionId);
+
+                        options.fields = {
+                            billingDetails: {
+                                name: 'never',
+                                email: 'never',
+                                phone: (billingAddress.telephone ? 'never' : 'auto'),
+                                address: {
+                                    line1: ((billingAddress.street.length > 0) ? 'never' : 'auto'),
+                                    line2: ((billingAddress.street.length > 0) ? 'never' : 'auto'),
+                                    city: billingAddress.city ? 'never' : 'auto',
+                                    state: hasState ? 'never' : 'auto',
+                                    country: billingAddress.countryId ? 'never' : 'auto',
+                                    postalCode: billingAddress.postcode ? 'never' : 'auto'
+                                }
+                            }
+                        };
+                    }
+                    catch (e)
+                    {
+                        this.useQuoteBillingAddress(false);
+
+                        options.fields = {};
+                        console.warn('Could not retrieve billing address: '  + e.message);
+                    }
+
+                    // Set the default billing address in order to enable the Link payment method
+                    var billingDetails = this.getBillingDetails();
+
+                    if (billingDetails)
+                    {
+                        options.defaultValues = {
+                            billingDetails: billingDetails
+                        };
+                    }
+                }
+                else
+                {
+                    this.useQuoteBillingAddress(false);
+                }
+
+                if (params.layout)
+                {
+                    options.layout = params.layout;
+                }
+
+                return options;
+            },
+
+            getPaymentElementUpdateOptions: function()
+            {
+                var options = this.getPaymentElementOptions();
+
+                if (options.wallets)
+                {
+                    delete options.wallets;
+                }
+
+                return options;
+            },
+
+            onChange: function(event)
+            {
+                this.isLoading(false);
+                this.isPaymentFormComplete(event.complete);
+            },
+
+            getElementsAmount: function()
+            {
+                var totals = quote.totals();
+
+                if (totals && totals.grand_total)
+                {
+                    var amount = totals.grand_total;
+                    return this.convertToStripeAmount(amount, this.getElementsCurrency());
+                }
+
+                return 0;
+            },
+
+            getElementsCurrency: function()
+            {
+                var totals = quote.totals();
+                if (totals && totals.quote_currency_code)
+                {
+                    var currency = totals.quote_currency_code;
+                    return currency.toLowerCase();
+                }
+
+                return 'USD';
             },
 
             isBillingAddressSet: function()
@@ -229,42 +581,92 @@ define(
                 return quote.billingAddress() && quote.billingAddress().canUseForBilling();
             },
 
+            convertToStripeAmount: function(amount, currencyCode)
+            {
+                var code = currencyCode.toUpperCase();
+
+                if (this.zeroDecimalCurrencies.indexOf(code) >= 0)
+                {
+                    return Math.round(amount);
+                }
+                else if (this.threeDecimalCurrencies.indexOf(code) >= 0)
+                {
+                    return Math.round(amount * 100) * 10;
+                }
+                else
+                {
+                    return Math.round(amount * 100);
+                }
+            },
+
             isPlaceOrderEnabled: function()
             {
                 if (this.stripePaymentsError())
                     return false;
 
-                if (this.stripeCreatingToken())
+                if (this.permanentError())
                     return false;
-
-                if (this.fetchingInstallments())
-                    return false;
-
-                if (this.installmentPlans())
-                    return false;
-
-                if (this.isBillingAddressSet())
-                    stripe.quote = quote;
 
                 return this.isBillingAddressSet();
             },
 
-            isZeroDecimal: function(currency)
+            getAddressField: function(field)
             {
-                var currencies = ['bif', 'djf', 'jpy', 'krw', 'pyg', 'vnd', 'xaf',
-                    'xpf', 'clp', 'gnf', 'kmf', 'mga', 'rwf', 'vuv', 'xof'];
+                if (!quote.billingAddress())
+                    return null;
 
-                return currencies.indexOf(currency) >= 0;
+                var address = quote.billingAddress();
+
+                if (!address[field] || address[field].length == 0)
+                    return null;
+
+                return address[field];
             },
 
-            icons: function()
+            getBillingDetails: function()
             {
-                return this.config().icons;
-            },
+                var details = {};
+                var address = {};
 
-            showApplePaySection: function()
-            {
-                return (this.stripePaymentsShowApplePaySection || this.isPaymentRequestAPISupported);
+                if (this.getAddressField('city'))
+                    address.city = this.getAddressField('city');
+
+                if (this.getAddressField('countryId'))
+                    address.country = this.getAddressField('countryId');
+
+                if (this.getAddressField('postcode'))
+                    address.postal_code = this.getAddressField('postcode');
+
+                if (this.getAddressField('region'))
+                    address.state = this.getAddressField('region');
+
+                if (this.getAddressField('street'))
+                {
+                    var street = this.getAddressField('street');
+                    address.line1 = street[0];
+
+                    if (street.length > 1)
+                        address.line2 = street[1];
+                }
+
+                if (Object.keys(address).length > 0)
+                    details.address = address;
+
+                if (this.getAddressField('telephone'))
+                    details.phone = this.getAddressField('telephone');
+
+                if (this.getAddressField('firstname'))
+                    details.name = this.getAddressField('firstname') + ' ' + this.getAddressField('lastname');
+
+                if (quote.guestEmail)
+                    details.email = quote.guestEmail;
+                else if (customerData.email)
+                    details.email = customerData.email;
+
+                if (Object.keys(details).length > 0)
+                    return details;
+
+                return null;
             },
 
             config: function()
@@ -277,214 +679,622 @@ define(
                 return true;
             },
 
-            isNewCard: function()
-            {
-                if (!this.hasSavedCards()) return true;
-                if (this.stripePaymentsSelectedCard() == 'new_card') return true;
-                return false;
-            },
-
-            maskError: function(err)
-            {
-                return stripe.maskError(err);
-            },
-
             placeOrder: function()
             {
-                if (!additionalValidators.validate())
+                this.messageContainer.clear();
+
+                if (!this.isPaymentFormComplete() && !this.getPaymentMethodId())
+                    return this.showError($t('Please complete your payment details.'));
+
+                if (!this.validate())
                     return;
 
-                stripe.applePaySuccess = false;
+                this.clearErrors();
+                this.isPlaceOrderActionAllowed(false);
+                this.isLoading(true);
+                this.cvcToken(null);
+
+                var params = { };
+
+                if (this.useQuoteBillingAddress())
+                {
+                    params.payment_method_data = {
+                        billing_details: {
+                            address: this.getStripeFormattedAddress(quote.billingAddress()),
+                            email: this.getBillingEmail(),
+                            name: this.getNameFromAddress(quote.billingAddress()),
+                            phone: this.getBillingPhone()
+                        }
+                    };
+                }
+
+                if (this.hasShipping())
+                {
+                    params.shipping = {
+                        address: this.getStripeFormattedAddress(quote.shippingAddress()),
+                        name: this.getNameFromAddress(quote.shippingAddress())
+                    };
+                }
 
                 var self = this;
 
-                this.stripePaymentsStripeJsToken(null);
-                this.stripeCreatingToken(true);
-                stripe.quote = quote;
-                stripe.customer = customer;
-
-                // Create a new source
-                if (this.stripePaymentsSelectedCard() == 'new_card')
-                    stripe.sourceId = null;
-                // Use one of the selected saved cards
-                else
-                    stripe.sourceId = stripe.cleanToken(this.stripePaymentsSelectedCard());
-
-                createStripeToken(function(err, token, response)
+                if (this.isSavedCardSelected() && this.selection().cvc)
                 {
-                    self.stripeCreatingToken(false);
-                    if (err)
+                    stripe.stripeJs.createToken('cvc_update', this.cardCvcElement).then(function(result)
                     {
-                        self.showError(self.maskError(err));
-                        return;
-                    }
-                    else if (self.shouldDisplayInstallmentPlans.bind(self)())
+                        if (result.error)
+                        {
+                            self.showError(result.error.message);
+                        }
+                        else if (result.token)
+                        {
+                            self.cvcToken(result.token.id);
+                            self.placeOrderWithSavedPaymentMethod.bind(self)();
+                        }
+                        else
+                        {
+                            self.showError('Could not perform CVC check.');
+                        }
+                    });
+                }
+                else if (this.isSavedPaymentMethodSelected())
+                {
+                    this.placeOrderWithSavedPaymentMethod();
+                }
+                else
+                {
+                    this.createPaymentMethod(this.onPaymentMethodCreatedForOrderPlacement.bind(this));
+                }
+
+                return false;
+            },
+
+            hasShipping: function()
+            {
+                return (quote && quote.shippingMethod() && quote.shippingMethod().method_code);
+            },
+
+            createPaymentMethod: function(callback)
+            {
+                this.paymentElementPaymentMethod(null);
+
+                var self = this;
+
+                var paymentMethodData = {
+                    elements: this.elements,
+                    params: {}
+                };
+
+                var confirmParams = this.getConfirmParams();
+                var billingDetails = null;
+                if (confirmParams &&
+                    confirmParams.confirmParams &&
+                    confirmParams.confirmParams.payment_method_data &&
+                    confirmParams.confirmParams.payment_method_data.billing_details
+                )
+                {
+                    billingDetails = confirmParams.confirmParams.payment_method_data.billing_details;
+                }
+
+                if (billingDetails)
+                {
+                    paymentMethodData.params.billing_details = confirmParams.confirmParams.payment_method_data.billing_details;
+                }
+                else
+                {
+                    return this.showError($t("Please specify a billing address."));
+                }
+
+                setTimeout(function(){
+                    // The loading mask is disabled so that the MFTF tests can continue running
+                    self.isLoading(false);
+                }, 4000);
+                this.elements.submit().then(function()
+                {
+                    stripe.stripeJs.createPaymentMethod(paymentMethodData).then(function(result)
                     {
-                        self.stripePaymentsStripeJsToken(token);
-                        self.fetchInstallmentPlans.bind(self)(token);
+                        if (result.error)
+                        {
+                            self.showError(result.error.message);
+                            console.error(result.error.message);
+                        }
+                        else
+                        {
+                            self.paymentElementPaymentMethod(result.paymentMethod);
+                            callback(result.paymentMethod);
+                        }
+                    });
+                },
+                function(result)
+                {
+                    if (result.error)
+                    {
+                        self.showError(result.error.message);
+                        console.error(result.error.message);
                     }
                     else
                     {
-                        self.stripePaymentsStripeJsToken(token);
-                        self.placeOrderWithToken();
+                        self.showError("A payment submission error has occurred.");
+                        console.error(result);
                     }
                 });
             },
 
-            shouldDisplayInstallmentPlans: function()
+            isSavedPaymentMethodSelected: function()
             {
-                // Only card issuers from Mexico have installment plans available
-                var countryId = quote.billingAddress().countryId;
-                if (countryId.toLowerCase() != "mx")
+                var selectedMethodType = this.getSelectedMethod("type");
+
+                if (!selectedMethodType) // There is no saved PMs dropdown
                     return false;
 
-                return this.config().isInstallmentPlansEnabled;
+                if (selectedMethodType != 'new') // A saved PMs is selected
+                    return true;
+
+                return false; // New PM is selected
             },
 
-            fetchInstallmentPlans: function(token)
+            isSavedCardSelected: function()
+            {
+                var selectedMethodType = this.getSelectedMethod("type");
+
+                if (!selectedMethodType) // There is no saved PMs dropdown
+                    return false;
+
+                if (selectedMethodType == 'card') // A saved PMs is selected
+                    return true;
+
+                return false; // New PM is selected
+            },
+
+            placeOrderWithSavedPaymentMethod: function()
+            {
+                var self = this;
+                var placeNewOrder = this.placeNewOrder.bind(this);
+
+                if (this.isOrderPlaced()) // The order was already placed but either 3D Secure failed or the customer pressed the back button from an external payment page
+                {
+                    updateCartAction(this.getData(), this.onCartUpdated.bind(this));
+                }
+                else
+                {
+                    try
+                    {
+                        placeNewOrder();
+                    }
+                    catch (e)
+                    {
+                        this.showError($t("The order could not be placed. Please contact us for assistance."));
+                        console.error(e.message);
+                    }
+                }
+            },
+
+            onPaymentMethodCreatedForOrderPlacement: function(paymentMethod)
+            {
+                var placeNewOrder = this.placeNewOrder.bind(this);
+                var self = this;
+
+                if (self.isOrderPlaced()) // The order was already placed but either 3D Secure failed or the customer pressed the back button from an external payment page
+                {
+                    updateCartAction(this.getData(), this.onCartUpdated.bind(this));
+                }
+                else
+                {
+                    try
+                    {
+                        placeNewOrder();
+                    }
+                    catch (e)
+                    {
+                        self.showError($t("The order could not be placed. Please contact us for assistance."));
+                        console.error(e.message);
+                    }
+                }
+            },
+
+            onCartUpdated: function(result, outcome, response)
+            {
+                var placeNewOrder = this.placeNewOrder.bind(this);
+                var onOrderPlaced = this.onOrderPlaced.bind(this);
+                try
+                {
+                    var data = JSON.parse(result);
+                    if (data.error)
+                    {
+                        this.showError(data.error);
+                    }
+                    else if (data.redirect)
+                    {
+                        $.mage.redirect(data.redirect);
+                    }
+                    else if (data.placeNewOrder)
+                    {
+                        placeNewOrder();
+                    }
+                    else
+                    {
+                        onOrderPlaced();
+                    }
+                }
+                catch (e)
+                {
+                    this.showError($t("The order could not be placed. Please contact us for assistance."));
+                    console.error(e.message);
+                }
+            },
+
+            placeNewOrder: function()
             {
                 var self = this;
 
-                self.fetchingInstallments(true);
-                getInstallmentPlans(token)
-                    .always(function()
+                this.isLoading(false); // Needed for the terms and conditions checkbox
+                this.getPlaceOrderDeferredObject()
+                    .fail(this.handlePlaceOrderErrors.bind(this))
+                    .done(this.onOrderPlaced.bind(this))
+                    .always(function(response, status, xhr)
                     {
-                        self.fetchingInstallments(false);
-                    })
-                    .done(function (plans)
-                    {
-                        try {
-                            plans = JSON.parse(plans);
-
-                            for (var i = 0; i < plans.length; i++)
-                            {
-                                plans[i].value = i;
-                                plans[i].label = plans[i].count + ' ' + plans[i].interval;
-                                if (plans[i].count > 1)
-                                    plans[i].label += 's';
-                            }
-                        } catch (e) {
-                            plans = [];
-                        }
-
-                        if (plans.length > 0)
+                        if (status != "success")
                         {
-                            $(".payment-method-content.stripe-payments-installments-form").slideUp(0);
-                            self.installmentPlans(plans);
-                            self.expandInstallments();
+                            self.isLoading(false);
                         }
-                        else
-                        {
-                            self.stripeCreatingToken(false);
-                            self.placeOrderWithToken();
-                        }
-                    })
-                    .error(function(err)
-                    {
-                        self.stripeCreatingToken(false);
-                        console.warn(err);
-
-                        // If for any reason we can't fetch the installment plans, just place the order
-                        self.placeOrderWithToken();
                     });
             },
 
-            /**
-             * Place order.
-             */
-            placeOrderWithToken: function (data, event)
+            getSelectedMethod: function(param)
             {
+                var selection = this.selection();
+                if (!selection)
+                    return null;
+
+                if (typeof selection[param] == "undefined")
+                    return null;
+
+                return selection[param];
+            },
+
+            // Called when:
+            // - A brand new order has just been placed
+            // - After updateCartAction() with placeNewOrder == false
+            onOrderPlaced: function(result, outcome, response)
+            {
+                if (!this.isOrderPlaced() && isNaN(result))
+                {
+                    return this.softCrash("The order was placed but the response from the server did not include a numeric order ID.");
+                }
+                else
+                {
+                    this.isOrderPlaced(true);
+                }
+
+                this.isLoading(true);
                 var self = this;
-
-                if (event) {
-                    event.preventDefault();
-                }
-
-                var customErrorHandler = this.handlePlaceOrderErrors.bind(this);
-
-                if (!this.stripePaymentsStripeJsToken())
+                var handleNextActions = this.handleNextActions.bind(this);
+                getRequiresAction(function(clientSecret)
                 {
-                    this.showError('Could not process card details, please try again.');
-                    return false;
-                }
+                    try
+                    {
+                        if (clientSecret && clientSecret.length)
+                        {
+                            stripe.authenticateCustomer(clientSecret, function(err)
+                            {
+                                if (err)
+                                    return self.showError(err);
 
-                if (this.validate())
+                                self.onConfirm.bind(self)();
+                            });
+                        }
+                        else
+                        {
+                            // No further actions are needed
+                            self.onConfirm(null);
+                        }
+                    }
+                    catch (e)
+                    {
+                        restoreQuoteAction();
+                        self.showError("The order was placed but we could not confirm if the payment was successful.");
+                        console.error(e);
+                    }
+
+                })
+                .fail(function(result)
                 {
-                    this.isPlaceOrderActionAllowed(false);
+                    restoreQuoteAction();
+                    self.showError("The order was placed but we could not confirm if the payment was successful.");
+                    console.error(result);
+                });
+            },
 
-                    this.getPlaceOrderDeferredObject()
-                        .fail(customErrorHandler)
-                        .done(
-                            function () {
-                                self.afterPlaceOrder();
+            isSuccessful: function(stripeObject)
+            {
 
-                                if (self.redirectAfterPlaceOrder) {
-                                    redirectOnSuccessAction.execute();
-                                }
-                            }
-                        );
-
+                if (stripeObject.status == "requires_action" &&
+                    stripeObject.next_action &&
+                    stripeObject.next_action.type &&
+                    stripeObject.next_action.type != "use_stripe_sdk"
+                )
+                {
+                    // This is the case for vouchers, where an offline payment is required
                     return true;
                 }
 
-                return false;
+
+                return (['processing', 'requires_capture', 'succeeded'].indexOf(stripeObject.status) >= 0);
+            },
+
+            // Called when:
+            // - A brand new order has just been placed
+            // - After updateCartAction() with placeNewOrder == false
+            handleNextActions: function(stripeObject)
+            {
+                if (!this.isOrderPlaced())
+                {
+                    return this.softCrash("Cannot handleNextActions without placing the order first");
+                }
+
+                var self = this;
+
+                if (this.isSuccessful(stripeObject))
+                {
+                    this.onConfirm(null);
+                }
+                else if (stripeObject.status == "requires_action")
+                {
+                    // Non-card based confirms may redirect the customer externally. We restore the quote just before it in case the
+                    // customer clicks the back button on the browser before authenticating the payment.
+                    restoreQuoteAction(function()
+                    {
+                        stripe.stripeJs.handleNextAction({
+                          clientSecret: stripeObject.client_secret
+                        }).then(self.onConfirm.bind(self));
+                    });
+                }
+                else if (stripeObject.status == "requires_confirmation")
+                {
+                    // This should only hit when a payment failed with a saved PM, and then the customer switched to PaymentElement to enter a new payment method
+                    restoreQuoteAction(function()
+                    {
+                        // We pass null because we do not want to update the PM. It has already been updated with stripe.updatePaymentIntent
+                        updateCartAction(self.getData(), self.onCartUpdated.bind(self));
+                    });
+                }
+                else if (stripeObject.status == "requires_payment_method")
+                {
+                    restoreQuoteAction(function()
+                    {
+                        updateCartAction(self.getData(), self.onCartUpdated.bind(self));
+                    });
+                }
+                else
+                {
+                    restoreQuoteAction(function()
+                    {
+                        self.showError($t("The order could not be placed. Please contact us for assistance."));
+                        console.error("Could not finalize order bacause the payment intent is in status " + stripeObject.status);
+                    });
+                }
+            },
+
+            getConfirmParams: function()
+            {
+                var params = {
+                    elements: this.elements,
+                    confirmParams: {
+                        return_url: this.getStripeParam("successUrl")
+                    }
+                };
+
+                this.getPaymentElementOptions();
+                if (this.useQuoteBillingAddress())
+                {
+                    params.confirmParams.payment_method_data = {
+                        billing_details: {
+                            address: this.getStripeFormattedAddress(quote.billingAddress()),
+                            email: this.getBillingEmail(),
+                            name: this.getNameFromAddress(quote.billingAddress()),
+                            phone: this.getBillingPhone()
+                        }
+                    };
+                }
+
+                return params;
+            },
+
+            getStripeFormattedAddress: function(address)
+            {
+                var stripeAddress = {};
+
+                if (address.regionCode)
+                    stripeAddress.state = address.regionCode;
+                else
+                    stripeAddress.state = address.region ? address.region : null;
+
+                stripeAddress.postal_code = address.postcode ? address.postcode : null;
+                stripeAddress.country = address.countryId ? address.countryId : null;
+                stripeAddress.city = address.city ? address.city : null;
+
+                if (address.street && address.street.length > 0)
+                {
+                    stripeAddress.line1 = address.street[0];
+
+                    if (address.street.length > 1)
+                    {
+                        stripeAddress.line2 = address.street[1];
+                    }
+                    else
+                    {
+                        stripeAddress.line2 = null;
+                    }
+                }
+                else
+                {
+                    stripeAddress.line1 = null;
+                    stripeAddress.line2 = null;
+                }
+
+                return stripeAddress;
+            },
+
+            getBillingEmail: function()
+            {
+                if (quote.guestEmail)
+                {
+                    return quote.guestEmail;
+                }
+                else if (window.checkoutConfig.customerData && window.checkoutConfig.customerData.email)
+                {
+                    return window.checkoutConfig.customerData.email;
+                }
+
+                return null;
+            },
+
+            getNameFromAddress: function(address)
+            {
+                if (!address)
+                    return null;
+
+                var parts = [];
+                if (address.firstname)
+                    parts.push(address.firstname);
+
+                if (address.middlename)
+                    parts.push(address.middlename);
+
+                if (address.lastname)
+                    parts.push(address.lastname);
+
+                return parts.join(" ");
+            },
+
+            getBillingPhone: function()
+            {
+                var billingAddress = quote.billingAddress();
+                if (!billingAddress)
+                    return null;
+
+                if (billingAddress.telephone)
+                    return billingAddress.telephone;
+
+                return null;
+            },
+
+            onConfirm: function(result)
+            {
+                if (result && result.error)
+                {
+                    this.showError(result.error.message);
+
+                    if (this.isOrderPlaced())
+                    {
+                        cancelLastOrderAction(result.error.message);
+                        this.isOrderPlaced(false);
+                    }
+                }
+                else
+                {
+                    customerData.invalidate(['cart']);
+                    // In the case of a 3DS, we redirect to stripe/payment/index so that the quote is de-activated
+                    var successUrl = this.getStripeParam("successUrl");
+                    $.mage.redirect(successUrl);
+                }
             },
 
             /**
              * @return {*}
              */
-            getPlaceOrderDeferredObject: function () {
-                return $.when(
-                    placeOrderAction(this.getData(), this.messageContainer)
-                );
+            getPlaceOrderDeferredObject: function()
+            {
+                return placeOrderAction(this.getData(), this.messageContainer);
+            },
+
+            getClientSecretFromResponse: function(response)
+            {
+                if (typeof response != "string")
+                {
+                    return null;
+                }
+
+                if (response.indexOf("Authentication Required: ") >= 0)
+                {
+                    return response.substring("Authentication Required: ".length);
+                }
+
+                return null;
             },
 
             handlePlaceOrderErrors: function (result)
             {
-                var self = this;
-                var status = result.status + " " + result.statusText;
-
-                if (stripe.isAuthenticationRequired(result.responseJSON.message))
+                if (result && result.responseJSON && result.responseJSON.message)
                 {
-                    return stripe.processNextAuthentication(function(err)
+                    var clientSecret = this.getClientSecretFromResponse(result.responseJSON.message);
+
+                    if (clientSecret)
                     {
-                        if (err)
+                        var self = this;
+                        return stripe.authenticateCustomer(clientSecret, function(err)
                         {
-                            self.showError(err);
-                            return;
-                        }
+                            if (err)
+                                return self.showError(err);
 
-                        self.placeOrderWithToken();
-                    });
+                            self.placeNewOrder.bind(self)();
+                        });
+                    }
+                    else
+                    {
+                        this.showError(result.responseJSON.message);
+                    }
                 }
-                else if (this.installmentPlans())
-                    this.collapseInstallments();
-            },
+                else
+                {
+                    this.showError($t("The order could not be placed. Please contact us for assistance."));
 
-            showGlobalError: function(message)
-            {
-                document.getElementById('checkout').scrollIntoView(true);
-                globalMessageList.addErrorMessage({ "message": message });
+                    if (result && result.responseText)
+                        console.error(result.responseText);
+                    else
+                        console.error(result);
+                }
             },
 
             showError: function(message)
             {
-                document.getElementById('actions-toolbar').scrollIntoView(true);
+                this.isLoading(false);
+                this.isPlaceOrderEnabled(true);
                 this.messageContainer.addErrorMessage({ "message": message });
             },
 
-            // afterPlaceOrder: function()
-            // {
-            //     if (this.redirectAfterPlaceOrder)
-            //         return;
-            // },
-
             validate: function(elm)
             {
-                if (!this.isNewCard() && !this.stripePaymentsSelectedCard())
-                    return this.showError('Please select a card!');
+                return this.validateCvc() && agreementValidator.validate() && additionalValidators.validate();
+            },
 
-                return additionalValidators.validate();
+            validateCvc: function()
+            {
+                if (!this.selection())
+                    return true;
+
+                if (this.selection().type != "card")
+                    return true;
+
+                if (this.selection().cvc != 1)
+                    return true;
+
+                if (typeof this.selection().cvcError == "undefined")
+                {
+                    this.showError($t("Please enter your card's security code."));
+                    return false;
+                }
+                else if (!this.selection().cvcError)
+                {
+                    return true;
+                }
+                else
+                {
+                    this.showError(this.selection().cvcError);
+                    return false;
+                }
+
+                return true;
             },
 
             getCode: function()
@@ -497,98 +1307,23 @@ define(
                 var data = {
                     'method': this.item.method,
                     'additional_data': {
-                        'cc_stripejs_token': this.stripePaymentsStripeJsToken(),
-                        'cc_saved': this.stripePaymentsSelectedCard(),
-                        'cc_save': this.stripePaymentsCardSave()
+                        'payment_method': this.getPaymentMethodId()
                     }
                 };
 
-                if (this.installmentPlans() && document.getElementById('stripe_installment_over_time').checked)
-                    data.additional_data.selected_plan = this.selectedInstallmentPlan();
+                if (this.cvcToken())
+                {
+                    data.additional_data.cvc_token = this.cvcToken();
+                }
 
                 return data;
             },
 
-            getCcMonthsValues: function() {
-                return $.map(this.getCcMonths(), function(value, key) {
-                    return {
-                        'value': key,
-                        'month': value
-                    };
-                });
-            },
-
-            getCcYearsValues: function() {
-                return $.map(this.getCcYears(), function(value, key) {
-                    return {
-                        'value': key,
-                        'year': value
-                    };
-                });
-            },
-
-            prapiTitle: function()
+            clearErrors: function()
             {
-                return this.config().prapiTitle;
-            },
-
-            getCcMonths: function()
-            {
-                return window.checkoutConfig.payment[this.getCode()].months;
-            },
-
-            getCcYears: function()
-            {
-                return window.checkoutConfig.payment[this.getCode()].years;
-            },
-
-            getCvvImageUrl: function() {
-                return window.checkoutConfig.payment[this.getCode()].cvvImageUrl;
-            },
-
-            getCvvImageHtml: function() {
-                return '<img src="' + this.getCvvImageUrl() +
-                    '" alt="' + 'Card Verification Number Visual Reference' +
-                    '" title="' + 'Card Verification Number Visual Reference' +
-                    '" />';
-            },
-            cardType: function(code)
-            {
-                if (typeof code == 'undefined')
-                    return '';
-
-                switch (code)
-                {
-                    case 'visa': return "Visa";
-                    case 'amex': return "American Express";
-                    case 'mastercard': return "MasterCard";
-                    case 'discover': return "Discover";
-                    case 'diners': return "Diners Club";
-                    case 'jcb': return "JCB";
-                    case 'unionpay': return "UnionPay";
-                    case 'cartes_bancaires': return "Cartes Bancaires";
-                    default:
-                        return code.charAt(0).toUpperCase() + Array.from(code).splice(1).join('')
-                }
-            },
-
-            expandInstallments: function()
-            {
-                $(".payment-method-content.stripe-payments-card-form").slideUp(500);
-                $(".payment-method-content.stripe-payments-installments-form").slideDown(500);
-            },
-
-            collapseInstallments: function()
-            {
-                this.installmentPlans(null);
-                $(".payment-method-content.stripe-payments-card-form").slideDown(500);
-                $(".payment-method-content.stripe-payments-installments-form").slideUp(500);
-            },
-
-            focusInstallments: function()
-            {
-                document.getElementById('stripe_installment_over_time').checked = true;
+                this.stripePaymentsError(null);
             }
+
         });
     }
 );

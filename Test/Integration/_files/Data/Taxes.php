@@ -1,9 +1,6 @@
 <?php
 
 use Magento\TestFramework\Helper\Bootstrap;
-use Magento\Store\Model\ScopeInterface;
-use Magento\Tax\Model\ClassModel;
-use Magento\Tax\Model\Config;
 use Magento\Tax\Model\TaxRuleFixtureFactory;
 
 $objectManager = Bootstrap::getObjectManager();

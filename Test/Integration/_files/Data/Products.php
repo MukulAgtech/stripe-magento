@@ -33,10 +33,11 @@ catch (\Exception $e)
 {
     // No products yet
 
-    $option = [
+    $subscriptionOption = [
         'value' => [
             'none' => ['None'],
             'monthly' => ['Monthly'],
+            'monthly_trial' => ['1 month trial'],
             'quarterly' => ['Every 3 months']
         ],
         'order' => [
@@ -62,7 +63,7 @@ catch (\Exception $e)
         'required'              => false,
         'user_defined'          => true,
         'visible'               => true,
-        'option'                => $option,
+        'option'                => $subscriptionOption,
     ];
 
     $setup = $objectManager->get(\Magento\Framework\Setup\ModuleDataSetupInterface::class);
@@ -71,71 +72,53 @@ catch (\Exception $e)
     $categorySetup = $categorySetupFactory->create(['setup' => $setup]);
     $categorySetup->addAttribute(\Magento\Catalog\Model\Product::ENTITY, "subscription", $subscriptionAttributeData);
 
-    $attribute = $eavConfig->getAttribute(\Magento\Catalog\Model\Product::ENTITY, 'subscription');
-    $attributeRepository->save($attribute);
-    $categorySetup->addAttributeToGroup('catalog_product', 'Default', 'General', $attribute->getId());
+    $subscriptionAttribute = $eavConfig->getAttribute(\Magento\Catalog\Model\Product::ENTITY, 'subscription');
+    $attributeRepository->save($subscriptionAttribute);
+    $categorySetup->addAttributeToGroup('catalog_product', 'Default', 'General', $subscriptionAttribute->getId());
+
+    // Create a product type attribute
+
+    $productTypeOption = [
+        'value' => [
+            'simple' => ['Simple'],
+            'virtual' => ['Virtual']
+        ],
+        'order' => [
+            'simple' => 1,
+            'virtual' => 2
+        ],
+    ];
+
+    $productTypeAttributeData = [
+        'type'                  => 'varchar',
+        'label'                 => 'Product Type',
+        'input'                 => 'select',
+        'sort_order'            => 110,
+        'global'                => \Magento\Eav\Model\Entity\Attribute\ScopedAttributeInterface::SCOPE_GLOBAL,
+        'group'                 => "General",
+        'apply_to'              => "simple,virtual",
+        'is_used_in_grid'       => false,
+        'is_visible_in_grid'    => false,
+        'is_filterable_in_grid' => false,
+        'used_for_promo_rules'  => false,
+        'required'              => false,
+        'user_defined'          => true,
+        'visible'               => true,
+        'option'                => $productTypeOption,
+    ];
+
+    $categorySetup = $categorySetupFactory->create(['setup' => $setup]);
+    $categorySetup->addAttribute(\Magento\Catalog\Model\Product::ENTITY, "tests_product_type", $productTypeAttributeData);
+
+    $productTypeAttribute = $eavConfig->getAttribute(\Magento\Catalog\Model\Product::ENTITY, 'tests_product_type');
+    $attributeRepository->save($productTypeAttribute);
+    $categorySetup->addAttributeToGroup('catalog_product', 'Default', 'General', $productTypeAttribute->getId());
 }
 
 // Defaults
 $defaultAttributeSetId = $objectManager->get(Config::class)->getEntityType(Product::ENTITY)->getDefaultAttributeSetId();
 $defaultStoreId = $storeManager->getDefaultStoreView()->getId();
 $defaultWebsiteIds = [$baseWebsite->getId()];
-
-$products = $categoryFactory->create();
-$products->isObjectNew(true);
-$products
-    ->setName('Products')
-    ->setParentId(2)
-    ->setPath('1/2/6')
-    ->setLevel(2)
-    ->setAvailableSortBy('name')
-    ->setDefaultSortBy('name')
-    ->setIsActive(true)
-    ->setIsAnchor(true)
-    ->setPosition(6)
-    ->save();
-
-$subscriptions = $categoryFactory->create();
-$subscriptions->isObjectNew(true);
-$subscriptions
-    ->setName('Subscriptions')
-    ->setParentId(2)
-    ->setPath('1/2/7')
-    ->setLevel(2)
-    ->setAvailableSortBy('name')
-    ->setDefaultSortBy('name')
-    ->setIsActive(true)
-    ->setIsAnchor(true)
-    ->setPosition(7)
-    ->save();
-
-$trialSubscriptions = $categoryFactory->create();
-$trialSubscriptions->isObjectNew(true);
-$trialSubscriptions
-    ->setName('Trial')
-    ->setParentId(2)
-    ->setPath('1/2/8')
-    ->setLevel(2)
-    ->setAvailableSortBy('name')
-    ->setDefaultSortBy('name')
-    ->setIsActive(true)
-    ->setIsAnchor(true)
-    ->setPosition(8)
-    ->save();
-
-$complex = $categoryFactory->create();
-$complex->isObjectNew(true);
-$complex
-    ->setName('Complex')
-    ->setParentId(2)
-    ->setPath('1/2/9')
-    ->setLevel(2)
-    ->setAvailableSortBy('name')
-    ->setDefaultSortBy('name')
-    ->setIsActive(true)
-    ->setIsAnchor(true)
-    ->setPosition(9)
-    ->save();
 
 $productInterfaceFactory = $objectManager->get(ProductInterfaceFactory::class);
 
@@ -151,8 +134,8 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$products->getId()])
     ->setSubscription("none")
+    ->setTestsProductType("simple")
     ->save();
 
 $simpleProduct = $productRepository->save($product);
@@ -169,7 +152,8 @@ $product->setTypeId(Type::TYPE_VIRTUAL)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$products->getId()])
+    ->setSubscription("none")
+    ->setTestsProductType("virtual")
     ->save();
 
 $virtualProduct = $productRepository->save($product);
@@ -186,7 +170,6 @@ $product->setTypeId(Type::TYPE_VIRTUAL)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$products->getId()])
     ->save();
 
 $freeProduct = $productRepository->save($product);
@@ -203,15 +186,20 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$subscriptions->getId()])
     ->setSubscription("monthly")
     ->save();
 
 $simpleMonthlySubscription = $productRepository->save($product);
 
-setCustomAttribute($simpleMonthlySubscription, "stripe_sub_enabled", true);
-setCustomAttribute($simpleMonthlySubscription, "stripe_sub_interval", "month");
-setCustomAttribute($simpleMonthlySubscription, "stripe_sub_interval_count", 1);
+$data = [
+    'product_id' => $simpleMonthlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 0,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_SIMPLE)
@@ -225,15 +213,20 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$subscriptions->getId()])
     ->setSubscription("quarterly")
     ->save();
 
 $simpleQuarterlySubscription = $productRepository->save($product);
 
-setCustomAttribute($simpleQuarterlySubscription, "stripe_sub_enabled", true);
-setCustomAttribute($simpleQuarterlySubscription, "stripe_sub_interval", "month");
-setCustomAttribute($simpleQuarterlySubscription, "stripe_sub_interval_count", 3);
+$data = [
+    'product_id' => $simpleQuarterlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 3,
+    'sub_trial' => 0,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_SIMPLE)
@@ -247,15 +240,19 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$subscriptions->getId()])
     ->save();
 
 $simpleMonthlySubscriptionInitialFee = $productRepository->save($product);
 
-setCustomAttribute($simpleMonthlySubscriptionInitialFee, "stripe_sub_enabled", true);
-setCustomAttribute($simpleMonthlySubscriptionInitialFee, "stripe_sub_interval", "month");
-setCustomAttribute($simpleMonthlySubscriptionInitialFee, "stripe_sub_interval_count", 1);
-setCustomAttribute($simpleMonthlySubscriptionInitialFee, "stripe_sub_initial_fee", 3);
+$data = [
+    'product_id' => $simpleMonthlySubscriptionInitialFee->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 0,
+    'sub_initial_fee' => 3
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_SIMPLE)
@@ -269,15 +266,20 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$trialSubscriptions->getId()])
+    ->setSubscription("monthly_trial")
     ->save();
 
 $simpleTrialMonthlySubscription = $productRepository->save($product);
 
-setCustomAttribute($simpleTrialMonthlySubscription, "stripe_sub_enabled", true);
-setCustomAttribute($simpleTrialMonthlySubscription, "stripe_sub_interval", "month");
-setCustomAttribute($simpleTrialMonthlySubscription, "stripe_sub_interval_count", 1);
-setCustomAttribute($simpleTrialMonthlySubscription, "stripe_sub_trial", 14);
+$data = [
+    'product_id' => $simpleTrialMonthlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 14,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_SIMPLE)
@@ -291,16 +293,19 @@ $product->setTypeId(Type::TYPE_SIMPLE)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$trialSubscriptions->getId()])
     ->save();
 
 $simpleTrialMonthlySubscriptionInitialFee = $productRepository->save($product);
 
-setCustomAttribute($simpleTrialMonthlySubscriptionInitialFee, "stripe_sub_enabled", true);
-setCustomAttribute($simpleTrialMonthlySubscriptionInitialFee, "stripe_sub_interval", "month");
-setCustomAttribute($simpleTrialMonthlySubscriptionInitialFee, "stripe_sub_interval_count", 1);
-setCustomAttribute($simpleTrialMonthlySubscriptionInitialFee, "stripe_sub_trial", 14);
-setCustomAttribute($simpleTrialMonthlySubscriptionInitialFee, "stripe_sub_initial_fee", 3);
+$data = [
+    'product_id' => $simpleTrialMonthlySubscriptionInitialFee->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 14,
+    'sub_initial_fee' => 3
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_VIRTUAL)
@@ -314,14 +319,47 @@ $product->setTypeId(Type::TYPE_VIRTUAL)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$subscriptions->getId()])
+    ->setSubscription("monthly")
     ->save();
 
 $virtualMonthlySubscription = $productRepository->save($product);
 
-setCustomAttribute($virtualMonthlySubscription, "stripe_sub_enabled", true);
-setCustomAttribute($virtualMonthlySubscription, "stripe_sub_interval", "month");
-setCustomAttribute($virtualMonthlySubscription, "stripe_sub_interval_count", 1);
+$data = [
+    'product_id' => $virtualMonthlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 0,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
+
+$product = $productInterfaceFactory->create();
+$product->setTypeId(Type::TYPE_VIRTUAL)
+    ->setAttributeSetId($defaultAttributeSetId)
+    ->setStoreId($defaultStoreId)
+    ->setWebsiteIds($defaultWebsiteIds)
+    ->setName('Virtual Quarterly Subscription')
+    ->setSku('virtual-quarterly-subscription-product')
+    ->setPrice(10)
+    ->setTaxClassId(2)
+    ->setStockData(['use_config_manage_stock' => 0])
+    ->setVisibility(Visibility::VISIBILITY_BOTH)
+    ->setStatus(Status::STATUS_ENABLED)
+    ->setSubscription("quarterly")
+    ->save();
+
+$virtualQuarterlySubscription = $productRepository->save($product);
+
+$data = [
+    'product_id' => $virtualQuarterlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 3,
+    'sub_trial' => 0,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_VIRTUAL)
@@ -335,15 +373,19 @@ $product->setTypeId(Type::TYPE_VIRTUAL)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$trialSubscriptions->getId()])
     ->save();
 
 $virtualTrialMonthlySubscription = $productRepository->save($product);
 
-setCustomAttribute($virtualTrialMonthlySubscription, "stripe_sub_enabled", true);
-setCustomAttribute($virtualTrialMonthlySubscription, "stripe_sub_interval", "month");
-setCustomAttribute($virtualTrialMonthlySubscription, "stripe_sub_interval_count", 1);
-setCustomAttribute($virtualTrialMonthlySubscription, "stripe_sub_trial", 14);
+$data = [
+    'product_id' => $virtualTrialMonthlySubscription->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 14,
+    'sub_initial_fee' => 0
+];
+saveSubscriptionOption($data);
 
 $product = $productInterfaceFactory->create();
 $product->setTypeId(Type::TYPE_VIRTUAL)
@@ -357,16 +399,19 @@ $product->setTypeId(Type::TYPE_VIRTUAL)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
     ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$trialSubscriptions->getId()])
     ->save();
 
 $virtualTrialMonthlySubscriptionInitialFee = $productRepository->save($product);
 
-setCustomAttribute($virtualTrialMonthlySubscriptionInitialFee, "stripe_sub_enabled", true);
-setCustomAttribute($virtualTrialMonthlySubscriptionInitialFee, "stripe_sub_interval", "month");
-setCustomAttribute($virtualTrialMonthlySubscriptionInitialFee, "stripe_sub_interval_count", 1);
-setCustomAttribute($virtualTrialMonthlySubscriptionInitialFee, "stripe_sub_trial", 14);
-setCustomAttribute($virtualTrialMonthlySubscriptionInitialFee, "stripe_sub_initial_fee", 14);
+$data = [
+    'product_id' => $virtualTrialMonthlySubscriptionInitialFee->getId(),
+    'sub_enabled' => 1,
+    'sub_interval' => 'month',
+    'sub_interval_count' => 1,
+    'sub_trial' => 14,
+    'sub_initial_fee' => 14
+];
+saveSubscriptionOption($data);
 
 // ----------------------------------------------------------------------------
 
@@ -389,8 +434,7 @@ $bundleProduct
         ->setPriceView(0) // 0 - price range, 1 - as low as
         ->setSpecialPrice(50) // percentage of original price
         ->setTaxClassId(2) // 0 - none, 1 - default, 2 - taxable, 4 - shipping
-        ->setStockData(['use_config_manage_stock' => 0])
-        ->setCategoryIds([$complex->getId()]);
+        ->setStockData(['use_config_manage_stock' => 0]);
 
 // Set bundle product items
 $bundleProduct->setBundleOptionsData(
@@ -453,8 +497,7 @@ $bundleProduct
         ->setPriceView(0) // 0 - price range, 1 - as low as
         ->setSpecialPrice(50) // percentage of original price
         ->setTaxClassId(2) // 0 - none, 1 - default, 2 - taxable, 4 - shipping
-        ->setStockData(['use_config_manage_stock' => 0])
-        ->setCategoryIds([$complex->getId()]);
+        ->setStockData(['use_config_manage_stock' => 0]);
 
 // Set bundle product items
 $bundleProduct->setBundleOptionsData(
@@ -503,32 +546,83 @@ $product->setTypeId("configurable")
     ->setAttributeSetId($defaultAttributeSetId)
     ->setStoreId($defaultStoreId)
     ->setWebsiteIds($defaultWebsiteIds)
-    ->setName('Configurable Subscription')
-    ->setSku('configurable-subscription')
+    ->setName('Configurable Product')
+    ->setSku('configurable-product')
     ->setPrice(10)
     ->setTaxClassId(2)
     ->setStockData(['use_config_manage_stock' => 0])
     ->setVisibility(Visibility::VISIBILITY_BOTH)
-    ->setStatus(Status::STATUS_ENABLED)
-    ->setCategoryIds([$complex->getId()]);
+    ->setStatus(Status::STATUS_ENABLED);
 
 // Associated products
 $attributeValues = [];
-$options = $attribute->getOptions();
+$options = $productTypeAttribute->getOptions();
 foreach ($options as $option)
 {
     $attributeValues[] = [
         'label' => $option->getValue(),
-        'attribute_id' => $attribute->getId(),
+        'attribute_id' => $productTypeAttribute->getId(),
         'value_index' => $option->getValue(),
     ];
 }
 
 $configurableAttributesData = [
     [
-        'attribute_id' => $attribute->getId(),
-        'code' => $attribute->getAttributeCode(),
-        'label' => $attribute->getStoreLabel(),
+        'attribute_id' => $productTypeAttribute->getId(),
+        'code' => $productTypeAttribute->getAttributeCode(),
+        'label' => $productTypeAttribute->getStoreLabel(),
+        'position' => '0',
+        'values' => $attributeValues,
+    ],
+];
+
+$associatedProductIds = [
+    $simpleProduct->getId(),
+    $virtualProduct->getId()
+];
+
+$optionsFactory = $objectManager->create(\Magento\ConfigurableProduct\Helper\Product\Options\Factory::class);
+$configurableOptions = $optionsFactory->create($configurableAttributesData);
+$extensionConfigurableAttributes = $product->getExtensionAttributes();
+$extensionConfigurableAttributes->setConfigurableProductOptions($configurableOptions);
+$extensionConfigurableAttributes->setConfigurableProductLinks($associatedProductIds);
+$product->setExtensionAttributes($extensionConfigurableAttributes);
+
+$configurableProduct = $productRepository->save($product);
+
+// ----------------------------------------------------------------------------
+
+// Create the configurable product
+$product = $productInterfaceFactory->create();
+$product->setTypeId("configurable")
+    ->setAttributeSetId($defaultAttributeSetId)
+    ->setStoreId($defaultStoreId)
+    ->setWebsiteIds($defaultWebsiteIds)
+    ->setName('Configurable Subscription')
+    ->setSku('configurable-subscription')
+    ->setPrice(10)
+    ->setTaxClassId(2)
+    ->setStockData(['use_config_manage_stock' => 0])
+    ->setVisibility(Visibility::VISIBILITY_BOTH)
+    ->setStatus(Status::STATUS_ENABLED);
+
+// Associated products
+$attributeValues = [];
+$options = $subscriptionAttribute->getOptions();
+foreach ($options as $option)
+{
+    $attributeValues[] = [
+        'label' => $option->getValue(),
+        'attribute_id' => $subscriptionAttribute->getId(),
+        'value_index' => $option->getValue(),
+    ];
+}
+
+$configurableAttributesData = [
+    [
+        'attribute_id' => $subscriptionAttribute->getId(),
+        'code' => $subscriptionAttribute->getAttributeCode(),
+        'label' => $subscriptionAttribute->getStoreLabel(),
         'position' => '0',
         'values' => $attributeValues,
     ],
@@ -537,7 +631,62 @@ $configurableAttributesData = [
 $associatedProductIds = [
     $simpleProduct->getId(),
     $simpleMonthlySubscription->getId(),
-    $simpleQuarterlySubscription->getId()
+    $simpleQuarterlySubscription->getId(),
+    $simpleTrialMonthlySubscription->getId()
+];
+
+$optionsFactory = $objectManager->create(\Magento\ConfigurableProduct\Helper\Product\Options\Factory::class);
+$configurableOptions = $optionsFactory->create($configurableAttributesData);
+$extensionConfigurableAttributes = $product->getExtensionAttributes();
+$extensionConfigurableAttributes->setConfigurableProductOptions($configurableOptions);
+$extensionConfigurableAttributes->setConfigurableProductLinks($associatedProductIds);
+$product->setExtensionAttributes($extensionConfigurableAttributes);
+
+$configurableProduct = $productRepository->save($product);
+
+
+// ----------------------------------------------------------------------------
+
+// Create the configurable product
+$product = $productInterfaceFactory->create();
+$product->setTypeId("configurable")
+    ->setAttributeSetId($defaultAttributeSetId)
+    ->setStoreId($defaultStoreId)
+    ->setWebsiteIds($defaultWebsiteIds)
+    ->setName('Configurable Virtual Subscription')
+    ->setSku('configurable-virtual-subscription')
+    ->setPrice(10)
+    ->setTaxClassId(2)
+    ->setStockData(['use_config_manage_stock' => 0])
+    ->setVisibility(Visibility::VISIBILITY_BOTH)
+    ->setStatus(Status::STATUS_ENABLED);
+
+// Associated products
+$attributeValues = [];
+$options = $subscriptionAttribute->getOptions();
+foreach ($options as $option)
+{
+    $attributeValues[] = [
+        'label' => $option->getValue(),
+        'attribute_id' => $subscriptionAttribute->getId(),
+        'value_index' => $option->getValue(),
+    ];
+}
+
+$configurableAttributesData = [
+    [
+        'attribute_id' => $subscriptionAttribute->getId(),
+        'code' => $subscriptionAttribute->getAttributeCode(),
+        'label' => $subscriptionAttribute->getStoreLabel(),
+        'position' => '0',
+        'values' => $attributeValues,
+    ],
+];
+
+$associatedProductIds = [
+    $virtualProduct->getId(),
+    $virtualMonthlySubscription->getId(),
+    $virtualQuarterlySubscription->getId()
 ];
 
 $optionsFactory = $objectManager->create(\Magento\ConfigurableProduct\Helper\Product\Options\Factory::class);

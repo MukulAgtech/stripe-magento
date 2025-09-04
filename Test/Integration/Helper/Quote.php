@@ -11,6 +11,27 @@ class Quote
     protected $quoteRepository = null;
     protected $productRepository = null;
     protected $availablePaymentMethods = [];
+    protected $customerEmail = null;
+    protected $customer = null;
+
+    private $address;
+    private $addressFactory;
+    private $api;
+    private $attributeCollectionFactory;
+    private $cartManagement;
+    private $checkoutHelper;
+    private $checkoutSession;
+    private $checkoutSessionsCollectionFactory;
+    private $customerRepository;
+    private $customerSession;
+    private $linkManagement;
+    private $objectFactory;
+    private $paymentsHelper;
+    private $quoteCollectionFactory;
+    private $quoteManagement;
+    private $storeManager;
+    private $paymentMethodHelper;
+    private $billingAddressIdentifier;
 
     public function __construct()
     {
@@ -19,9 +40,7 @@ class Quote
         $this->productRepository = $this->objectManager->get(\Magento\Catalog\Api\ProductRepositoryInterface::class);
         $this->checkoutSession = $this->objectManager->get(\Magento\Checkout\Model\Session::class);
         $this->cartManagement = $this->objectManager->get(\Magento\Quote\Api\CartManagementInterface::class);
-        $this->orderFactory = $this->objectManager->get(\Magento\Sales\Model\OrderFactory::class);
         $this->objectFactory = $this->objectManager->get(\Magento\Framework\DataObject\Factory::class);
-        $this->stripeConfig = $this->objectManager->get(\StripeIntegration\Payments\Model\Config::class);
         $this->checkoutHelper = $this->objectManager->get(\Magento\Checkout\Helper\Data::class);
         $this->attributeCollectionFactory = $this->objectManager->get(\Magento\Eav\Model\ResourceModel\Entity\Attribute\CollectionFactory::class);
         $this->address = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\Address::class);
@@ -29,18 +48,47 @@ class Quote
         $this->customerRepository = $this->objectManager->get(\Magento\Customer\Api\CustomerRepositoryInterface::class);
         $this->checkoutSessionsCollectionFactory = $this->objectManager->get(\StripeIntegration\Payments\Model\ResourceModel\CheckoutSession\CollectionFactory::class);
         $this->api = $this->objectManager->get(\StripeIntegration\Payments\Api\Service::class);
+        $this->paymentsHelper = $this->objectManager->get(\StripeIntegration\Payments\Helper\Generic::class);
+        $this->paymentMethodHelper = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\PaymentMethod::class);
 
         $this->quoteManagement = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\QuoteManagement::class);
 
         \Magento\TestFramework\Helper\Bootstrap::getInstance()->loadArea(\Magento\Framework\App\Area::AREA_FRONTEND);
 
-        $this->store = $this->objectManager->get(\Magento\Store\Model\StoreManagerInterface::class)->getStore();
         $this->storeManager = $this->objectManager->get(\Magento\Store\Model\StoreManagerInterface::class);
+        $this->store = $this->storeManager->getStore();
         $this->linkManagement = $this->objectManager->get(\Magento\ConfigurableProduct\Api\LinkManagementInterface::class);
+        $this->addressFactory = $this->objectManager->get(\Magento\Customer\Model\AddressFactory::class);
+        $this->quoteCollectionFactory = $this->objectManager->get(\Magento\Quote\Model\ResourceModel\Quote\CollectionFactory::class);
+    }
+
+    public function setStore(string $storeCode)
+    {
+        $this->storeManager->setCurrentStore($storeCode);
+        $store = $this->storeManager->getStore($storeCode);
+
+        $this->store = $store;
+
+        return $this;
     }
 
     public function create()
     {
+        $this->quote = $this->objectManager
+            ->create(\Magento\Quote\Model\Quote::class)
+            ->setStoreId($this->store->getId())
+            ->setWebsiteId($this->store->getWebsiteId())
+            ->setInventoryProcessed(false);
+
+        $this->checkoutHelper->getCheckout()->replaceQuote($this->quote);
+
+        return $this;
+    }
+
+    public function createAdmin()
+    {
+        \Magento\TestFramework\Helper\Bootstrap::getInstance()->loadArea(\Magento\Framework\App\Area::AREA_ADMINHTML);
+
         $this->quote = $this->objectManager
             ->create(\Magento\Quote\Model\Quote::class)
             ->setStoreId($this->store->getId())
@@ -60,6 +108,16 @@ class Quote
         return $this;
     }
 
+    public function reset()
+    {
+        $this->quote = null;
+        $this->checkoutHelper->getCheckout()->clearStorage()->clearQuote()->resetCheckout()->clearHelperData();
+        $this->quoteCollectionFactory->create()->walk('delete');
+        $this->paymentsHelper->clearCache();
+
+        return $this;
+    }
+
     public function setCustomer($identifier)
     {
         switch ($identifier) {
@@ -72,10 +130,11 @@ class Quote
                 break;
 
             case 'LoggedIn':
-                $customer = $this->customerRepository->get('customer@example.com');
+                $this->customer = $customer = $this->customerRepository->get('customer@example.com');
                 $this->customerSession->setCustomerId($customer->getId());
 
                 $this->quote->assignCustomer($customer);
+
                 break;
 
             default:
@@ -84,6 +143,66 @@ class Quote
         }
 
         return $this;
+    }
+
+    // Multishipping Checkout
+    public function login()
+    {
+        $this->setCustomer("LoggedIn");
+        $checkout = $this->checkoutHelper->getCheckout();
+        $addresses = $this->customer->getAddresses();
+        $this->customerSession->loginById($this->customer->getId());
+
+        $addressIds = [];
+        foreach ($addresses as $address)
+        {
+            $addressIds[] = $address->getId();
+        }
+
+        $shippingInfo = [];
+        foreach ($this->quote->getAllVisibleItems() as $quoteItem)
+        {
+            $shippingInfo[] = [
+                $quoteItem->getId() => [
+                    'qty' => $quoteItem->getQtyToAdd(),
+                    'address' => $addressIds[0]
+                ]
+            ];
+        }
+        $checkout->setShippingItemsInformation($shippingInfo);
+
+        $methods = [];
+        $addresses = $this->quote->getAllShippingAddresses();
+        foreach ($addresses as $address)
+        {
+            $methods[$address->getId()] = 'flatrate_flatrate';
+        }
+        $checkout->setShippingMethods($methods);
+        return $this->save();
+    }
+
+    // OnePage Checkout
+    public function loginOpc()
+    {
+        $this->setCustomer("LoggedIn");
+        $checkout = $this->checkoutHelper->getCheckout();
+        $addresses = $this->customer->getAddresses();
+        $this->customerSession->loginById($this->customer->getId());
+
+        $billingAddressId = $this->customer->getDefaultBilling();
+        $shippingAddressId = $this->customer->getDefaultShipping();
+        $shippingAddress = $this->addressFactory->create()->load($shippingAddressId);
+        $billingAddress = $this->addressFactory->create()->load($billingAddressId);
+
+        $this->quote->getShippingAddress()->addData($shippingAddress->getData());
+        $this->quote->getShippingAddress()->save();
+
+        $this->quote->getBillingAddress()->addData($billingAddress->getData());
+        $this->quote->getBillingAddress()->save();
+
+        $this->setShippingMethod("FlatRate");
+
+        return $this->save();
     }
 
     public function addProduct($sku, $qty, $params = null)
@@ -133,8 +252,9 @@ class Quote
                 foreach ($attribute as $attributeCode => $optionId)
                 {
                     $attributeModel = $this->attributeCollectionFactory->create()->addFieldToFilter('attribute_code', $attributeCode)->load()->getFirstItem();
-                    if ($attributeModel)
+                    if ($attributeModel) {
                         $requestParams['super_attribute'][$attributeModel->getAttributeId()] = $optionId;
+                    }
                 }
             }
 
@@ -145,7 +265,9 @@ class Quote
         }
         else
         {
-            $this->quote->addProduct($product, $qty);
+            $result = $this->quote->addProduct($product, $qty);
+            if (is_string($result))
+                throw new \Exception($result);
         }
 
         return $this;
@@ -173,19 +295,30 @@ class Quote
                 break;
 
             case 'Subscription':
+                $this->addProduct('simple-monthly-subscription-product', 2);
+                break;
+
+            case 'SubscriptionSingle':
+                $this->addProduct('simple-monthly-subscription-product', 1);
+                break;
+
+            case 'SubscriptionInitialFee':
                 $this->addProduct('simple-monthly-subscription-initial-fee-product', 1);
+                break;
+
+            case 'Configurable':
+                $this->addProduct('configurable-product', 1, [["tests_product_type" => "simple"]]);
                 break;
 
             case 'ConfigurableSubscription':
                 $this->addProduct('configurable-subscription', 1, [["subscription" => "monthly"]]);
                 break;
 
-            case 'Subscriptions':
-                $this->addProduct('virtual-monthly-subscription-product', 1);
-                $this->addProduct('simple-monthly-subscription-initial-fee-product', 1);
+            case 'ConfigurableTrialSubscription':
+                $this->addProduct('configurable-subscription', 1, [["subscription" => "monthly_trial"]]);
                 break;
 
-            case 'Mixed':
+            case 'MixedCart':
                 $this->addProduct('simple-product', 2);
                 $this->addProduct('simple-monthly-subscription-initial-fee-product', 2);
                 break;
@@ -195,8 +328,11 @@ class Quote
                 $this->addProduct('virtual-monthly-subscription-product', 1);
                 break;
 
-            case 'Trial':
+            case 'TrialVirtual':
                 $this->addProduct('virtual-trial-monthly-subscription-product', 1);
+                break;
+
+            case 'TrialSimple':
                 $this->addProduct('simple-trial-monthly-subscription-product', 1);
                 break;
 
@@ -210,7 +346,19 @@ class Quote
                 $this->addProduct('virtual-trial-monthly-subscription-product', 1);
                 break;
 
+            case "DynamicBundleSubscription":
+                $this->addProduct('bundle-dynamic', 2, ["simple-product" => 2, "simple-monthly-subscription-product" => 2]);
+                break;
+
             case 'DynamicBundleMixedTrial':
+                $this->addProduct('bundle-dynamic', 2, ["simple-product" => 2, "simple-trial-monthly-subscription-product" => 2]);
+                break;
+
+            case 'DynamicBundleMixedTrialInitialFee':
+                $this->addProduct('bundle-dynamic', 2, ["simple-product" => 2, "simple-trial-monthly-subscription-initial-fee" => 2]);
+                break;
+
+            case 'DynamicBundleDoubleMixedTrial':
                 $this->addProduct('bundle-dynamic', 2, ["simple-product" => 2, "simple-trial-monthly-subscription-product" => 2]);
                 $this->addProduct('simple-product', 2);
                 break;
@@ -225,6 +373,12 @@ class Quote
         }
 
         return $this;
+    }
+
+    public function setCouponCode($couponCode)
+    {
+        $this->quote->setCouponCode($couponCode);
+        return $this->save();
     }
 
     public function getBundleSelections($product)
@@ -275,6 +429,14 @@ class Quote
                     $shippingAddress->setShippingMethod('flatrate_flatrate');
                     break;
 
+                case 'Free':
+                    $shippingAddress->setShippingMethod('freeshipping_freeshipping');
+                    break;
+
+                case 'Best':
+                    $shippingAddress->setShippingMethod('tablerate_bestway');
+                    break;
+
                 default:
                     # code...
                     break;
@@ -292,116 +454,55 @@ class Quote
     public function setBillingAddress($identifier)
     {
         $address = $this->address->getMagentoFormat($identifier);
+        $this->billingAddressIdentifier = $identifier;
 
         if ($address)
         {
             $this->quote->getBillingAddress()->addData($address);
             $this->quote->setCustomerEmail($address["email"]);
+            $this->customerEmail = $address["email"];
         }
 
         return $this->save();
     }
+
 
     public function setPaymentMethod($identifier)
     {
-        $data = null;
+        $billingAddressIdentifier = isset($this->billingAddressIdentifier) ? $this->billingAddressIdentifier : null;
+        $data = $this->paymentMethodHelper->getPaymentMethodImportData($identifier, $billingAddressIdentifier);
 
-        switch ($identifier)
+        if ($identifier == "StripeCheckout")
         {
-            case 'SuccessCard':
-                $data = [
-                    'method' => 'stripe_payments',
-                    'additional_data' => [
-                        "cc_save" => false,
-                        "cc_stripejs_token" => "pm_card_visa:visa:4242"
-                    ]
-                ];
-                break;
+            // Delete all previous sessions
+            $this->checkoutSessionsCollectionFactory->create()->walk('delete');
 
-            case 'DeclinedCard':
-                $data = [
-                    'method' => 'stripe_payments',
-                    'additional_data' => [
-                        "cc_save" => false,
-                        "cc_stripejs_token" => "pm_card_chargeDeclined:visa:4242"
-                    ]
-                ];
-                break;
+            $billingAddressData = $this->quote->getBillingAddress()->getData();
+            $shippingAddressData = $this->quote->getShippingAddress()->getData();
+            $this->availablePaymentMethods = json_decode($this->api->get_checkout_payment_methods($billingAddressData, $shippingAddressData), true);
 
-            case 'InsufficientFundsCard':
-                $data = [
-                    'method' => 'stripe_payments',
-                    'additional_data' => [
-                        "cc_save" => false,
-                        "cc_stripejs_token" => "pm_card_chargeDeclinedInsufficientFunds:visa:4242"
-                    ]
-                ];
-                break;
-
-            case 'ElevatedRiskCard':
-                $data = [
-                    'method' => 'stripe_payments',
-                    'additional_data' => [
-                        "cc_save" => false,
-                        "cc_stripejs_token" => "pm_card_riskLevelElevated:visa:4242"
-                    ]
-                ];
-                break;
-
-            case 'StripeCheckout':
-
-                // Delete all previous sessions
-                $this->checkoutSessionsCollectionFactory->create()->walk('delete');
-
-                $billingAddressData = $this->quote->getBillingAddress()->getData();
-                $shippingAddressData = $this->quote->getShippingAddress()->getData();
-                $this->availablePaymentMethods = json_decode($this->api->get_checkout_payment_methods($billingAddressData, $shippingAddressData), true);
-
-                $data = [
-                    'method' => 'stripe_payments_checkout'
-                ];
-                break;
-
-            case 'MexicoInstallmentsCard':
-                $paymentMethod = $this->createPaymentMethodFrom('4000004840000008');
-                $data = [
-                    'method' => 'stripe_payments',
-                    'additional_data' => [
-                        "cc_save" => false,
-                        "cc_stripejs_token" => "{$paymentMethod->id}:visa:4242"
-                    ]
-                ];
-                break;
-            default:
-                break;
-
+            if (!empty($this->availablePaymentMethods['error']))
+                throw new \Exception($this->availablePaymentMethods['error']);
         }
 
+        $this->quote->getPayment()->setQuote($this->quote);
+
         if ($data)
+        {
             $this->quote->getPayment()->importData($data);
+        }
 
         return $this->save();
-    }
-
-    public function createPaymentMethodFrom($cardNumber)
-    {
-        return $this->stripeConfig->getStripeClient()->paymentMethods->create([
-          'type' => 'card',
-          'card' => [
-            'number' => $cardNumber,
-            'exp_month' => 8,
-            'exp_year' => 2025,
-            'cvc' => '314',
-          ],
-        ]);
     }
 
     public function placeOrder()
     {
         $this->quote->collectTotals()->save();
+
+        if (!$this->quote->getCustomerEmail() && $this->customerEmail) // Magento 2.3
+            $this->quote->setCustomerEmail($this->customerEmail);
+
         return $this->cartManagement->submit($this->quote);
-        // $orderId = $this->quoteManagement->placeOrder($this->quote->getId());
-        // return $this->orderFactory->create()->load($orderId);
     }
 
     public function mockOrder()
@@ -419,6 +520,13 @@ class Quote
         return $this->quote;
     }
 
+    public function setQuote($quote)
+    {
+        $this->quote = $quote;
+        $this->checkoutSession->replaceQuote($quote);
+        return $this;
+    }
+
     public function getQuoteItem($sku)
     {
         foreach ($this->quote->getAllItems() as $quoteItem)
@@ -433,5 +541,10 @@ class Quote
     public function getAvailablePaymentMethods()
     {
         return $this->availablePaymentMethods['methods'];
+    }
+
+    public function getStore()
+    {
+        return $this->store;
     }
 }

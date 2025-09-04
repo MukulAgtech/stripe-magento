@@ -3,23 +3,25 @@
 namespace StripeIntegration\Payments\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
-use StripeIntegration\Payments\Helper\Logger;
 
 class CustomerDetailsChanged implements ObserverInterface
 {
+    private $config;
+    private $loggerHelper;
+    private $stripeCustomerFactory;
+
     public function __construct(
-        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Logger $loggerHelper,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\StripeCustomerFactory $stripeCustomerFactory
     )
     {
-        $this->helper = $helper;
+        $this->loggerHelper = $loggerHelper;
         $this->config = $config;
         $this->stripeCustomerFactory = $stripeCustomerFactory;
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
     public function execute(\Magento\Framework\Event\Observer $observer)
@@ -46,7 +48,7 @@ class CustomerDetailsChanged implements ObserverInterface
 
         try
         {
-            \StripeIntegration\Payments\Model\Config::$stripeClient->customers->update($customerStripeId, [
+            $this->config->getStripeClient()->customers->update($customerStripeId, [
                 'email' => $savedCustomer->getEmail(),
                 'name' => $newName,
                 'description' => null
@@ -55,7 +57,7 @@ class CustomerDetailsChanged implements ObserverInterface
         }
         catch (\Exception $e)
         {
-            $this->helper->logError("Could not update Stripe customer: " . $e->getMessage());
+            $this->loggerHelper->logError("Could not update Stripe customer: " . $e->getMessage());
         }
     }
 }

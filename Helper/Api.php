@@ -3,33 +3,37 @@
 namespace StripeIntegration\Payments\Helper;
 
 use Magento\Framework\Exception\LocalizedException;
-use Magento\Framework\Exception\CouldNotSaveException;
-use StripeIntegration\Payments\Model;
-use StripeIntegration\Payments\Model\PaymentMethod;
-use StripeIntegration\Payments\Model\Config;
-use Psr\Log\LoggerInterface;
-use Magento\Framework\Validator\Exception;
-use StripeIntegration\Payments\Helper\Logger;
+use \Magento\Payment\Model\InfoInterface;
 
 class Api
 {
+    private $helper;
+    private $config;
+    private $paymentIntent;
+    private $quoteFactory;
+    private $cache;
+    private $paymentIntentCollectionFactory;
+    private $paymentMethodFactory;
+    private $paymentIntentHelper;
+
     public function __construct(
+        \Magento\Quote\Model\QuoteFactory $quoteFactory,
+        \Magento\Framework\App\CacheInterface $cache,
         \StripeIntegration\Payments\Model\Config $config,
-        LoggerInterface $logger,
-        Generic $helper,
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
-        \Magento\Framework\Event\ManagerInterface $eventManager,
-        \StripeIntegration\Payments\Helper\Rollback $rollback,
-        \Magento\Quote\Model\QuoteFactory $quoteFactory
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory,
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\CollectionFactory $paymentIntentCollectionFactory,
+        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper
     ) {
-        $this->logger = $logger;
         $this->helper = $helper;
         $this->config = $config;
-        $this->customer = $helper->getCustomerModel();
-        $this->_eventManager = $eventManager;
-        $this->rollback = $rollback;
         $this->paymentIntent = $paymentIntent;
         $this->quoteFactory = $quoteFactory;
+        $this->cache = $cache;
+        $this->paymentIntentCollectionFactory = $paymentIntentCollectionFactory;
+        $this->paymentMethodFactory = $paymentMethodFactory;
+        $this->paymentIntentHelper = $paymentIntentHelper;
     }
 
     public function retrieveCharge($token)
@@ -57,90 +61,127 @@ class Api
         return \Stripe\Charge::retrieve($token);
     }
 
-    public function reCreateCharge($payment, $baseAmount, $originalCharge)
+    public function reCreateCharge($payment, $baseAmount, \Stripe\Charge $originalCharge)
     {
-        try
+        $order = $payment->getOrder();
+
+        if (empty($originalCharge->payment_method) || empty($originalCharge->customer))
+            throw new LocalizedException(__("The authorization has expired and the original payment method cannot be reused to re-create the payment."));
+
+        $amount = $this->helper->convertBaseAmountToOrderAmount($baseAmount, $payment->getOrder(), $originalCharge->currency, 2);
+
+        if ($amount > 0)
         {
-            $order = $payment->getOrder();
+            $quoteId = $order->getQuoteId();
 
-            if (empty($originalCharge->payment_method) || empty($originalCharge->customer))
-                throw new LocalizedException(__("The authorization has expired and the original payment method cannot be reused to re-create the payment."));
+            // We get here if an existing authorization has expired, in which case
+            // we want to discard old Payment Intents and create a new one
+            $this->paymentIntentCollectionFactory->create()->deleteForQuoteId($quoteId);
 
-            $token = $originalCharge->payment_method;
+            $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($originalCharge->payment_method);
 
-            $fraud = false;
+            $params = [
+                'capture_method' => \StripeIntegration\Payments\Model\PaymentIntent::CAPTURE_METHOD_AUTOMATIC,
+                "customer" => $originalCharge->customer,
+                "amount" => $this->helper->convertMagentoAmountToStripeAmount($amount, $originalCharge->currency),
+                "currency" => $originalCharge->currency,
+                'description' => $originalCharge->description,
+                'metadata' => json_decode(json_encode($originalCharge->metadata), true),
+                'payment_method_types' => [ $paymentMethod->getStripeObject()->type ]
+            ];
 
-            $amount = $this->helper->convertBaseAmountToOrderAmount($baseAmount, $payment->getOrder(), $originalCharge->currency);
-
-            if ($amount > 0)
+            if (!empty($originalCharge->shipping))
             {
-                $quoteId = $payment->getOrder()->getQuoteId();
-
-                // We get here if an existing authorization has expired, in which case
-                // we want to discard old Payment Intents and create a new one
-                $this->paymentIntent->refreshCache($quoteId, $order);
-                $this->paymentIntent->destroy($quoteId, true);
-
-                $quote = $this->quoteFactory->create()->load($quoteId);
-                $this->paymentIntent->quote = $quote;
-                $this->paymentIntent->capture = \StripeIntegration\Payments\Model\PaymentIntent::CAPTURE_METHOD_AUTOMATIC;
-
-                $params = $this->paymentIntent->getParamsFrom($quote, $order, $token);
-                $params["customer"] = $originalCharge->customer;
-                $params["amount"] = $this->helper->convertMagentoAmountToStripeAmount($amount, $originalCharge->currency);
-                $params["currency"] = $originalCharge->currency;
-                $this->paymentIntent->setCustomParams($params);
-
-                if (!$this->paymentIntent->create($params, $quote, $order))
-                    throw new \Exception("The payment intent could not be created");
-
-                $payment->setAdditionalInformation("token", $token);
-                $pi = $this->paymentIntent->confirmAndAssociateWithOrder($payment->getOrder(), $payment);
-                if (is_string($pi))
-                    throw new \Exception($pi);
-                else if (!$pi)
-                    throw new \Exception("Could not create a Payment Intent for this order");
-
-                $charge = $this->retrieveCharge($pi->id);
-
-                $this->rollback->addCharge($charge->id);
-
-                if ($this->config->isStripeRadarEnabled() &&
-                    isset($charge->outcome->type) &&
-                    $charge->outcome->type == 'manual_review')
-                {
-                    $payment->setAdditionalInformation("stripe_outcome_type", $charge->outcome->type);
-                    $this->helper->holdOrder($order);
-                }
-
-                if (!$charge->captured && $this->config->isAutomaticInvoicingEnabled())
-                {
-                    $payment->setIsTransactionPending(true);
-                    $invoice = $order->prepareInvoice();
-                    $invoice->register();
-                    $order->addRelatedObject($invoice);
-                }
-
-                $payment->setTransactionId($pi->id);
-                $payment->setLastTransId($pi->id);
+                $params['shipping'] = json_decode(json_encode($originalCharge->shipping), true);
             }
 
-            $payment->setIsTransactionClosed(0);
-            $payment->setIsFraudDetected($fraud);
-        }
-        catch (\Stripe\Exception\CardException $e)
-        {
-            $this->rollback->run($e);
-            throw new CouldNotSaveException(__($e->getMessage()));
-        }
-        catch (\Exception $e)
-        {
-            $this->rollback->run($e);
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->create($params);
 
-            if ($this->helper->isAdmin())
-                throw new CouldNotSaveException(__($e->getMessage()));
+            $confirmParams = [
+                "use_stripe_sdk" => true,
+                "payment_method" => $originalCharge->payment_method,
+            ];
+
+            if (!$this->cache->load("no_moto_gate"))
+            {
+                $confirmParams["payment_method_options"]["card"]["moto"] = "true";
+            }
             else
-                throw new CouldNotSaveException(__("Sorry, a payment error has occurred, please contact us for support."));
+            {
+                $confirmParams["off_session"] = true;
+            }
+
+            $key = "admin_captured_" . $paymentIntent->id;
+            try
+            {
+                $this->cache->save($value = "1", $key, ["stripe_payments"], $lifetime = 60 * 60);
+                $paymentIntent = $this->paymentIntent->confirm($paymentIntent, $confirmParams);
+            }
+            catch (\Exception $e)
+            {
+                $this->cache->remove($key);
+                throw $e;
+            }
+            $this->paymentIntent->processSuccessfulOrder($order, $paymentIntent);
+            return $paymentIntent;
         }
+
+        return null;
+    }
+
+    public function createNewCharge(InfoInterface $payment, $amount)
+    {
+        $order = $payment->getOrder();
+        $customerId = $payment->getAdditionalInformation("customer_stripe_id");
+        $currency = $order->getOrderCurrencyCode();
+        $amount = $this->helper->convertBaseAmountToOrderAmount($amount, $order, $currency, 2);
+
+        if ($amount > 0)
+        {
+            $quoteId = $order->getQuoteId();
+            $quote = $this->quoteFactory->create()->load($quoteId);
+
+            $params = $this->paymentIntent->getParamsFrom($quote, $order);
+            $params['capture_method'] = \StripeIntegration\Payments\Model\PaymentIntent::CAPTURE_METHOD_AUTOMATIC;
+            $params["customer"] = $customerId;
+            $params["amount"] = $this->helper->convertMagentoAmountToStripeAmount($amount, $currency);
+            $params["currency"] = $currency;
+            if (isset($params["payment_method_options"]))
+                unset($params["payment_method_options"]);
+
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->create($params);
+            $confirmParams = $this->paymentIntentHelper->getConfirmParams($order, $paymentIntent);
+            $confirmParams = $this->filterPaymentMethodOptions($confirmParams);
+
+            $key = "admin_captured_" . $paymentIntent->id;
+            try
+            {
+                $this->cache->save($value = "1", $key, ["stripe_payments"], $lifetime = 60 * 60);
+                $paymentIntent = $this->paymentIntent->confirm($paymentIntent, $confirmParams);
+            }
+            catch (\Exception $e)
+            {
+                $this->cache->remove($key);
+                throw $e;
+            }
+            $this->paymentIntent->processSuccessfulOrder($order, $paymentIntent);
+            return $paymentIntent;
+        }
+
+        return null;
+    }
+
+    protected function filterPaymentMethodOptions($params)
+    {
+        if (isset($params['payment_method_options']))
+        {
+            // We don't want to authorize only and we don't want to setup future usage, but we want to keep the moto parameter
+            $moto = isset($params['payment_method_options']['card']['moto']) ? $params['payment_method_options']['card']['moto'] : false;
+            unset($params["payment_method_options"]);
+            if ($moto)
+                $params['payment_method_options']['card']['moto'] = $moto;
+        }
+
+        return $params;
     }
 }

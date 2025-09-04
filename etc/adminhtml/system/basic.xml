@@ -9,7 +9,7 @@
     &lt;p&gt;For additional technical support contact &lt;a href="mailto:magento@stripe.com" target="_blank" rel="noopener noreferrer"&gt;magento@stripe.com&lt;/a&gt;.&lt;/p&gt;</comment>
     <field id="module_version" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Module version</label>
-      <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Source\ModuleVersion</frontend_model>
+      <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Frontend\ModuleVersion</frontend_model>
     </field>
     <field id="stripe_mode" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Mode</label>
@@ -59,24 +59,6 @@
       </depends>
       <config_path>payment/stripe_payments_basic/stripe_live_pk</config_path>
     </field>
-    <field id="stripe_webhooks_configuration" translate="label comment" type="button" sortOrder="70" showInDefault="1" showInWebsite="1" showInStore="1">
-      <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Source\WebhookConfiguration</frontend_model>
-      <label>Webhooks</label>
-    </field>
-    <field id="webhook_origin_check" translate="label" type="select" sortOrder="80" showInDefault="1">
-      <label>Webhook origin check</label>
-      <comment>
-        <![CDATA[Decline all webhook requests that do not originate from Stripe.]]>
-      </comment>
-      <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Enabled</source_model>
-      <config_path>payment/stripe_payments/webhook_origin_check</config_path>
-    </field>
-    <field id="moto_exemptions" translate="label" type="select" sortOrder="107" showInDefault="1" showInWebsite="1" showInStore="1">
-      <label>SCA MOTO exemptions</label>
-      <comment>Only enable this if your Stripe account has been gated to use MOTO exemptions.</comment>
-      <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Enabled</source_model>
-      <config_path>payment/stripe_payments/moto_exemptions</config_path>
-    </field>
     <field id="receipt_emails" translate="label" type="select" sortOrder="122" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Receipt emails</label>
       <comment>
@@ -84,12 +66,6 @@
       </comment>
       <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Enabled</source_model>
       <config_path>payment/stripe_payments/receipt_emails</config_path>
-    </field>
-    <field id="payment_failed_emails" translate="label" type="select" sortOrder="140" showInDefault="1" showInWebsite="1" showInStore="1">
-      <label>Payment failed emails</label>
-      <comment>Receive an email notification when a checkout payment fails.</comment>
-      <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Enabled</source_model>
-      <config_path>payment/stripe_payments/payment_failed_emails</config_path>
     </field>
  </group>
 </include>

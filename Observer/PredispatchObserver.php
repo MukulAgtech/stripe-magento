@@ -3,24 +3,35 @@
 namespace StripeIntegration\Payments\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
-use StripeIntegration\Payments\Helper\Logger;
 
 class PredispatchObserver implements ObserverInterface
 {
+    /**
+     * @var \Magento\Framework\Event\ManagerInterface
+     */
+    protected $eventManager;
+
+    /**
+     * @var \Magento\Framework\App\RequestInterface
+     */
+    protected $request;
+
     public function __construct(
-        \Magento\Framework\Event\ManagerInterface $eventManager
-    )
-    {
-        $this->_eventManager = $eventManager;
+        \Magento\Framework\Event\ManagerInterface $eventManager,
+        \Magento\Framework\App\RequestInterface $request
+    ) {
+        $this->eventManager = $eventManager;
+        $this->request = $request;
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
     public function execute(\Magento\Framework\Event\Observer $observer)
     {
-        if (!empty($_SERVER['REQUEST_URI']) && stripos($_SERVER['REQUEST_URI'],"directory/currency/switch") !== false)
-            $this->_eventManager->dispatch('stripe_payments_currency_switch');
+        $requestUri = $this->request->getRequestUri();
+        if (!empty($requestUri) && stripos($requestUri, "directory/currency/switch") !== false) {
+            $this->eventManager->dispatch('stripe_payments_currency_switch');
+        }
     }
 }

@@ -14,22 +14,26 @@
             <span data-bind="text: getTitle()"></span>
         </label>
     </div>
-    <div class="payment-method-content">
+    <div class="payment-method-content" data-bind="if: permanentError, visible: permanentError">
+      <span><!-- ko i18n: permanentError --><!-- /ko --></span>
+    </div>
+    <div class="payment-method-content" data-bind="ifnot: permanentError">
         <div class="payment-method-billing-address">
             <!-- ko foreach: $parent.getRegion(getBillingAddressFormName()) -->
             <!-- ko template: getTemplate() --><!-- /ko -->
             <!--/ko-->
         </div>
         <fieldset class="fieldset" data-bind='attr: {id: "payment_form_" + getCode()}'>
-            <div data-bind="if: hasIcons">
-                <div class="payment-method-note">
-                    <!-- ko text: $t("You'll be redirected to Stripe to complete your payment using one of the following payment methods:") --><!-- /ko -->
-                </div>
-                <div class="stripe-checkout-icon-container">
-                    <span data-bind="foreach: methodIcons">
-                        <img class="stripe-icon" data-bind="attr:{src: path, alt: name, title: name}">
-                    </span>
-                </div>
+            <div class="payment-method-note" data-bind="if: methodIcons().length > 0">
+                <!-- ko text: $t("You'll be redirected to Stripe to complete your payment using one of the following payment methods:") --><!-- /ko -->
+            </div>
+            <div class="payment-method-note" data-bind="if: !methodIcons().length">
+                <!-- ko text: $t("You'll be redirected to Stripe to complete your payment.") --><!-- /ko -->
+            </div>
+            <div class="stripe-checkout-icon-container">
+                <span data-bind="foreach: methodIcons">
+                    <img class="stripe-icon" data-bind="attr:{src: path, alt: name, title: name}">
+                </span>
             </div>
         </fieldset>
         <div class="checkout-agreements-block">

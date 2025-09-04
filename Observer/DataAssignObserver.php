@@ -8,10 +8,9 @@ use Magento\Payment\Observer\AbstractDataAssignObserver;
 class DataAssignObserver extends AbstractDataAssignObserver
 {
     /**
-     * @param Observer $observer
      * @return void
      */
-    public function execute(Observer $observer)
+    public function execute(\Magento\Framework\Event\Observer $observer)
     {
         $method = $this->readMethodArgument($observer);
         $data = $this->readDataArgument($observer);

@@ -53,3 +53,10 @@ function setBundleProductItems($bundleProduct)
     }
     $bundleProduct->save();
 }
+
+function saveSubscriptionOption($data)
+{
+    $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+    $subscriptionOptionsFactory = $objectManager->get(\StripeIntegration\Payments\Model\SubscriptionOptionsFactory::class);
+    $subscriptionOptionsFactory->create()->setData($data)->save();
+}

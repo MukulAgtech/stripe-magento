@@ -1,139 +1,169 @@
 <?php
 
-namespace StripeIntegration\Payments\Helper;
+declare(strict_types=1);
 
-use StripeIntegration\Payments\Helper\Logger;
-use Magento\Framework\Exception\LocalizedException;
+namespace StripeIntegration\Payments\Helper;
 
 class SetupIntent
 {
+    public const ONLINE_ACTIONS = [
+        'three_d_secure_redirect',
+        'use_stripe_sdk',
+        'redirect_to_url',
+        'verify_with_microdeposits'
+    ];
+
+    private $config;
+    private $helper;
+    private $customer;
+    private $remoteAddress;
+    private $httpHeader;
+    private $paymentMethodFactory;
+    private $orderHelper;
+
     public function __construct(
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory,
+        \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \Magento\Sales\Model\Order $order,
-        \Magento\Sales\Model\Order\Invoice $invoice,
-        \Magento\Customer\Model\Session $customerSession,
-        \Magento\Checkout\Model\Session $checkoutSession,
-        \Magento\Quote\Model\QuoteFactory $quoteFactory,
-        \Magento\Checkout\Model\Cart $cart,
-        \Magento\Customer\Model\Address $customerAddress,
-        \Magento\Framework\DB\TransactionFactory $transactionFactory,
-        \Magento\Framework\App\CacheInterface $cache,
-        \Magento\Framework\UrlInterface $urlBuilder
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \Magento\Framework\HTTP\PhpEnvironment\RemoteAddress $remoteAddress,
+        \Magento\Framework\HTTP\Header $httpHeader
     ) {
+        $this->paymentMethodFactory = $paymentMethodFactory;
+        $this->config = $config;
         $this->helper = $helper;
-        $this->stripeCustomer = $helper->getCustomerModel();
-        $this->order = $order;
-        $this->invoice = $invoice;
-        $this->customerSession = $customerSession;
-        $this->checkoutSession = $checkoutSession;
-        $this->quoteFactory = $quoteFactory;
-        $this->cart = $cart;
-        $this->customerAddress = $customerAddress;
-        $this->transactionFactory = $transactionFactory;
-        $this->cache = $cache;
-        $this->urlBuilder = $urlBuilder;
+        $this->customer = $helper->getCustomerModel();
+        $this->remoteAddress = $remoteAddress;
+        $this->httpHeader = $httpHeader;
+        $this->orderHelper = $orderHelper;
     }
 
-    public function shouldUseSetupIntents()
+    public function getCreateParams($order)
     {
-        if ($this->helper->isAdmin())
-            return false;
+        $description = $this->orderHelper->getOrderDescription($order);
 
-        if ($this->helper->hasOnlyTrialSubscriptions())
+        if (!$this->customer->getStripeId())
+        {
+            $this->customer->createStripeCustomerIfNotExists(false, $order);
+        }
+
+        $params = [
+            "use_stripe_sdk" => true,
+            "customer" => $this->customer->getStripeId(),
+            "description" => $description,
+            "metadata" => $this->config->getMetadata($order),
+            "confirm" => true,
+            "usage" => "off_session",
+            "return_url" => $this->helper->getUrl("stripe/payment/index")
+        ];
+
+        if ($order && $order->getPayment()->getAdditionalInformation("confirmation_token"))
+        {
+            $params["confirmation_token"] = $order->getPayment()->getAdditionalInformation("confirmation_token");
+            $params["payment_method_types"] = $this->config->getECEPaymentMethodTypes();
+        }
+        else
+        {
+            $paymentMethodId = $order->getPayment()->getAdditionalInformation("token");
+            $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+
+            $params["automatic_payment_methods"] = [ 'enabled' => 'true' ];
+            $params["payment_method"] = $paymentMethod->id;
+            $params["mandate_data"] = $this->getMandateData($paymentMethod);
+        }
+
+        $customerEmail = $order->getCustomerEmail();
+        if ($customerEmail && $this->config->isReceiptEmailsEnabled())
+            $params["receipt_email"] = $customerEmail;
+
+        return $params;
+    }
+
+    public function getConfirmParams($order)
+    {
+        $params = [
+            "use_stripe_sdk" => true,
+            "return_url" => $this->helper->getUrl("stripe/payment/index")
+        ];
+
+        if ($order && $order->getPayment()->getAdditionalInformation("confirmation_token"))
+        {
+            $params["confirmation_token"] = $order->getPayment()->getAdditionalInformation("confirmation_token");
+        }
+        else
+        {
+            $paymentMethodId = $order->getPayment()->getAdditionalInformation("token");
+            $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+
+            $params["payment_method"] = $order->getPayment()->getAdditionalInformation("token");
+            $params["mandate_data"] = $this->getMandateData($paymentMethod);
+        }
+
+        return $params;
+    }
+
+    public function getSavePaymentMethodParams($paymentMethod)
+    {
+        if (!$this->customer->getStripeId())
+        {
+            $this->customer->createStripeCustomerIfNotExists();
+        }
+
+        $params = [
+            "use_stripe_sdk" => true,
+            "payment_method" => $paymentMethod->id,
+            "customer" => $this->customer->getStripeId(),
+            "confirm" => true,
+            "usage" => "off_session",
+            "automatic_payment_methods" => [ 'enabled' => 'true' ],
+            "mandate_data" => $this->getMandateData($paymentMethod),
+            "return_url" => $this->helper->getUrl("stripe/customer/paymentmethods")
+        ];
+
+        return $params;
+    }
+
+    public function requiresOnlineAction($setupIntent)
+    {
+        if ($setupIntent->status == "requires_action"
+            && !empty($setupIntent->next_action->type)
+            && in_array($setupIntent->next_action->type, self::ONLINE_ACTIONS)
+        )
+        {
             return true;
+        }
 
         return false;
     }
 
-    public function destroy()
+    private function getMandateData($paymentMethod)
     {
-        $quote = $this->helper->getQuote();
-        if ($quote && $quote->getId())
+        $remoteAddress = $this->remoteAddress->getRemoteAddress();
+        $userAgent = $this->httpHeader->getHttpUserAgent();
+        $unsupportedMethods = ['afterpay_clearpay', 'paypal', 'blik'];
+
+        if (!$remoteAddress || !$userAgent || empty($paymentMethod->type) || in_array($paymentMethod->type, $unsupportedMethods))
         {
-            $key = 'setup_intent_' . $quote->getId();
-            $this->cache->remove($key);
-        }
-    }
-
-    public function create($customerData = null)
-    {
-        if (!$this->shouldUseSetupIntents())
-            return null;
-
-        if (!$this->helper->isCustomerLoggedIn())
-        {
-            if (empty($customerData['billingAddress']))
-                return null;
-
-            if (empty($customerData["billingAddress"]["firstname"]))
-                return null;
-
-            if (empty($customerData["billingAddress"]["lastname"]))
-                return null;
-
-            if (!empty($customerData["id"]))
-                $id = $customerData["id"];
-            else
-                $id = 0;
-
-            if (!empty($customerData["guestEmail"]))
-                $email = $customerData["guestEmail"];
-            else if (!empty($customerData["billingAddress"]["email"]))
-                $email = $customerData["billingAddress"]["email"];
-            else
-                return null;
-
-            // $customer = $this->stripeCustomer->createNewStripeCustomer(
-            //     $customerData["billingAddress"]["firstname"],
-            //     $customerData["billingAddress"]["lastname"],
-            //     $email,
-            //     $id
-            // );
+            return [];
         }
 
-        $params = [
-            "usage" => "on_session"
-            // "customer" => $customer->id
+        $mandateData = [
+            "customer_acceptance" => [
+                "type" => "online",
+                "online" => [
+                    "ip_address" => $remoteAddress,
+                    "user_agent" => $userAgent,
+                ]
+            ]
         ];
 
-        $quote = $this->helper->getQuote();
-        if ($quote && $quote->getId())
-        {
-            $key = 'setup_intent_' . $quote->getId();
-            $setupIntentClientSecret = $this->cache->load($key);
-
-            if ($setupIntentClientSecret)
-                return $setupIntentClientSecret;
-
-            // Create a fresh SetupIntent
-            $setupIntent = \Stripe\SetupIntent::create($params);
-            $tags = ['stripe_payments_setup_intents'];
-            $lifetime = 12 * 60 * 60; // 12 hours
-            $this->cache->save($setupIntent->client_secret, $key, $tags, $lifetime);
-            return $setupIntent->client_secret;
-        }
-        else
-        {
-            // We don't have any items in the cart yet
-            return null;
-        }
+        return $mandateData;
     }
 
-    public function setAuthorizationData()
+    public function isSuccessful($setupIntent)
     {
-        $customerId = $this->customerSession->getCustomerId();
-        $tags = ['stripe_payments_setup_intents'];
-        $lifetime = 5 * 60; // 5 mins
-        $this->cache->save($data = $this->urlBuilder->getUrl('*/*/*'), $key = $customerId . "_success_url", $tags, $lifetime);
-        $this->cache->save($data = $this->urlBuilder->getUrl('*/*/billing'), $key = $customerId . "_fail_url", $tags, $lifetime);
-        $this->cache->save($data = $this->urlBuilder->getUrl('stripe/authorization/multishipping'), $key = $customerId . "_authorization_url", $tags, $lifetime);
-    }
-
-    public function clearAuthorizationData()
-    {
-        $customerId = $this->customerSession->getCustomerId();
-        $this->cache->remove($customerId . "_authorization_url");
-        $this->cache->remove($customerId . "_success_url");
-        $this->cache->remove($customerId . "_fail_url");
+        // After required actions are handled, the PaymentIntent moves to processing for asynchronous payment methods, such as bank debits.
+        // https://docs.stripe.com/payments/paymentintents/lifecycle#intent-statuses
+        return $setupIntent->status === "succeeded" || $setupIntent->status === "processing";
     }
 }

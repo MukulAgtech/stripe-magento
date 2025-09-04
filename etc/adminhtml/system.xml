@@ -11,6 +11,7 @@
         <attribute type="displayIn">recommended_solutions</attribute>
         <include path="StripeIntegration_Payments::system/basic.xml"/>
         <include path="StripeIntegration_Payments::system/payments.xml"/>
+        <include path="StripeIntegration_Payments::system/bank_transfers.xml"/>
         <include path="StripeIntegration_Payments::system/express.xml"/>
         <include path="StripeIntegration_Payments::system/fraud.xml"/>
         <include path="StripeIntegration_Payments::system/subscriptions.xml"/>

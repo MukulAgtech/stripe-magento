@@ -7,10 +7,7 @@ use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
 
 class LoadInitialFeeOnCollection
 {
-    /**
-     * @var InitialFeeManagement
-     */
-    private $extensionManagement;
+    private $initialFeeManagement;
 
     public function __construct(InitialFeeManagement $initialFeeManagement)
     {

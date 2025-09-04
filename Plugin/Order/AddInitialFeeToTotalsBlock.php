@@ -5,30 +5,35 @@ use Magento\Framework\DataObject;
 use Magento\Quote\Api\Data\TotalsInterface;
 use Magento\Sales\Block\Order\Totals;
 use Magento\Sales\Model\Order;
-use StripeIntegration\Payments\Helper\Logger;
 
 class AddInitialFeeToTotalsBlock
 {
-    protected $quotes = [];
-    protected $fees = [];
+    private $quotes = [];
+    private $fees = [];
+    private $helper;
+    private $quoteFactory;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\InitialFee $helper,
-        \Magento\Quote\Model\QuoteFactory $quoteFactory,
-        \Magento\Store\Model\StoreManagerInterface $storeManager
+        \Magento\Quote\Model\QuoteFactory $quoteFactory
     )
     {
         $this->helper = $helper;
         $this->quoteFactory = $quoteFactory;
-        $this->storeManager = $storeManager;
     }
 
     public function afterGetOrder(Totals $subject, Order $order)
     {
+        if (!$order->getPayment() || !$order->getPayment()->getMethod() || strpos($order->getPayment()->getMethod(), "stripe_") === false)
+            return $order;
+
         if (empty($subject->getTotal("grand_total")))
             return $order;
 
         if ($subject->getTotal('initial_fee') !== false)
+            return $order;
+
+        if (!$order || !$order->getPayment())
             return $order;
 
         if ($this->isRecurringOrder($subject, $order))
@@ -41,25 +46,13 @@ class AddInitialFeeToTotalsBlock
             $this->quotes[$order->getId()] = $this->quoteFactory->create()->load($order->getQuoteId());
 
         $quote = $this->quotes[$order->getId()];
-
-        if ($subject->getInvoice())
-            $items = $subject->getInvoice()->getAllItems();
-        else if ($subject->getCreditmemo())
-            $items = $subject->getCreditmemo()->getAllItems();
-        else
-            $items = $order->getAllItems();
+        $orderItems = $this->getFilteredOrderItems($subject, $order);
 
         if (!isset($this->fees[$order->getId()]))
-            $this->fees[$order->getId()] = $this->helper->getTotalInitialFeeFor($items, $quote);
+            $this->fees[$order->getId()] = $this->helper->getTotalInitialFeeForOrder($orderItems, $order);
 
-        $store = $this->storeManager->getStore();
-
-        $rate = $order->getBaseToOrderRate();
-        if (empty($rate))
-            $rate = 1;
-
-        $baseFee = $this->fees[$order->getId()];
-        $fee = round($baseFee * $rate, 2);
+        $baseFee = $this->fees[$order->getId()]['base_initial_fee'];
+        $fee = $this->fees[$order->getId()]['initial_fee'];
         if ($fee > 0)
         {
             $subject->addTotalBefore(new DataObject([
@@ -88,5 +81,46 @@ class AddInitialFeeToTotalsBlock
             return false;
 
         return $payment->getAdditionalInformation("remove_initial_fee");
+    }
+
+    public function getFilteredOrderItems(Totals $subject, Order $order)
+    {
+        $orderItems = $order->getAllItems();
+        $orderItemMap = [];
+        foreach ($orderItems as $orderItem)
+        {
+            $orderItemMap[$orderItem->getId()] = $orderItem;
+        }
+
+        $filteredOrderItems = [];
+
+        if ($subject->getInvoice())
+        {
+            $invoiceItems = $subject->getInvoice()->getAllItems();
+            foreach ($invoiceItems as $invoiceItem)
+            {
+                if (isset($orderItemMap[$invoiceItem->getOrderItemId()]))
+                {
+                    $filteredOrderItems[] = $orderItemMap[$invoiceItem->getOrderItemId()];
+                }
+            }
+        }
+        else if ($subject->getCreditmemo())
+        {
+            $creditmemoItems = $subject->getCreditmemo()->getAllItems();
+            foreach ($creditmemoItems as $creditmemoItem)
+            {
+                if (isset($orderItemMap[$creditmemoItem->getOrderItemId()]))
+                {
+                    $filteredOrderItems[] = $orderItemMap[$creditmemoItem->getOrderItemId()];
+                }
+            }
+        }
+        else
+        {
+            $filteredOrderItems = $orderItemMap;
+        }
+
+        return $filteredOrderItems;
     }
 }

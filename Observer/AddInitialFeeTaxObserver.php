@@ -3,21 +3,25 @@
 namespace StripeIntegration\Payments\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
-use StripeIntegration\Payments\Helper\Logger;
 
 class AddInitialFeeTaxObserver implements ObserverInterface
 {
     public $helper = null;
     public $taxHelper = null;
+    public $subscriptionsHelper = null;
+
+    private $config;
+    private $paymentsHelperFactory;
+    private $subscriptionsHelperFactory;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\GenericFactory $paymentsHelper,
-        \StripeIntegration\Payments\Helper\TaxHelperFactory $taxHelperFactory,
+        \StripeIntegration\Payments\Helper\SubscriptionsFactory $subscriptionsHelperFactory,
         \StripeIntegration\Payments\Model\Config $config
     )
     {
         $this->paymentsHelperFactory = $paymentsHelper;
-        $this->taxHelperFactory = $taxHelperFactory;
+        $this->subscriptionsHelperFactory = $subscriptionsHelperFactory;
         $this->config = $config;
     }
 
@@ -46,45 +50,29 @@ class AddInitialFeeTaxObserver implements ObserverInterface
         if (!$this->helper)
             $this->helper = $this->paymentsHelperFactory->create();
 
-        if (!$this->taxHelper)
-            $this->taxHelper = $this->taxHelperFactory->create();
+        if (!$this->subscriptionsHelper)
+            $this->subscriptionsHelper = $this->subscriptionsHelperFactory->create();
 
         foreach ($quote->getAllItems() as $item)
         {
-            $appliedTaxes = $item->getAppliedTaxes();
-            if (empty($appliedTaxes))
-                continue;
-
-            $product = $this->helper->getSubscriptionProductFromQuoteItem($item);
+            $product = $this->subscriptionsHelper->getSubscriptionProductFromQuoteItem($item);
             if (!$product)
                 continue;
 
-            $baseInitialFee = $product->getStripeSubInitialFee();
+            if (!$quote->getQuoteCurrencyCode())
+            {
+                $quote->beforeSave(); // Sets the currencies
+            }
 
-            if (empty($baseInitialFee) || !is_numeric($baseInitialFee) || $baseInitialFee <= 0)
-                continue;
+            $profile = $this->subscriptionsHelper->getSubscriptionDetails($product, $quote, $item);
 
-            $qty = $item->getQty();
-            $baseExtraTaxableAmount = $qty * $baseInitialFee;
-            $taxPercent = $item->getTaxPercent();
-
-            if ($this->config->priceIncludesTax())
-                $taxAmount = $this->taxHelper->taxInclusiveTaxCalculator($baseExtraTaxableAmount, $taxPercent);
-            else
-                $taxAmount = $this->taxHelper->taxExclusiveTaxCalculator($baseExtraTaxableAmount, $taxPercent);
-
-            $baseExtraTax += $taxAmount;
+            $baseExtraTax += $profile['base_tax_amount_initial_fee'];
+            $extraTax += $profile['tax_amount_initial_fee'];
         }
 
-        $rate = $quote->getBaseToQuoteRate();
-        if (empty($rate))
-            $rate = 1;
-
-        $baseExtraTax = round($baseExtraTax, 4);
-        $extraTax = round($baseExtraTax * $rate, 4);
         $total->addTotalAmount('tax', $extraTax);
         $total->addBaseTotalAmount('tax', $baseExtraTax);
-        $total->setGrandTotal($total->getGrandTotal() + $extraTax);
-        $total->setBaseGrandTotal($total->getBaseGrandTotal() + $baseExtraTax);
+        $total->setGrandTotal(round(floatval($total->getGrandTotal()) + floatval($extraTax), 4));
+        $total->setBaseGrandTotal(round(floatval($total->getBaseGrandTotal()) + floatval($baseExtraTax), 2));
     }
 }

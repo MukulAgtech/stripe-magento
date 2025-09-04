@@ -2,124 +2,121 @@
 
 namespace StripeIntegration\Payments\Controller\Payment;
 
-use Magento\Framework\Exception\LocalizedException;
-use StripeIntegration\Payments\Helper\Logger;
+use Magento\Framework\App\ActionInterface;
+use Magento\Framework\App\RequestInterface;
+use Magento\Framework\Controller\ResultFactory;
+use Magento\Framework\Message\ManagerInterface;
 
-class Index extends \Magento\Framework\App\Action\Action
+class Index implements ActionInterface
 {
-    /**
-     * @var \Magento\Framework\View\Result\PageFactory
-     */
-    protected $resultPageFactory;
+    private $checkoutSession;
+    private $orderFactory;
+    private $helper;
+    private $paymentIntentHelper;
+    private $checkoutSessionFactory;
+    private $config;
+    private $paymentElement;
+    private $request;
+    private $resultFactory;
+    private $messageManager;
+    private $quoteHelper;
+    private $orderHelper;
 
-    /**
-     * @var \Magento\Checkout\Helper\Data
-     */
-    protected $checkoutHelper;
-
-    /**
-     * @var \Magento\Sales\Model\OrderFactory
-     */
-    protected $orderFactory;
-
-    /**
-     * @var \StripeIntegration\Payments\Helper\Generic
-     */
-    protected $helper;
-
-    /**
-     * @var \Magento\Sales\Model\Service\InvoiceService
-     */
-    protected $invoiceService;
-
-    /**
-     * @var \Magento\Framework\DB\Transaction
-     */
-    protected $dbTransaction;
-
-    /**
-     * Payment constructor.
-     *
-     * @param \Magento\Framework\App\Action\Context       $context
-     * @param \Magento\Framework\View\Result\PageFactory  $resultPageFactory
-     * @param \Magento\Checkout\Helper\Data               $checkoutHelper
-     * @param \Magento\Sales\Model\OrderFactory           $orderFactory
-     * @param \StripeIntegration\Payments\Helper\Generic    $helper
-     * @param \Magento\Sales\Model\Service\InvoiceService $invoiceService
-     * @param \Magento\Framework\DB\Transaction           $dbTransaction
-     */
     public function __construct(
-        \Magento\Framework\App\Action\Context $context,
-        \Magento\Framework\View\Result\PageFactory $resultPageFactory,
-        \Magento\Checkout\Helper\Data $checkoutHelper,
+        \Magento\Checkout\Model\Session $checkoutSession,
         \Magento\Sales\Model\OrderFactory $orderFactory,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSession,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
         \StripeIntegration\Payments\Model\CheckoutSessionFactory $checkoutSessionFactory,
         \StripeIntegration\Payments\Model\Config $config,
-        \Magento\Sales\Model\Service\InvoiceService $invoiceService,
-        \Magento\Framework\DB\Transaction $dbTransaction
+        \StripeIntegration\Payments\Model\PaymentElement $paymentElement,
+        RequestInterface $request,
+        ResultFactory $resultFactory,
+        ManagerInterface $messageManager
     )
     {
-        $this->resultPageFactory = $resultPageFactory;
-        parent::__construct($context);
-
-        $this->checkoutHelper = $checkoutHelper;
+        $this->checkoutSession = $checkoutSession;
         $this->orderFactory = $orderFactory;
 
         $this->helper = $helper;
-        $this->checkoutSession = $checkoutSession;
+        $this->quoteHelper = $quoteHelper;
+        $this->orderHelper = $orderHelper;
+        $this->paymentIntentHelper = $paymentIntentHelper;
         $this->checkoutSessionFactory = $checkoutSessionFactory;
         $this->config = $config;
-        $this->invoiceService = $invoiceService;
-        $this->dbTransaction = $dbTransaction;
+        $this->paymentElement = $paymentElement;
+        $this->resultFactory = $resultFactory;
+        $this->request = $request;
+        $this->messageManager = $messageManager;
     }
 
     public function execute()
     {
-        $paymentMethodType = $this->getRequest()->getParam('payment_method');
-        $this->session = $this->checkoutHelper->getCheckout();
+        $paymentMethodType = $this->request->getParam('payment_method');
 
-        switch ($paymentMethodType) {
-            case 'stripe_checkout':
-                $this->returnFromCheckoutAPI();
-                break;
-            case 'fpx':
-            case 'paypal':
-                $this->returnFromPaymentMethodsAPI();
-                break;
-            default:
-                $this->returnFromSourcesAPI();
-                break;
-        }
+        if ($paymentMethodType == 'stripe_checkout')
+            return $this->returnFromStripeCheckout();
+        else
+            return $this->returnFromPaymentElement();
     }
 
     private function error($message, $order = null)
     {
+        $this->checkoutSession->restoreQuote();
+
         if ($order)
         {
+            $this->checkoutSession->setLastRealOrderId($order->getIncrementId());
             $order->addStatusHistoryComment($message);
-            $order->save();
+            $this->helper->cancelOrCloseOrder($order, true, true);
+            $this->orderHelper->saveOrder($order);
         }
-        $this->session->restoreQuote();
-        $this->messageManager->addError($message);
-        $this->_redirect('checkout/cart');
+
+        $this->messageManager->addErrorMessage($message);
+        return $this->redirect('checkout/cart');
     }
 
-    private function hasCustomerReturnedWithoutPaying($session)
+    private function returnFromPaymentElement()
     {
-        if ($session->payment_status == "unpaid" && empty($session->payment_intent) && empty($session->subscription))
-            return true;
+        $paymentIntentId = $this->request->getParam('payment_intent');
 
-        if (isset($session->payment_intent->status) && $session->payment_intent->status == "requires_payment_method" && empty($session->payment_intent->last_payment_error->message))
-            return true;
+        if (empty($paymentIntentId))
+        {
+            // The customer was redirected here right from the checkout page, rather than an external URL.
+            // This can happen when 3DS was performed on the checkout page, and the redirect is necessary to de-activate the quote.
+            return $this->success();
+        }
 
-        return false;
+        $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId, []);
+
+        $this->paymentElement->load($paymentIntentId, 'payment_intent_id');
+        $orderIncrementId = $this->paymentElement->getOrderIncrementId();
+
+        // This should also never happen, but we are gracefully handling the case if it does.
+        if (empty($orderIncrementId))
+            return $this->success();
+
+        $order = $this->orderFactory->create()->loadByIncrementId($orderIncrementId);
+        if (!$order->getId())
+            return $this->error(__("Your order #%1 could not be placed. Please contact us for assistance.", $orderIncrementId));
+
+        if ($this->paymentIntentHelper->isSuccessful($paymentIntent) ||
+            $this->paymentIntentHelper->requiresOfflineAction($paymentIntent) ||
+            $this->paymentIntentHelper->isAsyncProcessing($paymentIntent))
+        {
+            return $this->success($order);
+        }
+        else
+        {
+            return $this->error(__('Payment failed. Please try placing the order again.'), $order);
+        }
     }
 
-    private function returnFromCheckoutAPI()
+    private function returnFromStripeCheckout()
     {
-        $sessionId = $this->session->getStripePaymentsCheckoutSessionId();
+        $sessionId = $this->checkoutSession->getStripePaymentsCheckoutSessionId();
         if (empty($sessionId))
             return $this->error(__("Your order was placed successfully, but your browser session has expired. Please check your email for an order confirmation."));
 
@@ -132,20 +129,19 @@ class Index extends \Magento\Framework\App\Action\Action
         if (!$order->getId())
             return $this->error(__("Your order #%1 could not be placed. Please contact us for assistance.", $incrementId));
 
-        $method = $order->getPayment()->getMethodInstance();
-
         // Retrieve payment intent
         try
         {
+            /** @var \Stripe\Checkout\Session $session */
             $session = $this->config->getStripeClient()->checkout->sessions->retrieve($sessionId, ['expand' => ['payment_intent', 'subscription.latest_invoice']]);
 
             if (empty($session->id))
                 return $this->error(__('The checkout session for order #%1 could not be retrieved from Stripe', $incrementId), $order);
 
-            if ($session->payment_status == "paid")
+            if ($session->status == "complete")
             {
                 // Paid subscriptions and normal orders
-                return $this->success($session, $order);
+                return $this->stripeCheckoutSuccess($session, $order);
             }
             else if (!empty($session->payment_intent))
             {
@@ -154,7 +150,7 @@ class Index extends \Magento\Framework\App\Action\Action
                     case 'succeeded':
                     case 'processing':
                     case 'requires_capture': // Authorize Only mode
-                        return $this->success($session, $order);
+                        return $this->stripeCheckoutSuccess($session, $order);
                     default:
                         break;
                 }
@@ -174,155 +170,55 @@ class Index extends \Magento\Framework\App\Action\Action
         }
     }
 
-    protected function success($session, $order)
+    protected function stripeCheckoutSuccess($session, $order)
     {
         if (!empty($session->subscription->latest_invoice->payment_intent))
         {
             $this->config->getStripeClient()->paymentIntents->update($session->subscription->latest_invoice->payment_intent,
-              ['description' => $this->helper->getOrderDescription($order)]
+              ['description' => $this->orderHelper->getOrderDescription($order)]
             );
         }
-        $this->checkoutHelper->getCheckout()->getQuote()->setIsActive(false)->save();
-        return $this->_redirect('checkout/onepage/success');
+
+        return $this->success($order);
     }
 
-    private function returnFromPaymentMethodsAPI()
+    protected function success($order = null)
     {
-        $paymentIntentId = $this->getRequest()->getParam('payment_intent');
-        $clientSecret = $this->getRequest()->getParam('payment_intent_client_secret');
+        $quote = $this->checkoutSession->getQuote();
 
-        if (empty($paymentIntentId) || empty($clientSecret)) {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Something has gone wrong with your payment. Please contact us.'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        // Security, the error message is a bit confusing on purpose
-        if ($clientSecret !== $this->session->getStripePaymentsClientSecret()) {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Your session has expired.'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        // Load Order
-        $incrementId = $this->session->getLastRealOrderId();
-        $order = $this->orderFactory->create()->loadByIncrementId($incrementId);
-        if (!$order->getId()) {
-            $this->checkoutHelper->getCheckout()->restoreQuote();
-            $this->messageManager->addError(__('No order for processing found'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        /** @var \Magento\Payment\Model\Method\AbstractMethod $method */
-        $method = $order->getPayment()->getMethodInstance();
-
-        // Retrieve source
-        try
+        if ($quote && $quote->getId())
         {
-            $paymentIntent = \Stripe\PaymentIntent::retrieve($paymentIntentId);
-            if (!$paymentIntent || !isset($paymentIntent->id))
-                throw new LocalizedException(__('The payment intent with ID %1 could not be retrieved from Stripe', $sourceId));
-        }
-        catch (\Exception $e)
-        {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Could not retrieve payment details. Please contact us.'));
-            $this->_redirect('checkout/cart');
-            return;
+            $quote->setIsActive(false);
+            $this->quoteHelper->saveQuote($quote);
         }
 
-        // Finish payment by status
-        switch ($paymentIntent->status) {
-            case 'succeeded':
-            case 'processing':
-            case 'requires_capture':
-                // Redirect to Success page
-                $this->checkoutHelper->getCheckout()->getQuote()->setIsActive(false)->save();
-                $this->_redirect('checkout/onepage/success');
-                break;
-            default:
-                $order->addStatusHistoryComment("Authorization failed.");
-                $this->helper->cancelOrCloseOrder($order);
-                $this->session->restoreQuote();
-                $this->messageManager->addError(__('Payment failed.'));
-                $this->_redirect('checkout/cart');
-                break;
+        if (!$this->checkoutSession->getLastRealOrderId() && $order)
+            $this->checkoutSession->setLastRealOrderId($order->getIncrementId());
+
+        $checkoutSession = $this->helper->getCheckoutSession();
+        $subscriptionReactivateDetails = $checkoutSession->getSubscriptionReactivateDetails();
+        $redirectUrl = '';
+
+        if ($subscriptionReactivateDetails) {
+            if (isset($subscriptionReactivateDetails['success_url'])
+                && $subscriptionReactivateDetails['success_url']) {
+                $redirectUrl = $subscriptionReactivateDetails['success_url'];
+            }
+            $checkoutSession->setSubscriptionReactivateDetails([]);
         }
+
+        if ($redirectUrl) {
+            return $this->redirect($redirectUrl);
+        }
+
+        return $this->redirect('checkout/onepage/success');
     }
 
-    private function returnFromSourcesAPI()
+    public function redirect($url, array $params = [])
     {
-        $this->session = $this->checkoutHelper->getCheckout();
-        $sourceId = $this->getRequest()->getParam('source');
-        $clientSecret = $this->getRequest()->getParam('client_secret');
+        $redirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+        $redirect->setPath($url, $params);
 
-        if (empty($sourceId) || empty($clientSecret)) {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Something has gone wrong with your payment. Please contact us.'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        // Security, the error message is a bit confusing on purpose
-        if ($clientSecret !== $this->session->getStripePaymentsClientSecret()) {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Your session has expired.'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        // Load Order
-        $incrementId = $this->session->getLastRealOrderId();
-        $order = $this->orderFactory->create()->loadByIncrementId($incrementId);
-        if (!$order->getId()) {
-            $this->checkoutHelper->getCheckout()->restoreQuote();
-            $this->messageManager->addError(__('No order for processing found'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        /** @var \Magento\Payment\Model\Method\AbstractMethod $method */
-        $method = $order->getPayment()->getMethodInstance();
-
-        // Retrieve source
-        try
-        {
-            $source = \Stripe\Source::retrieve($sourceId);
-            if (!$source || !isset($source->id))
-                throw new LocalizedException(__('The source with ID %1 could not be retrieved from Stripe', $sourceId));
-        }
-        catch (\Exception $e)
-        {
-            $this->session->restoreQuote();
-            $this->messageManager->addError(__('Could not retrieve payment details. Please contact us.'));
-            $this->_redirect('checkout/cart');
-            return;
-        }
-
-        // Finish payment by status
-        switch ($source->status) {
-            case 'chargeable':
-            case 'pending':
-            case 'consumed':
-                // Redirect to Success page
-                $this->checkoutHelper->getCheckout()->getQuote()->setIsActive(false)->save();
-                $this->_redirect('checkout/onepage/success');
-                break;
-            case 'failed':
-            case 'canceled':
-                $order->addStatusHistoryComment("Authorization failed.");
-                $this->helper->cancelOrCloseOrder($order);
-                $this->session->restoreQuote();
-                $this->messageManager->addError(__('Payment failed.'));
-                $this->_redirect('checkout/cart');
-                break;
-            default:
-                $this->session->restoreQuote();
-                $this->messageManager->addError(__('The payment was not authorized.'));
-                $this->_redirect('checkout/cart');
-        }
+        return $redirect;
     }
 }

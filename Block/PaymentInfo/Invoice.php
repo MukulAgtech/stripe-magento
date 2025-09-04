@@ -2,62 +2,53 @@
 
 namespace StripeIntegration\Payments\Block\PaymentInfo;
 
-use Magento\Framework\Phrase;
 use Magento\Payment\Block\ConfigurableInfo;
-use StripeIntegration\Payments\Gateway\Response\FraudHandler;
-use StripeIntegration\Payments\Helper\Logger;
 
 class Invoice extends ConfigurableInfo
 {
-    protected $_template = 'paymentInfo/invoice.phtml';
-    protected $_invoice = null;
-    protected $_customerUrl = null;
+    private $invoice = null;
+    private $invoiceFactory;
+    private $helper;
+    private $paymentsConfig;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
         \Magento\Payment\Gateway\ConfigInterface $config,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\Config $paymentsConfig,
         \StripeIntegration\Payments\Model\Stripe\InvoiceFactory $invoiceFactory,
-        \StripeIntegration\Payments\Model\Stripe\CustomerFactory $customerFactory,
-        \StripeIntegration\Payments\Helper\Api $api,
-        \Magento\Directory\Model\Country $country,
-        \Magento\Payment\Model\Info $info,
-        \Magento\Framework\Registry $registry,
+        \StripeIntegration\Payments\Model\Config $paymentsConfig,
         array $data = []
     ) {
         parent::__construct($context, $config, $data);
 
         $this->helper = $helper;
-        $this->paymentsConfig = $paymentsConfig;
         $this->invoiceFactory = $invoiceFactory;
-        $this->api = $api;
-
-        $this->country = $country;
-        $this->info = $info;
-        $this->registry = $registry;
-        $this->customerFactory = $customerFactory;
+        $this->paymentsConfig = $paymentsConfig;
     }
 
     public function getInvoice()
     {
-        if ($this->_invoice)
-            return $this->_invoice;
+        if ($this->invoice)
+            return $this->invoice;
 
         $info = $this->getInfo();
         $invoiceId = $info->getAdditionalInformation('invoice_id');
         $invoice = $this->invoiceFactory->create()->load($invoiceId);
-        return $this->_invoice = $invoice;
+        return $this->invoice = $invoice;
     }
 
     public function getCustomerUrl()
     {
-        if ($this->_customerUrl)
-            return $this->_customerUrl;
+        $stripeInvoiceModel = $this->getInvoice();
+        return $this->helper->getStripeUrl($stripeInvoiceModel->getStripeObject()->livemode, 'customers', $stripeInvoiceModel->getStripeObject()->customer);
+    }
 
-        $invoice = $this->getInvoice();
-        $url = $this->helper->getStripeUrl($invoice->getStripeObject()->livemode, 'customers', $invoice->getStripeObject()->customer);
-        return $this->_customerUrl = $url;
+    public function getTemplate()
+    {
+        if (!$this->paymentsConfig->getStripeClient())
+            return null;
+
+        return 'paymentInfo/invoice.phtml';
     }
 
     public function getDateDue()

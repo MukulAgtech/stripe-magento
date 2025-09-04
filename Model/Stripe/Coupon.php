@@ -2,32 +2,48 @@
 
 namespace StripeIntegration\Payments\Model\Stripe;
 
-class Coupon extends StripeObject
-{
-    protected $objectSpace = 'coupons';
-    public $rule = null;
-    public $coupon = null;
+use Magento\Framework\Exception\LocalizedException;
 
-    public function fromOrder($order)
+class Coupon
+{
+    use StripeObjectTrait;
+
+    private $objectSpace = 'coupons';
+    public $rule = null;
+    private $helper;
+
+    public function __construct(
+        \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
+        \StripeIntegration\Payments\Helper\Generic $helper
+    )
     {
-        $currency = $order->getOrderCurrencyCode();
-        $amount = abs($order->getDiscountAmount());
-        $data = $this->getCouponParams($amount, $currency, $order);
+        $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
+        $this->setData($stripeObjectService);
+
+        $this->helper = $helper;
+    }
+
+    public function fromSubscriptionProfile($profile)
+    {
+        $currency = $profile['currency'];
+        $amount = $profile['discount_amount_magento'];
+        $data = $this->getCouponParams($amount, $currency, $profile['expiring_coupon']['rule_id'], true);
 
         if (!$data)
             return $this;
 
         $this->getObject($data['id']);
 
-        if (!$this->object)
+        if (!$this->getStripeObject())
             $this->createObject($data);
 
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The discount for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $this->lastError));
+        if (!$this->getStripeObject())
+            throw new \Magento\Framework\Exception\LocalizedException(
+                __("The discount could not be created in Stripe: %1", $this->getLastError())
+            );
 
         return $this;
     }
-
     public function fromGiftCards($order)
     {
         $currency = $order->getOrderCurrencyCode();
@@ -52,30 +68,14 @@ class Coupon extends StripeObject
             'name' => $name
         ];
 
-        $this->createObject($params);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The gift cards for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $this->lastError));
-
-        return $this;
-    }
-
-    public function fromOrderItem($order, $orderItem)
-    {
-        $currency = $order->getOrderCurrencyCode();
-        $amount = abs($orderItem->getDiscountAmount());
-        $data = $this->getCouponParams($amount, $currency, $order);
-
-        if (!$data)
-            return $this;
-
-        $this->getObject($data['id']);
-
-        if (!$this->object)
-            $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The discount for %1 could not be created in Stripe: %2", $orderItem->getName(), $this->lastError));
+        try
+        {
+            $this->createObject($params);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The gift cards for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $e->getMessage()));
+        }
 
         return $this;
     }
@@ -102,51 +102,35 @@ class Coupon extends StripeObject
         return ['duration' => $duration];
     }
 
-    public function getCouponParams($amount, $currency, $order)
+    private function getCouponParams($amount, $currency, $ruleId, $hasSubscriptions)
     {
-        $couponCode = $order->getCouponCode();
-
-        if (empty($amount) || empty($couponCode))
+        if (empty($amount) || empty($ruleId))
             return null;
 
-        $this->coupon = $coupon = $this->helper->loadCouponByCouponCode($couponCode);
-        if (!$coupon->getRuleId())
-            return null;
-
-        $this->rule = $rule = $this->helper->loadRuleByRuleId($coupon->getRuleId());
+        $this->rule = $rule = $this->helper->loadRuleByRuleId($ruleId);
         $action = $rule->getSimpleAction();
         if (empty($action))
             return null;
 
-        if (!$this->helper->hasSubscriptionsIn($order->getAllItems()))
+        if (!$hasSubscriptions)
             $action = "by_fixed";
 
-        switch ($action)
+        $discountType = "amount_off";
+        $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($amount, $currency);
+        $couponId = ((string)$stripeAmount) . strtoupper($currency);
+        $name = $this->helper->addCurrencySymbol($amount, $currency) . " Discount";
+
+        $expirationParams = $this->getCouponExpirationParams($ruleId);
+
+        switch ($expirationParams['duration'])
         {
-            case 'by_percent':
-                $discountType = "percent_off";
-                $stripeAmount = (float)$rule->getDiscountAmount();
-                $couponId = ((string)$stripeAmount) . "percent";
-                $name = $stripeAmount . "% Discount";
+            case 'repeating':
+                $couponId .= "-months-" . $expirationParams['duration_in_months'];
                 break;
-            case 'by_fixed':
-                $discountType = "amount_off";
-                $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($amount, $currency);
-                $couponId = ((string)$stripeAmount) . strtoupper($currency);
-                $name = $this->helper->addCurrencySymbol($amount, $currency) . " Discount";
+            case 'once':
+                $couponId .= "-once";
                 break;
-            case 'cart_fixed':
-            case 'buy_x_get_y':
-            default:
-                throw new LocalizedException(__("This discount coupon cannot be applied on this order. Please remove the coupon and try again (err: 0)"));
         }
-
-        $expirationParams = $this->getCouponExpirationParams($coupon->getRuleId());
-        if ($expirationParams['duration'] != 'forever')
-            $couponId .= "-" . $expirationParams['duration'];
-
-        if (isset($expirationParams['duration_in_months']))
-            $couponId .= "-" . $expirationParams['duration_in_months'];
 
         $params = [
             'id' => $couponId,

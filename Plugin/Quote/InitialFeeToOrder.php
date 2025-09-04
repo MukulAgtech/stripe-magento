@@ -18,12 +18,12 @@ class InitialFeeToOrder
         $this->extensionManagement = $extensionManagement;
     }
 
-    public function aroundConvert(
+    public function afterConvert(
         QuoteAddressToOrder $subject,
-        \Closure $proceed,
+        OrderInterface $result,
         QuoteAddress $quoteAddress,
-        array $data = []
+        $data = []
     ) {
-        return $this->extensionManagement->setFromAddressData($proceed($quoteAddress, $data), $quoteAddress);
+        return $this->extensionManagement->setFromAddressData($result, $quoteAddress);
     }
 }

@@ -6,10 +6,13 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
 {
     public $configurations = null;
     public $displayedText = null;
+    private $config;
+    private $webhooksCollection;
+    private $storeManager;
+    private $request;
+    private $urlBuilder;
 
     public function __construct(
-        \StripeIntegration\Payments\Logger\Handler $logHandler,
-        \StripeIntegration\Payments\Model\Webhook $webhookModel,
         \StripeIntegration\Payments\Model\ResourceModel\Webhook\Collection $webhooksCollection,
         \StripeIntegration\Payments\Helper\WebhooksSetup $webhooksSetup,
         \Magento\Store\Model\StoreManagerInterface $storeManager,
@@ -33,14 +36,11 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
             $this->displayedText = "Stripe Payments v$version now depends on Stripe PHP library v$libVersion. You currently have v$currentVersion installed. Please upgrade your installed Stripe PHP library with the command: composer require stripe/stripe-php:^$libVersion";
             return;
         }
-
-        $this->logHandler = $logHandler;
-        $this->webhookModel = $webhookModel;
         $this->webhooksCollection = $webhooksCollection;
         $this->storeManager = $storeManager;
 
         $stores = $this->storeManager->getStores();
-        $configurations = array();
+        $configurations = [];
 
         foreach ($stores as $storeId => $store)
         {
@@ -51,20 +51,20 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
                 $configurations[] = $webhooksSetup->getStoreViewAPIKey($store, $mode);
         }
 
-        $allWebhooks = $this->webhooksCollection->getAllWebhooks();
+        $allWebhooks = $this->webhooksCollection->getAllWebhooks(true);
+
+        $instructions = "You can configure webhooks manually with the following command: <code style=\"margin-left: 5px; color: brown\">bin/magento stripe:webhooks:configure</code>";
 
         if ($allWebhooks->count() == 0)
         {
-            $this->displayedText = "An initial configuration of Stripe Webhooks is necessary from Stores &rarr; Configuration &rarr; Sales &rarr; Payment Methods &rarr; Stripe &rarr; Basic Settings &rarr; Webhooks.";
+            $this->displayedText = "Stripe webhooks could not be configured automatically. $instructions";
 
             return;
         }
 
         $activePublishableKeys = [];
-        $duplicateWebhookPublishableKeys = [];
         $staleWebhookPublishableKeys = [];
         $inactiveStores = [];
-        $duplicateWebhookStores = [];
         $staleWebhookStores = [];
 
         // Figure out active, duplicate and stale webhooks
@@ -78,17 +78,14 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
             if ($webhook->getActive() > 0 || ($webhook->getActive() == 0 && $wasJustCreated))
                 $activePublishableKeys[$key] = $key;
 
-            if ($webhook->getActive() > 1)
-                $duplicateWebhookPublishableKeys[$key] = $key;
-
-            $sixHours = 6 * 60 * 60;
-            if ($webhook->getActive() > 0 && $inactivityPeriod > $sixHours && !$wasJustCreated)
+            $tenHours = 10 * 60 * 60;
+            if ($webhook->getActive() > 0 && $inactivityPeriod > $tenHours && !$wasJustCreated)
                 $staleWebhookPublishableKeys[$key] = $key;
 
             if ($webhook->getConfigVersion() < \StripeIntegration\Payments\Helper\WebhooksSetup::VERSION)
             {
                 $version = \StripeIntegration\Payments\Model\Config::$moduleVersion;
-                $this->displayedText = "Stripe Payments v$version has added new webhook events or is using a newer webhooks API. Please reconfigure webhooks from Stores &rarr; Configuration &rarr; Sales &rarr; Payment Methods &rarr; Stripe &rarr; Basic Settings &rarr; Webhooks.";
+                $this->displayedText = "Stripe Payments v$version has added new webhook events or is using a newer webhooks API. $instructions";
 
                 return;
             }
@@ -101,9 +98,6 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
 
             if (!in_array($configuration['api_keys']['pk'], $activePublishableKeys))
                 $inactiveStores[] = $configuration;
-
-            if (in_array($configuration['api_keys']['pk'], $duplicateWebhookPublishableKeys))
-                $duplicateWebhookStores[] = $configuration;
 
             if (in_array($configuration['api_keys']['pk'], $staleWebhookPublishableKeys))
                 $staleWebhookStores[] = $configuration;
@@ -119,22 +113,7 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
 
             $storeNamesText = implode(", ", $storeNames);
 
-            $this->displayedText = "Stripe Webhooks have not yet been configured for: $storeNamesText - You can configure them from Stores &rarr; Configuration &rarr; Sales &rarr; Payment Methods &rarr; Stripe &rarr; Basic Settings &rarr; Webhooks.";
-
-            return;
-        }
-
-        if (!empty($duplicateWebhookStores))
-        {
-            $storeNames = [];
-
-            foreach ($duplicateWebhookStores as $store) {
-                $storeNames[] = $store['label'] . " (" . $store['mode_label'] . ")";
-            }
-
-            $storeNamesText = implode(", ", $storeNames);
-
-            $this->displayedText = "Duplicate webhooks configuration detected for: $storeNamesText - Please ensure that you only have a single webhook configured per Stripe account.";
+            $this->displayedText = "Stripe webhooks could not be configured automatically for: $storeNamesText - $instructions";
 
             return;
         }
@@ -153,82 +132,11 @@ class WebhooksUnconfigured implements \Magento\Framework\Notification\MessageInt
 
             return;
         }
-
-        if ($this->showDeprecatedPaymentMethodsWarning())
-            return;
-    }
-
-    public function showDeprecatedPaymentMethodsWarning()
-    {
-        $stores = $this->storeManager->getStores();
-        $configurations = array();
-
-        // multibanco, oxxo, msi, ach are not yet supported by Checkout
-        $APMs = [
-            "bancontact" => "Bancontact",
-            "eps" => "EPS (Electronic Payment Standard)",
-            "fpx" => "FPX",
-            "giropay" => "Giropay",
-            "ideal" => "iDEAL",
-            "klarna" => "Klarna",
-            // "multibanco" => "Multibanco",
-            // "oxxo" => "OXXO",
-            "p24" => "P24 (Przelewy24)",
-            "paypal" => "PayPal",
-            "sofort" => "SOFORT",
-            // "ach" => "ACH",
-            "sepa" => "SEPA Direct Debit",
-            "sepa_credit" => "SEPA Credit Transfers",
-            "alipay" => "Alipay",
-            "wechat" => "WeChat Pay"
-        ];
-
-        $enabledAPMs = [];
-        foreach ($stores as $storeId => $store)
-        {
-            if (!$this->config->isRedirectPaymentFlow($storeId))
-            {
-                foreach ($APMs as $APM => $apmName)
-                {
-                    $active = $this->config->getConfigData("active", $APM, $storeId);
-                    if ($active)
-                        $enabledAPMs[$APM] = $apmName;
-                }
-            }
-        }
-
-        if (count($enabledAPMs) > 0)
-        {
-            $one = (count($enabledAPMs) === 1);
-            $whichAPMs = implode(", ", $enabledAPMs);
-            $whichAPMs = $this->replaceLastOccuranceOf(", ", " and ", $whichAPMs);
-            $this->displayedText = __("%1 %2 been deprecated and will be removed in future versions of the Stripe module. To continue using %3, you must switch to the redirect-based payment flow from Stores &rarr; Configuration &rarr; Sales &rarr; Payment Methods &rarr; Stripe &rarr; Payments &rarr; Payment flow.",
-                $whichAPMs,
-                ($one ? "has" : "have"),
-                ($one ? "it" : "them")
-            );
-
-            return true;
-        }
-
-        return false;
     }
 
     public function getUrl($path)
     {
         return $this->urlBuilder->getUrl($path, ['_secure' => $this->request->isSecure()]);
-    }
-
-    public function replaceLastOccuranceOf($search, $replace, $subject)
-    {
-        $pos = strrpos($subject, $search);
-
-        if($pos !== false)
-        {
-            $subject = substr_replace($subject, $replace, $pos, strlen($search));
-        }
-
-        return $subject;
     }
 
     public function getIdentity()

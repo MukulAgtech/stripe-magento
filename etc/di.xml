@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
-    <!-- Plugin for PaymentInformationManagement -->
-    <type name="Magento\Checkout\Model\PaymentInformationManagement">
-        <plugin name="stripe_payments_paymentinformation" type="StripeIntegration\Payments\Plugin\PaymentInformationManagement" sortOrder="30" />
-    </type>
-    <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
-        <plugin name="stripe_payments_paymentinformationguest" type="StripeIntegration\Payments\Plugin\GuestPaymentInformationManagement" sortOrder="30" />
+    <!-- Extension Attributes -->
+    <preference for="StripeIntegration\Payments\Api\Data\CouponInterface" type="StripeIntegration\Payments\Model\Coupon" />
+    <preference for="StripeIntegration\Payments\Api\Data\SubscriptionOptionsInterface" type="StripeIntegration\Payments\Model\SubscriptionOptions" />
+
+    <type name="Magento\SalesRule\Model\Rule\DataProvider">
+        <plugin name="StripeIntegration_Payments::Form_Data_Provider" type="StripeIntegration\Payments\Plugin\SalesRule\Model\DataProviderPlugin"/>
     </type>
 
     <!-- Payment Method Facade configuration -->
@@ -16,13 +16,8 @@
             <argument name="valueHandlerPool" xsi:type="object">StripePaymentsValueHandlerPool</argument>
             <argument name="paymentDataObjectFactory" xsi:type="object">Magento\Payment\Gateway\Data\PaymentDataObjectFactory</argument>
             <argument name="code" xsi:type="string">stripe_payments</argument>
-            <argument name="formBlockType" xsi:type="string">StripeIntegration\Payments\Block\Form</argument>
-            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\Info</argument>
-            <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
-            <argument name="checkoutMethod" xsi:type="object">StripeIntegration\Payments\Model\Method\Checkout</argument>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="api" xsi:type="object">StripeIntegration\Payments\Helper\Api</argument>
-            <argument name="paymentIntent" xsi:type="object">StripeIntegration\Payments\Model\PaymentIntent</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
+            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\Element</argument>
             <argument name="checkoutHelper" xsi:type="object">\Magento\Checkout\Helper\Data</argument>
             <argument name="cache" xsi:type="object">\Magento\Framework\App\CacheInterface</argument>
             <argument name="logger" xsi:type="object">Psr\Log\LoggerInterface</argument>
@@ -38,13 +33,6 @@
             <argument name="code" xsi:type="string">stripe_payments_invoice</argument>
             <argument name="formBlockType" xsi:type="string">StripeIntegration\Payments\Block\Method\Invoice</argument>
             <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\Invoice</argument>
-            <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="productFactory" xsi:type="object">StripeIntegration\Payments\Model\Stripe\ProductFactory</argument>
-            <argument name="priceFactory" xsi:type="object">StripeIntegration\Payments\Model\Stripe\PriceFactory</argument>
-            <argument name="couponFactory" xsi:type="object">StripeIntegration\Payments\Model\Stripe\CouponFactory</argument>
-            <argument name="invoiceItemFactory" xsi:type="object">StripeIntegration\Payments\Model\Stripe\InvoiceItemFactory</argument>
-            <argument name="invoiceFactory" xsi:type="object">StripeIntegration\Payments\Model\Stripe\InvoiceFactory</argument>
             <argument name="cache" xsi:type="object">\Magento\Framework\App\CacheInterface</argument>
             <!-- <argument name="commandPool" xsi:type="object">\Magento\Payment\Gateway\Command\CommandPoolInterface</argument> -->
             <argument name="validatorPool" xsi:type="object">StripePaymentsValidatorPool</argument>
@@ -54,7 +42,7 @@
     <virtualType name="StripeSubscriptionsFacade" type="StripeIntegration\Payments\Model\Method\Subscriptions">
         <arguments>
             <argument name="code" xsi:type="string">stripe_payments_subscriptions</argument>
-            <argument name="formBlockType" xsi:type="string">StripeIntegration\Payments\Block\Form</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
             <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\Info</argument>
             <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
             <argument name="logger" xsi:type="object">Psr\Log\LoggerInterface</argument>
@@ -67,8 +55,8 @@
         <arguments>
             <argument name="code" xsi:type="string">stripe_payments_express</argument>
             <argument name="valueHandlerPool" xsi:type="object">StripePaymentsExpressValueHandlerPool</argument>
-            <argument name="formBlockType" xsi:type="string">StripeIntegration\Payments\Block\Form</argument>
-            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\Express</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
+            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\Element</argument>
         </arguments>
     </virtualType>
 
@@ -167,54 +155,11 @@
         </arguments>
     </type>
 
-    <type name="StripeIntegration\Payments\Controller\Customer\Cards">
-        <arguments>
-            <argument name="session" xsi:type="object">Magento\Customer\Model\Session</argument>
-            <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-        </arguments>
-    </type>
-
     <type name="StripeIntegration\Payments\Controller\Customer\Subscriptions">
         <arguments>
             <argument name="session" xsi:type="object">Magento\Customer\Model\Session</argument>
             <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
             <argument name="order" xsi:type="object">Magento\Sales\Model\Order</argument>
-        </arguments>
-    </type>
-
-    <type name="StripeIntegration\Payments\Controller\Webhooks">
-        <arguments>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="invoiceService" xsi:type="object">Magento\Sales\Model\Service\InvoiceService</argument>
-            <argument name="dbTransaction" xsi:type="object">Magento\Framework\DB\Transaction</argument>
-        </arguments>
-    </type>
-
-    <type name="StripeIntegration\Payments\Block\Customer\Cards">
-        <arguments>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="ccBlock" xsi:type="object">Magento\Payment\Block\Form\Cc</argument>
-            <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
-        </arguments>
-    </type>
-
-    <type name="StripeIntegration\Payments\Block\Form">
-        <arguments>
-            <argument name="context" xsi:type="object">Magento\Framework\View\Element\Template\Context</argument>
-            <argument name="paymentConfig" xsi:type="object">Magento\Payment\Model\Config</argument>
-            <argument name="config" xsi:type="object">StripeIntegration\Payments\Model\Config</argument>
-            <argument name="productMetadata" xsi:type="object">Magento\Framework\App\ProductMetadataInterface</argument>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="handlers" xsi:type="array" />
-        </arguments>
-    </type>
-
-    <type name="StripeIntegration\Payments\Block\StripeElements">
-        <arguments>
-            <argument name="context" xsi:type="object">Magento\Framework\View\Element\Template\Context</argument>
-            <argument name="helper" xsi:type="object">StripeIntegration\Payments\Helper\Generic</argument>
-            <argument name="handlers" xsi:type="array" />
         </arguments>
     </type>
 
@@ -236,18 +181,34 @@
     </type>
 
     <preference for="StripeIntegration\Payments\Api\ServiceInterface" type="StripeIntegration\Payments\Api\Service" />
-    <preference for="Magento\Multishipping\Controller\Checkout\OverviewPost" type="StripeIntegration\Payments\Controller\Multishipping\OverviewPost" />
 
     <!-- Console Commands -->
     <type name="Magento\Framework\Console\CommandList">
         <arguments>
             <argument name="commands" xsi:type="array">
-                <item name="MigrateOrders" xsi:type="object">StripeIntegration\Payments\Setup\Migrate\MigrateOrdersCommand</item>
-                <item name="MigrateAttributes" xsi:type="object">StripeIntegration\Payments\Setup\Migrate\AttributesCommand</item>
-                <item name="MigrateProductsConfiguration" xsi:type="object">StripeIntegration\Payments\Setup\Migrate\ProductConfigurationCommand</item>
-                <item name="MigrateStripeSubscriptions" xsi:type="object">StripeIntegration\Payments\Setup\Migrate\StripeSubscriptionsCommand</item>
-                <item name="MigrateSubscriptionPrice" xsi:type="object">StripeIntegration\Payments\Setup\Migrate\SubscriptionPriceCommand</item>
-                <item name="WebhookPingCleanup" xsi:type="object">StripeIntegration\Payments\Setup\Jobs\WebhookPingCleanupCommand</item>
+                <!-- Orders -->
+                <item name="OrdersMigratePaymentMethod" xsi:type="object">StripeIntegration\Payments\Commands\Orders\MigratePaymentMethodCommand</item>
+
+                <!-- Subscriptions -->
+                <item name="SubscriptionsMigrateSubscriptionPrice" xsi:type="object">StripeIntegration\Payments\Commands\Subscriptions\MigrateSubscriptionPriceCommand</item>
+                <item name="SubscriptionsCreateFromOrderCommand" xsi:type="object">StripeIntegration\Payments\Commands\Subscriptions\CreateFromOrderCommand</item>
+
+                <!-- Webhooks -->
+                <item name="WebhooksAutomaticConfiguration" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\AutomaticConfigurationCommand</item>
+                <item name="WebhooksCleanup" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\CleanupCommand</item>
+                <item name="WebhooksConfigure" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ConfigureCommand</item>
+                <item name="WebhooksOriginCheck" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\OriginCheckCommand</item>
+                <item name="WebhooksProcessEvent" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ProcessEventCommand</item>
+                <item name="WebhooksProcessEventsRange" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ProcessEventsRangeCommand</item>
+                <item name="WebhooksProcessEventsDateRange" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ProcessEventsDateRangeCommand</item>
+
+                <!-- Cron -->
+                <item name="CronCancelAbandonedPayments" xsi:type="object">StripeIntegration\Payments\Commands\Cron\CancelAbandonedPaymentsCommand</item>
+                <item name="CronRetryEvents" xsi:type="object">StripeIntegration\Payments\Commands\Cron\RetryEventsCommand</item>
+                <item name="CleanupDBTables" xsi:type="object">StripeIntegration\Payments\Commands\Cron\CleanupDBTables</item>
+
+                <!-- MFTF seed data -->
+                <item name="MftfConfigureSubscriptionProduct" xsi:type="object">StripeIntegration\Payments\Commands\Mftf\ConfigureSubscriptionProductCommand</item>
             </argument>
         </arguments>
     </type>
@@ -267,6 +228,7 @@
     </type>
     <type name="Magento\Sales\Model\Order">
         <plugin name="setInitialFeeExtensionAfterLoad" type="StripeIntegration\Payments\Plugin\Order\LoadInitialFee" sortOrder="30"/>
+        <plugin name="stripe_magento_sales_model_order" type="StripeIntegration\Payments\Plugin\Sales\Model\Order" sortOrder="30"/>
     </type>
     <type name="Magento\Sales\Model\OrderRepository">
         <plugin name="getInitialFeeExtensionBeforeSave" type="StripeIntegration\Payments\Plugin\Order\SaveInitialFee" sortOrder="30"/>
@@ -288,19 +250,36 @@
                 disabled="false"/>
     </type>
 
-    <!-- CSRF Overwrite -->
-    <type name="Magento\Framework\App\Request\CsrfValidator">
-        <plugin name="stripe_payments_csrf_validator_skip" type="StripeIntegration\Payments\Plugin\CsrfValidatorSkip" sortOrder="30" />
+    <!-- Magento 2.4.6 3D Secure redirect -->
+    <type name="Magento\Webapi\Controller\Rest">
+        <plugin name="stripeWebapiRest" type="StripeIntegration\Payments\Plugin\Webapi\Controller\Rest" sortOrder="30" />
     </type>
 
-    <!-- Multishipping authorization needed redirect -->
-    <type name="Magento\Multishipping\Block\Checkout\Billing">
-        <plugin name="multishippingAuthorizationNeeded" type="StripeIntegration\Payments\Plugin\MultishippingAuthorizationRedirect" sortOrder="5" />
-    </type>
-
-    <!-- Subscriptions tax calculation -->
+    <!-- Subscriptions -->
     <type name="Magento\Tax\Model\Config">
         <plugin name="stripeSubscriptionsTaxCalculation" type="StripeIntegration\Payments\Plugin\Tax\Config" sortOrder="30" />
+    </type>
+    <type name="Magento\Sales\Model\ResourceModel\Collection\ExpiredQuotesCollection">
+        <plugin name="stripeSubscriptionsExpiredQuoted" type="StripeIntegration\Payments\Plugin\Quote\ExpiredQuotesCollection" sortOrder="30" />
+    </type>
+    <type name="Magento\SalesRule\Model\Utility">
+        <plugin name="stripeRuleValidator" type="StripeIntegration\Payments\Plugin\SalesRule\Model\Utility" sortOrder="30" />
+    </type>
+
+    <!-- Set the initial order state -->
+    <type name="Magento\Sales\Model\Order\Payment\State\OrderCommand">
+        <plugin name="stripe_order_payment_order_command" type="StripeIntegration\Payments\Plugin\Sales\Model\Order\Payment\State\OrderCommand" sortOrder="10" />
+    </type>
+    <type name="Magento\Sales\Model\Order\Payment\State\AuthorizeCommand">
+        <plugin name="stripe_order_payment_authorize_command" type="StripeIntegration\Payments\Plugin\Sales\Model\Order\Payment\State\AuthorizeCaptureCommand" sortOrder="10" />
+    </type>
+    <type name="Magento\Sales\Model\Order\Payment\State\CaptureCommand">
+        <plugin name="stripe_order_payment_capture_command" type="StripeIntegration\Payments\Plugin\Sales\Model\Order\Payment\State\AuthorizeCaptureCommand" sortOrder="10" />
+    </type>
+
+    <!-- Pending Payment Order Lifetime -->
+    <type name="Magento\Sales\Model\CronJob\CleanExpiredOrders">
+        <plugin name="stripe_pending_payment_order_lifetime" type="StripeIntegration\Payments\Plugin\Sales\Model\CronJob\CleanExpiredOrders" sortOrder="10" />
     </type>
 
     <type name="Magento\Config\Model\Config\TypePool">
@@ -312,7 +291,184 @@
         </arguments>
     </type>
 
+    <!-- GraphQL -->
     <type name="Magento\QuoteGraphQl\Model\Cart\SetPaymentMethodOnCart">
-        <plugin name="stripe_payments_set_payment_method_on_cart" type="StripeIntegration\Payments\Plugin\Cart\SetPaymentMethodOnCart"/>
+        <plugin name="stripe_payments_set_payment_method_on_cart" type="StripeIntegration\Payments\Plugin\QuoteGraphQl\Model\Cart\SetPaymentMethodOnCart"/>
     </type>
+    <type name="Magento\QuoteGraphQl\Model\Resolver\PlaceOrder">
+        <plugin name="stripe_payments_place_order" type="StripeIntegration\Payments\Plugin\QuoteGraphQl\Model\Resolver\PlaceOrder"/>
+    </type>
+
+    <!-- Multishipping -->
+    <type name="Magento\Multishipping\Model\Checkout\Type\Multishipping">
+        <arguments>
+            <argument name="paymentSpecification" xsi:type="object">multishippingPaymentSpecification</argument>
+        </arguments>
+    </type>
+    <virtualType name="multishippingPaymentSpecification" type="Magento\Payment\Model\Method\Specification\Composite">
+        <arguments>
+            <argument name="specifications" xsi:type="array">
+                <item name="enabled" xsi:type="string">Magento\Multishipping\Model\Payment\Method\Specification\Enabled</item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <type name="Magento\Multishipping\Helper\Data">
+        <plugin name="disableMultishippingSubscriptions" type="StripeIntegration\Payments\Plugin\Multishipping\Helper" sortOrder="7"/>
+    </type>
+
+    <!-- Before add to cart validations -->
+    <type name="Magento\Quote\Model\Quote">
+        <plugin name="stripeBeforeAddToCartValidations" type="StripeIntegration\Payments\Plugin\Cart\BeforeAddToCart" sortOrder="7"/>
+    </type>
+
+    <!-- Handlers -->
+    <type name="Magento\Framework\EntityManager\Operation\ExtensionPool">
+        <arguments>
+            <argument name="extensionActions" xsi:type="array">
+                <item name="Magento\SalesRule\Api\Data\RuleInterface" xsi:type="array">
+                    <item name="create" xsi:type="array">
+                        <item name="create_stripe_rule" xsi:type="string">StripeIntegration\Payments\Model\SalesRule\SaveHandler</item>
+                    </item>
+                    <item name="update" xsi:type="array">
+                        <item name="create_stripe_rule" xsi:type="string">StripeIntegration\Payments\Model\SalesRule\SaveHandler</item>
+                    </item>
+                    <item name="read" xsi:type="array">
+                        <item name="read_stripe_rule" xsi:type="string">StripeIntegration\Payments\Model\SalesRule\ReadHandler</item>
+                    </item>
+                </item>
+                <item name="Magento\Catalog\Api\Data\ProductInterface" xsi:type="array">
+                    <item name="create" xsi:type="array">
+                        <item name="create_subscription_options" xsi:type="string">StripeIntegration\Payments\Model\SubscriptionOptions\SaveHandler</item>
+                    </item>
+                    <item name="update" xsi:type="array">
+                        <item name="update_subscription_options" xsi:type="string">StripeIntegration\Payments\Model\SubscriptionOptions\SaveHandler</item>
+                    </item>
+                    <item name="read" xsi:type="array">
+                        <item name="read_subscription_options" xsi:type="string">StripeIntegration\Payments\Model\SubscriptionOptions\ReadHandler</item>
+                    </item>
+                </item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!-- Used by Stripe Checkout to update the guest customer email if it changes -->
+    <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
+        <plugin name="stripeUpdateGuestCustomerDetails" type="StripeIntegration\Payments\Plugin\Checkout\GuestPaymentInformationManagement" sortOrder="30" />
+    </type>
+
+    <virtualType name="Magento\Sales\Model\ResourceModel\Order\Grid">
+        <arguments>
+            <argument name="columns" xsi:type="array">
+                <item name="stripe_radar_risk_score" xsi:type="string">sales_order.stripe_radar_risk_score</item>
+                <item name="stripe_radar_risk_level" xsi:type="string">sales_order.stripe_radar_risk_level</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Bank transfers -->
+    <virtualType name="StripeBankTransfersFacade" type="StripeIntegration\Payments\Model\Method\BankTransfers">
+        <arguments>
+            <argument name="code" xsi:type="string">stripe_payments_bank_transfers</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
+            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\BankTransfers</argument>
+            <argument name="valueHandlerPool" xsi:type="object">StripeBankTransfersValueHandlerPool</argument>
+            <argument name="validatorPool" xsi:type="object">StripeBankTransfersValidatorPool</argument>
+            <argument name="commandPool" xsi:type="object">StripeBankTransfersCommandPool</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersValueHandlerPool" type="Magento\Payment\Gateway\Config\ValueHandlerPool">
+        <arguments>
+            <argument name="handlers" xsi:type="array">
+                <item name="default" xsi:type="string">StripeBankTransfersConfigValueHandler</item>
+                <!-- <item name="can_void" xsi:type="string">StripeBankTransfersCanVoidValueHandler</item>
+                <item name="can_cancel" xsi:type="string">StripeBankTransfersCanCancelValueHandler</item>
+                <item name="can_refund" xsi:type="string">StripeBankTransfersCanRefundValueHandler</item> -->
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersConfigValueHandler" type="Magento\Payment\Gateway\Config\ConfigValueHandler">
+        <arguments>
+            <argument name="configInterface" xsi:type="object">StripeBankTransfersConfig</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersValidatorPool" type="Magento\Payment\Gateway\Validator\ValidatorPool">
+        <arguments>
+            <argument name="validators" xsi:type="array">
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersConfig" type="Magento\Payment\Gateway\Config\Config">
+        <arguments>
+            <argument name="methodCode" xsi:type="string">stripe_payments_bank_transfers</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersCommandPool" type="Magento\Payment\Gateway\Command\CommandPool">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="order" xsi:type="string">StripeBankTransfersOrderCommand</item>
+                <item name="void" xsi:type="string">StripeBankTransfersCancelCommand</item>
+                <item name="cancel" xsi:type="string">StripeBankTransfersCancelCommand</item>
+                <item name="refund" xsi:type="string">StripeBankTransfersRefundCommand</item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="StripeBankTransfersOrderCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\OrderCommand"></virtualType>
+    <virtualType name="StripeBankTransfersRefundCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\RefundCommand"></virtualType>
+    <virtualType name="StripeBankTransfersCancelCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\CancelCommand"></virtualType>
+
+    <!-- Redirect Flow (Stripe Checkout) -->
+    <virtualType name="RedirectFlowFacade" type="StripeIntegration\Payments\Model\Method\Checkout">
+        <arguments>
+            <argument name="code" xsi:type="string">stripe_payments_checkout</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
+            <argument name="infoBlockType" xsi:type="string">StripeIntegration\Payments\Block\PaymentInfo\Checkout</argument>
+            <argument name="valueHandlerPool" xsi:type="object">RedirectFlowValueHandlerPool</argument>
+            <argument name="validatorPool" xsi:type="object">RedirectFlowValidatorPool</argument>
+            <argument name="commandPool" xsi:type="object">RedirectFlowCommandPool</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowValueHandlerPool" type="Magento\Payment\Gateway\Config\ValueHandlerPool">
+        <arguments>
+            <argument name="handlers" xsi:type="array">
+                <item name="default" xsi:type="string">RedirectFlowConfigValueHandler</item>
+                <item name="can_order" xsi:type="string">StripeIntegration\Payments\Gateway\Config\RedirectFlow\CanOrderValueHandler</item>
+                <item name="can_authorize" xsi:type="string">StripeIntegration\Payments\Gateway\Config\RedirectFlow\CanAuthorizeValueHandler</item>
+                <item name="can_capture" xsi:type="string">StripeIntegration\Payments\Gateway\Config\RedirectFlow\CanCaptureValueHandler</item>
+                <item name="sort_order" xsi:type="string">StripeIntegration\Payments\Gateway\Config\RedirectFlow\SortOrderValueHandler</item>
+                <!-- <item name="can_void" xsi:type="string">RedirectFlowCanVoidValueHandler</item>
+                <item name="can_cancel" xsi:type="string">RedirectFlowCanCancelValueHandler</item>
+                <item name="can_refund" xsi:type="string">RedirectFlowCanRefundValueHandler</item> -->
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowConfigValueHandler" type="Magento\Payment\Gateway\Config\ConfigValueHandler">
+        <arguments>
+            <argument name="configInterface" xsi:type="object">RedirectFlowConfig</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowValidatorPool" type="Magento\Payment\Gateway\Validator\ValidatorPool">
+        <arguments>
+            <argument name="validators" xsi:type="array">
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowConfig" type="Magento\Payment\Gateway\Config\Config">
+        <arguments>
+            <argument name="methodCode" xsi:type="string">stripe_payments_checkout</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowCommandPool" type="Magento\Payment\Gateway\Command\CommandPool">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="order" xsi:type="string">RedirectFlowOrderCommand</item>
+                <item name="void" xsi:type="string">RedirectFlowRefundCommand</item>
+                <item name="cancel" xsi:type="string">RedirectFlowRefundCommand</item>
+                <item name="refund" xsi:type="string">RedirectFlowRefundCommand</item>
+                <item name="capture" xsi:type="string">RedirectFlowCaptureCommand</item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="RedirectFlowOrderCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\OrderCommand"></virtualType>
+    <virtualType name="RedirectFlowRefundCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\RefundCommand"></virtualType>
+    <virtualType name="RedirectFlowCaptureCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\CaptureCommand"></virtualType>
 </config>

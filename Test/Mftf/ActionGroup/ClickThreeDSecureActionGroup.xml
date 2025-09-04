@@ -9,17 +9,18 @@
             <argument name="ButtonToClick" defaultValue="{{StorefrontCheckoutThreeDSecureSection.completeAuthenticationButton}}" type="string"/>
         </arguments>
 
-        <waitForLoadingMaskToDisappear stepKey="waitForAllLoaders" />
-        <wait time="3" stepKey="waitFor3DSModalToRender"/>
+        <!-- We don't want to wait for a page load because a spinner is running behind the 3DS modal -->
+        <wait time="5" stepKey="waitFor3DSModalToRender"/>
 
-        <waitForElement selector="{{StorefrontCheckoutThreeDSecureSection.overlayIframe}}" time="60" stepKey="waitForOverlayIframe"/>
+        <waitForElementVisible selector="{{StorefrontCheckoutThreeDSecureSection.overlayIframe}}" time="30" stepKey="waitForOverlayIframe"/>
         <switchToIFrame selector="{{StorefrontCheckoutThreeDSecureSection.overlayIframe}}" stepKey="switchToOverlayIframe"/>
-        <waitForElement selector="{{StorefrontCheckoutThreeDSecureSection.challengeIframe}}" time="30" stepKey="waitForChallengeIframe"/>
+        <waitForElementVisible selector="{{StorefrontCheckoutThreeDSecureSection.challengeIframe}}" time="10" stepKey="waitForChallengeIframe"/>
         <switchToIFrame selector="{{StorefrontCheckoutThreeDSecureSection.challengeIframe}}" stepKey="switchToChallengeIframe"/>
-        <waitForElement selector="{{StorefrontCheckoutThreeDSecureSection.fullScreenIframe}}" time="30" stepKey="waitForFullScreenIframe"/>
-        <switchToIFrame selector="{{StorefrontCheckoutThreeDSecureSection.fullScreenIframe}}" stepKey="switchToFullScreenIframe"/>
+        <!--<waitForElement selector="{{StorefrontCheckoutThreeDSecureSection.fullScreenIframe}}" time="10" stepKey="waitForFullScreenIframe"/>
+        <switchToIFrame selector="{{StorefrontCheckoutThreeDSecureSection.fullScreenIframe}}" stepKey="switchToFullScreenIframe"/>-->
 
-        <waitForElement selector="{{ButtonToClick}}" time="10" stepKey="waitForButton"/>
+        <waitForElementVisible selector="{{ButtonToClick}}" time="10" stepKey="waitForButton"/>
+        <waitForElementClickable selector="{{ButtonToClick}}" time="10" stepKey="waitForButtonClickable"/>
         <wait time="1" stepKey="waitForUIToRender"/>
         <click selector="{{ButtonToClick}}" stepKey="clickButton"/>
         <waitForElementNotVisible selector="{{ButtonToClick}}" stepKey="waitForButtonNotVisible"/>
@@ -28,12 +29,10 @@
         <switchToIFrame stepKey="switchOutOfFullScreenIframe"/>
         <waitForElementNotVisible selector="{{StorefrontCheckoutThreeDSecureSection.challengeIframe}}" stepKey="waitForChallengeNotVisible"/>
         <switchToIFrame stepKey="switchOutOfChallengeIframe"/>
-        <waitForElementNotVisible selector="{{StorefrontCheckoutThreeDSecureSection.overlayIframe}}" stepKey="waitForOverlayIframeNotVisible"/>
-        <switchToIFrame stepKey="switchOutOfOverlayIframe"/>
+        <!--<waitForElementNotVisible selector="{{StorefrontCheckoutThreeDSecureSection.overlayIframe}}" stepKey="waitForOverlayIframeNotVisible"/>
+        <switchToIFrame stepKey="switchOutOfOverlayIframe"/>-->
 
-        <wait time="2" stepKey="waitForTokenGeneration" />
+        <wait time="5" stepKey="waitForTokenGeneration" />
 
     </actionGroup>
 </actionGroups>
-
-

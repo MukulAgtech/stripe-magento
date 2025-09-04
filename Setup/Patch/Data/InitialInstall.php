@@ -14,6 +14,13 @@ class InitialInstall
      * @var ModuleDataSetupInterface
      */
     private $moduleDataSetup;
+    private $_attributeSetFactory;
+    private $_categorySetupFactory;
+    private $_eavSetupFactory;
+    private $_eavTypeFactory;
+    private $_groupCollectionFactory;
+    private $migrate;
+    private $migrateFactory;
 
     /**
      * @param ModuleDataSetupInterface $moduleDataSetup
@@ -22,12 +29,10 @@ class InitialInstall
         ModuleDataSetupInterface $moduleDataSetup,
         \Magento\Catalog\Setup\CategorySetupFactory $categorySetupFactory,
         \Magento\Eav\Model\Entity\TypeFactory $eavTypeFactory,
-        \Magento\Catalog\Model\ResourceModel\Eav\AttributeFactory $attributeFactory,
         \Magento\Eav\Model\Entity\Attribute\SetFactory $attributeSetFactory,
-        \Magento\Eav\Model\Entity\Attribute\GroupFactory $attributeGroupFactory,
-        \Magento\Eav\Model\AttributeManagement $attributeManagement,
         \Magento\Eav\Setup\EavSetupFactory $eavSetupFactory,
-        \Magento\Eav\Model\ResourceModel\Entity\Attribute\Group\CollectionFactory $groupCollectionFactory
+        \Magento\Eav\Model\ResourceModel\Entity\Attribute\Group\CollectionFactory $groupCollectionFactory,
+        \StripeIntegration\Payments\Helper\MigrateFactory $migrateFactory
     ) {
         /**
          * If before, we pass $setup as argument in install/upgrade function, from now we start
@@ -36,12 +41,10 @@ class InitialInstall
         $this->moduleDataSetup = $moduleDataSetup;
         $this->_categorySetupFactory = $categorySetupFactory;
         $this->_eavTypeFactory = $eavTypeFactory;
-        $this->_attributeFactory = $attributeFactory;
         $this->_attributeSetFactory = $attributeSetFactory;
-        $this->_attributeGroupFactory = $attributeGroupFactory;
-        $this->_attributeManagement = $attributeManagement;
         $this->_eavSetupFactory = $eavSetupFactory;
         $this->_groupCollectionFactory = $groupCollectionFactory;
+        $this->migrateFactory = $migrateFactory;
     }
 
     /**
@@ -51,8 +54,7 @@ class InitialInstall
     {
         $this->moduleDataSetup->getConnection()->startSetup();
 
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        $this->migrate = $objectManager->create(\StripeIntegration\Payments\Helper\Migrate::class);
+        $this->migrate = $this->migrateFactory->create();
         $setup = $this->moduleDataSetup;
 
         $this->initSubscriptions($setup);
@@ -60,9 +62,10 @@ class InitialInstall
         $this->migrate->customers($setup);
         $this->migrate->subscriptions($setup);
         $this->updateSubscriptionAttributes($setup);
-        $this->migrate->adminConfigElementsToCheckout($setup);
 
         $this->moduleDataSetup->getConnection()->endSetup();
+
+        return $this;
     }
 
     /**
@@ -89,15 +92,6 @@ class InitialInstall
         $setup->getConnection()->startSetup();
 
         $defaultConnection = $setup->getConnection();
-
-        $this->dropTable('stripe_customers');
-        $this->dropTable('stripe_payment_intents');
-        $this->dropTable('stripe_invoices');
-        $this->dropTable('stripe_coupons');
-        $this->dropTable('stripe_webhooks');
-        $this->dropTable('stripe_sources');
-        $this->dropTable('stripe_subscriptions');
-        $this->dropTable('stripe_checkout_sessions');
 
         $defaultConnection->delete(
             $this->moduleDataSetup->getTable('core_config_data'),
@@ -239,15 +233,5 @@ class InitialInstall
         $eavSetup->updateAttribute('catalog_product', 'stripe_sub_interval_count', 'apply_to', 'simple,virtual');
         $eavSetup->updateAttribute('catalog_product', 'stripe_sub_trial', 'apply_to', 'simple,virtual');
         $eavSetup->updateAttribute('catalog_product', 'stripe_sub_initial_fee', 'apply_to', 'simple,virtual');
-    }
-
-    /**
-     * @param SchemaSetupInterface $setup
-     * @param string $tableName
-     */
-    private function dropTable($tableName)
-    {
-        $connection = $this->moduleDataSetup->getConnection();
-        $connection->dropTable($this->moduleDataSetup->getTable($tableName));
     }
 }

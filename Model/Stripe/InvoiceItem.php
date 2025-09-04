@@ -2,24 +2,42 @@
 
 namespace StripeIntegration\Payments\Model\Stripe;
 
-class InvoiceItem extends StripeObject
+class InvoiceItem
 {
-    protected $objectSpace = 'invoiceItems';
+    use StripeObjectTrait;
+
+    private $objectSpace = 'invoiceItems';
+    private $helper;
+
+    public function __construct(
+        \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
+        \StripeIntegration\Payments\Helper\Generic $helper
+    )
+    {
+        $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
+        $this->setData($stripeObjectService);
+
+        $this->helper = $helper;
+    }
 
     public function fromOrderGrandTotal($order, $customerId)
     {
         $data = [
             'customer' => $customerId,
-            'unit_amount' => $this->helper->convertMagentoAmountToStripeAmount($order->getGrandTotal(), $order->getOrderCurrencyCode(), $order),
+            'unit_amount' => $this->helper->convertMagentoAmountToStripeAmount($order->getGrandTotal(), $order->getOrderCurrencyCode()),
             'currency' => $order->getOrderCurrencyCode(),
             'description' => __("Order #%1", $order->getIncrementId()),
             'quantity' => 1
         ];
 
-        $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice could not be created in Stripe: %1", $this->lastError));
+        try
+        {
+            $this->createObject($data);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice item could not be created in Stripe: %1", $e->getMessage()));
+        }
 
         return $this;
     }
@@ -31,17 +49,21 @@ class InvoiceItem extends StripeObject
             'price_data' => [
                 'currency' => $order->getOrderCurrencyCode(),
                 'product' => $item->getProductId(),
-                'unit_amount' => $this->helper->convertMagentoAmountToStripeAmount($item->getPrice(), $order->getOrderCurrencyCode(), $order)
+                'unit_amount' => $this->helper->convertMagentoAmountToStripeAmount($item->getPrice(), $order->getOrderCurrencyCode())
             ],
             'currency' => $order->getOrderCurrencyCode(),
             'description' => $item->getName(),
             'quantity' => $item->getQtyOrdered()
         ];
 
-        $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice item for product \"%1\" could not be created in Stripe: %2", $item->getName(), $this->lastError));
+        try
+        {
+            $this->createObject($data);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice item for product \"%1\" could not be created in Stripe: %2", $item->getName(), $e->getMessage()));
+        }
 
         return $this;
     }
@@ -60,10 +82,14 @@ class InvoiceItem extends StripeObject
             'description' => __("Tax")
         ];
 
-        $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The tax for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $this->lastError));
+        try
+        {
+            $this->createObject($data);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The tax for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $e->getMessage()));
+        }
 
         return $this;
     }
@@ -82,10 +108,14 @@ class InvoiceItem extends StripeObject
             'description' => __("Shipping")
         ];
 
-        $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The shipping amount for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $this->lastError));
+        try
+        {
+            $this->createObject($data);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The shipping amount for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $e->getMessage()));
+        }
 
         return $this;
     }

@@ -9,8 +9,7 @@ $quote->load('test_quote', 'reserved_order_id');
 $data = [
     'method' => 'stripe_payments',
     'additional_data' => [
-        "cc_save" => false,
-        "cc_stripejs_token" => "pm_card_visa:visa:4242"
+        "payment_method" => "pm_card_visa"
     ]
 ];
 $quote->getPayment()->importData($data);

@@ -17,14 +17,7 @@ class Handler extends \Magento\Framework\Logger\Handler\Base
         \Magento\Framework\Filesystem\DriverInterface $filesystem,
         \Magento\Framework\App\Filesystem\DirectoryList $dir
     ) {
-        $ds = DIRECTORY_SEPARATOR;
-        $this->filePath = $dir->getPath('log') . $ds . 'stripe_payments_webhooks.log';
-
+        $this->filePath = $dir->getPath('log') . DIRECTORY_SEPARATOR . 'stripe_payments_webhooks.log';
         parent::__construct($filesystem, $this->filePath);
-    }
-
-    public function exists()
-    {
-        return file_exists($this->filePath);
     }
 }

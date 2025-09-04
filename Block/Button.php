@@ -3,80 +3,34 @@
 namespace StripeIntegration\Payments\Block;
 
 use Magento\Framework\View\Element\Template;
-use Magento\Framework\Registry;
-use Magento\Framework\Pricing\PriceCurrencyInterface;
-use StripeIntegration\Payments\Helper\Logger;
 
 class Button extends Template
 {
-    /**
-     * @var \Magento\Framework\UrlInterface
-     */
-    protected $urlBuilder;
-
-    /**
-     * @var Registry
-     */
-    protected $registry;
-
-    /**
-     * @var PriceCurrencyInterface
-     */
-    protected $priceCurrency;
-
-    /**
-     * @var \StripeIntegration\Payments\Model\Config
-     */
+    private $productId;
     public $config;
+    public $initParams;
+    private $serializer;
+    private $checkoutSession;
+    private $expressCheckoutConfig;
 
-    /**
-     * @var \StripeIntegration\Payments\Helper\ExpressHelper
-     */
-    protected $expressHelper;
-
-    /**
-     * @var \Magento\Checkout\Helper\Data
-     */
-    protected $checkoutHelper;
-
-    /**
-     * @var \Magento\Tax\Helper\Data
-     */
-    protected $taxHelper;
-
-    /**
-     * Button constructor.
-     *
-     * @param Template\Context                       $context
-     * @param Registry                               $registry
-     * @param PriceCurrencyInterface                 $priceCurrency
-     * @param \StripeIntegration\Payments\Model\Config $config
-     * @param \StripeIntegration\Payments\Helper\ExpressHelper $expressHelper
-     * @param \Magento\Checkout\Helper\Data          $checkoutHelper
-     * @param \Magento\Tax\Helper\Data               $taxHelper
-     * @param array                                  $data
-     */
     public function __construct(
         Template\Context $context,
-        Registry $registry,
-        PriceCurrencyInterface $priceCurrency,
+        \Magento\Framework\App\RequestInterface $request,
         \StripeIntegration\Payments\Model\Config $config,
-        \StripeIntegration\Payments\Helper\Generic $paymentsHelper,
-        \StripeIntegration\Payments\Helper\ExpressHelper $expressHelper,
-        \Magento\Checkout\Helper\Data $checkoutHelper,
-        \Magento\Tax\Helper\Data $taxHelper,
+        \StripeIntegration\Payments\Model\ExpressCheckout\Config $expressCheckoutConfig,
+        \StripeIntegration\Payments\Helper\InitParams $initParams,
+        \Magento\Framework\Serialize\SerializerInterface $serializer,
+        \Magento\Checkout\Model\Session $checkoutSession,
         array $data = []
     ) {
         parent::__construct($context, $data);
 
-        $this->registry = $registry;
-        $this->priceCurrency = $priceCurrency;
+        $this->productId = $request->getParam('id', null);
         $this->config = $config;
-        $this->expressHelper = $expressHelper;
-        $this->urlBuilder = $context->getUrlBuilder();
-        $this->checkoutHelper = $checkoutHelper;
-        $this->taxHelper = $taxHelper;
-        $this->paymentsHelper = $paymentsHelper;
+        $this->expressCheckoutConfig = $expressCheckoutConfig;
+        $this->initParams = $initParams;
+        $this->serializer = $serializer;
+        $this->checkoutSession = $checkoutSession;
     }
 
     /**
@@ -85,7 +39,12 @@ class Button extends Template
      */
     public function isEnabled($location)
     {
-        return $this->expressHelper->isEnabled($location);
+        return $this->expressCheckoutConfig->isEnabled($location);
+    }
+
+    public function getActiveLocations()
+    {
+        return $this->serializer->serialize($this->expressCheckoutConfig->getActiveLocations());
     }
 
     /**
@@ -104,13 +63,13 @@ class Button extends Template
      */
     public function getButtonConfig()
     {
-        return $this->config->getPRAPIButtonSettings();
+        $options = $this->expressCheckoutConfig->getButtonOptions();
+        return $this->serializer->serialize($options);
     }
 
     public function getProductId()
     {
-        $product = $this->registry->registry('product');
-        return $product->getId();
+        return $this->productId;
     }
     /**
      * Get Quote
@@ -118,34 +77,6 @@ class Button extends Template
      */
     public function getQuote()
     {
-        $quote = $this->checkoutHelper->getCheckout()->getQuote();
-        if (!$quote->getId()) {
-            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-            $quote = $objectManager->create('Magento\Checkout\Model\Session')->getQuote();
-        }
-
-        return $quote;
-    }
-
-    /**
-     * Get Country Code
-     * @return string
-     */
-    public function getCountry()
-    {
-        $countryCode = $this->getQuote()->getBillingAddress()->getCountryId();
-        if (empty($countryCode)) {
-            $countryCode = $this->expressHelper->getDefaultCountry();
-        }
-        return $countryCode;
-    }
-
-    /**
-     * Get Label
-     * @return string
-     */
-    public function getLabel()
-    {
-        return $this->expressHelper->getLabel($this->getQuote());
+        return $this->checkoutSession->getQuote();
     }
 }

@@ -27,7 +27,7 @@ class Compare
     {
         if ($expectedValues[$key] === "unset")
         {
-            $this->test->assertEmpty($values[$key], $key . " should not be set");
+            $this->test->assertFalse(isset($values[$key]), $key . " should not be set");
             return;
         }
         else

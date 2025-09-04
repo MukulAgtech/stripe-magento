@@ -2,19 +2,36 @@
 
 namespace StripeIntegration\Payments\Model\Stripe;
 
-class Invoice extends StripeObject
+class Invoice
 {
-    protected $objectSpace = 'invoices';
+    use StripeObjectTrait;
+
+    private $objectSpace = 'invoices';
+    private $helper;
+    private $config;
+
+    public function __construct(
+        \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
+        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Model\Config $config
+    )
+    {
+        $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
+        $this->setData($stripeObjectService);
+
+        $this->helper = $helper;
+        $this->config = $config;
+    }
 
     public function fromOrder($order, $customerId)
     {
         $daysDue = $order->getPayment()->getAdditionalInformation('days_due');
 
         if (!is_numeric($daysDue))
-            $this->helper->dieWithError("You have specified an invalid value for the invoice due days field.");
+            $this->helper->throwError("You have specified an invalid value for the invoice due days field.");
 
         if ($daysDue < 1)
-            $this->helper->dieWithError("The invoice due days must be greater or equal to 1.");
+            $this->helper->throwError("The invoice due days must be greater or equal to 1.");
 
         $data = [
             'customer' => $customerId,
@@ -26,10 +43,14 @@ class Invoice extends StripeObject
             ]
         ];
 
-        $this->createObject($data);
-
-        if (!$this->object)
-            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $this->lastError));
+        try
+        {
+            $this->createObject($data);
+        }
+        catch (\Exception $e)
+        {
+            throw new \Magento\Framework\Exception\LocalizedException(__("The invoice for order #%1 could not be created in Stripe: %2", $order->getIncrementId(), $e->getMessage()));
+        }
 
         return $this;
     }

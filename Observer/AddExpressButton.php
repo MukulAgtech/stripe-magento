@@ -8,7 +8,7 @@ use Magento\Framework\Event\Observer;
 class AddExpressButton implements ObserverInterface
 {
 
-    public function execute(Observer $observer)
+    public function execute(\Magento\Framework\Event\Observer $observer)
     {
         /** @var \Magento\Catalog\Block\ShortcutButtons $shortcutButtons */
         $shortcutButtons = $observer->getEvent()->getContainer();

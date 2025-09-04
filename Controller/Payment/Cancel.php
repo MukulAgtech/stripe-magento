@@ -2,55 +2,51 @@
 
 namespace StripeIntegration\Payments\Controller\Payment;
 
-use Magento\Framework\Exception\LocalizedException;
-use StripeIntegration\Payments\Helper\Logger;
+use Magento\Framework\App\ActionInterface;
+use Magento\Framework\App\RequestInterface;
+use Magento\Framework\Controller\ResultFactory;
+use Magento\Framework\Controller\ResultInterface;
 
-class Cancel extends \Magento\Framework\App\Action\Action
+class Cancel implements ActionInterface
 {
-    protected $resultPageFactory;
-    protected $checkoutHelper;
-    protected $orderFactory;
-    protected $helper;
-    protected $invoiceService;
-    protected $dbTransaction;
+    private $checkoutSession;
+    private $request;
+    private $resultFactory;
 
     public function __construct(
-        \Magento\Framework\App\Action\Context $context,
-        \Magento\Framework\View\Result\PageFactory $resultPageFactory,
-        \Magento\Checkout\Helper\Data $checkoutHelper,
-        \Magento\Sales\Model\OrderFactory $orderFactory,
-        \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\Config $config,
-        \Magento\Sales\Model\Service\InvoiceService $invoiceService,
-        \Magento\Framework\DB\Transaction $dbTransaction
+        \Magento\Checkout\Model\Session $checkoutSession,
+        RequestInterface $request,
+        ResultFactory $resultFactory
     )
     {
-        $this->resultPageFactory = $resultPageFactory;
-        parent::__construct($context);
-
-        $this->checkoutHelper = $checkoutHelper;
-        $this->orderFactory = $orderFactory;
-
-        $this->helper = $helper;
-        $this->config = $config;
-        $this->invoiceService = $invoiceService;
-        $this->dbTransaction = $dbTransaction;
+        $this->checkoutSession = $checkoutSession;
+        $this->request = $request;
+        $this->resultFactory = $resultFactory;
     }
 
+    /**
+     * @return ResultInterface
+     */
     public function execute()
     {
-        $paymentMethodType = $this->getRequest()->getParam('payment_method');
-        $session = $this->checkoutHelper->getCheckout();
-        $lastRealOrderId = $session->getLastRealOrderId();
+        $paymentMethodType = $this->request->getParam('payment_method');
+        $lastRealOrderId = $this->checkoutSession->getLastRealOrderId();
 
         switch ($paymentMethodType) {
             case 'stripe_checkout':
-                $session->restoreQuote();
-                $session->setLastRealOrderId($lastRealOrderId);
-                return $this->_redirect('checkout');
+                $this->checkoutSession->restoreQuote();
+                $this->checkoutSession->setLastRealOrderId($lastRealOrderId);
+                return $this->redirect('checkout');
             default:
-                $this->_redirect('checkout/cart');
-                break;
+                return $this->redirect('checkout/cart');
         }
+    }
+
+    public function redirect($url, array $params = [])
+    {
+        $redirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+        $redirect->setPath($url, $params);
+
+        return $redirect;
     }
 }

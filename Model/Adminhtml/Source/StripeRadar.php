@@ -6,15 +6,15 @@ class StripeRadar
 {
     public function toOptionArray()
     {
-        return array(
-            array(
+        return [
+            [
                 'value' => 0,
                 'label' => __('Disabled')
-            ),
-            array(
+            ],
+            [
                 'value' => 10,
                 'label' => __('Enabled')
-            )
-        );
+            ]
+        ];
     }
 }

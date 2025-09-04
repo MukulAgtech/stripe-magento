@@ -2,28 +2,29 @@
 
 namespace StripeIntegration\Payments\Observer;
 
-use Magento\Framework\Event\Observer;
 use Magento\Payment\Observer\AbstractDataAssignObserver;
-use StripeIntegration\Payments\Helper\Logger;
 
 class PaymentMethodActiveObserver extends AbstractDataAssignObserver
 {
+    private $helper;
+    private $subscriptionsHelper;
+    private $config;
+
     public function __construct(
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\Config $config,
-        \StripeIntegration\Payments\Model\Tax\Calculation $taxCalculation
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
+        \StripeIntegration\Payments\Model\Config $config
     )
     {
         $this->helper = $helper;
+        $this->subscriptionsHelper = $subscriptionsHelper;
         $this->config = $config;
-        $this->taxCalculation = $taxCalculation;
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
-    public function execute(Observer $observer)
+    public function execute(\Magento\Framework\Event\Observer $observer)
     {
         $quote = $observer->getEvent()->getQuote();
 
@@ -43,11 +44,11 @@ class PaymentMethodActiveObserver extends AbstractDataAssignObserver
         if (!$quote)
             return;
 
-        if ($this->helper->supportsSubscriptions($code))
+        if ($this->helper->supportsSubscriptions($code) && !$this->helper->isMultiShipping($quote))
             return;
 
         // Disable all other payment methods if we have subscriptions
-        if ($this->helper->hasSubscriptions())
+        if ($this->subscriptionsHelper->hasSubscriptions())
             $result->setData('is_available', false);
     }
 }

@@ -3,16 +3,24 @@
 namespace StripeIntegration\Payments\Helper;
 
 use Psr\Log\LoggerInterface;
+use StripeIntegration\Payments\Model\Config;
 
 class Logger
 {
-    static $logger = null;
+    private $logger;
+    private $serializer;
 
-    public static function getPrintableObject($obj)
+    public function __construct(
+        LoggerInterface $logger,
+        \Magento\Framework\Serialize\SerializerInterface $serializer
+    )
     {
-        if (!Logger::$logger)
-            Logger::$logger = \Magento\Framework\App\ObjectManager::getInstance()->get(\Psr\Log\LoggerInterface::class);
+        $this->logger = $logger;
+        $this->serializer = $serializer;
+    }
 
+    public function getPrintableObject($obj)
+    {
         if (is_object($obj))
         {
             if (method_exists($obj, 'debug'))
@@ -22,42 +30,127 @@ class Logger
             else
                 $data = $obj;
         }
-        else if (is_array($obj))
-            $data = print_r($obj, true);
         else
             $data = $obj;
 
+        if (!is_string($data))
+        {
+            $data = $this->serializer->serialize($data);
+            $data = $this->serializer->unserialize($data);
+            $data = $this->prettyStringFromArray($data, 5);
+        }
+
         return $data;
     }
-    public static function debug($obj)
+
+    public function log($obj)
     {
-        $data = Logger::getPrintableObject($obj);
-        Logger::$logger->addDebug(print_r($data, true));
+        $data = $this->getPrintableObject($obj);
+        $this->logger->error($data);
     }
 
-    public static function log($obj)
+    public function logError(string $msg, $trace = null)
     {
-        try
-        {
-            $data = Logger::getPrintableObject($obj);
+        if ($this->isAuthenticationRequiredMessage($msg))
+            return;
 
-            if (method_exists(Logger::$logger, 'addInfo'))
-                Logger::$logger->addInfo($data); // Magento 2.4.1 and older
-            else
-                Logger::$logger->error($data); // Magento 2.4.2 and newer
-        }
-        catch (\Exception $e)
-        {
-            // Errors cannot be logged...
-        }
+        $entry = Config::$moduleName . " v" . Config::$moduleVersion . ": " . $msg;
+
+        if ($trace)
+            $entry .= "\n$trace";
+
+        $this->logger->error($entry);
     }
 
-    public static function print($obj)
+    public function logInfo(?string $msg)
     {
-        if (defined('STDIN'))
+        $entry = Config::$moduleName . " v" . Config::$moduleVersion . ": " . $msg;
+        $this->logger->info($entry);
+    }
+
+    public function backtrace()
+    {
+        $e = new \Exception();
+        $trace = explode("\n", $e->getTraceAsString());
+
+        array_pop($trace); // remove {main}
+        array_shift($trace); // remove call to this method
+
+        $this->log("\n\t" . implode("\n\t", $trace));
+    }
+
+    // var_export and json_decode($data, JSON_PRETTY_PRINT, 5) are no longer allowed in coding standards
+    private function prettyStringFromArray(array $data, $maxDepth = 5, $currentDepth = 0)
+    {
+        if ($currentDepth == 0)
         {
-            $data = Logger::getPrintableObject($obj);
-            // echo sprintf("\n>>> %s\n", print_r($data,true));
+            $indentation = "    ";
+            $result = $this->getType($data) . "\n";
         }
+        else
+        {
+            $indentation = "    " . str_repeat("|   ", $currentDepth);
+            $result = "";
+        }
+
+        foreach ($data as $key => $value)
+        {
+            if (is_array($value))
+            {
+                if ($currentDepth < $maxDepth) {
+                    $nestedData = $this->prettyStringFromArray($value, $maxDepth, $currentDepth + 1);
+                    $result .= $indentation . "[$key] => " . $this->getType($value) . "\n" . $nestedData;
+                } else {
+                    $result .= $indentation . "[$key] => " . $this->getType($value) . "\n";
+                }
+            }
+            else {
+                $result .= $indentation . "[$key] => " . $value . "\n";
+            }
+        }
+
+        return $result;
+    }
+
+    // In Magento coding standards, the use of function gettype() is discouraged, so we use a custom one
+    private function getType($value)
+    {
+        if (is_array($value))
+            return "Array";
+        else if (is_object($value))
+            return "Object";
+        else
+            return null;
+    }
+
+    public function shouldLogExceptionTrace($e)
+    {
+        if (empty($e))
+            return false;
+
+        $msg = $e->getMessage();
+        if ($this->isAuthenticationRequiredMessage($msg))
+            return false;
+
+        if (get_class($e) == \Stripe\Exception\CardException::class) // i.e. card declined, insufficient funds etc
+            return false;
+
+        if (get_class($e) == \Magento\Framework\Exception\CouldNotSaveException::class)
+        {
+            switch ($msg)
+            {
+                case "Your card was declined.":
+                    return false;
+                default:
+                    break;
+            }
+        }
+
+        return true;
+    }
+
+    public function isAuthenticationRequiredMessage($message)
+    {
+        return (strpos($message, "Authentication Required: ") !== false);
     }
 }

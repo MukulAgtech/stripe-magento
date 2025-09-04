@@ -2,10 +2,13 @@
 
 namespace StripeIntegration\Payments\Helper;
 
-use StripeIntegration\Payments\Helper\Logger;
-
 class TaxHelper
 {
+    private $taxHelper;
+    private $taxOrderFactory;
+    private $taxCalculation;
+    private $taxItem;
+
     public function __construct(
         \Magento\Sales\Model\ResourceModel\Order\Tax\Item $taxItem,
         \Magento\Tax\Helper\Data $taxHelper,
@@ -68,7 +71,7 @@ class TaxHelper
             return 0;
 
         $taxDivider = (1 + $taxPercent / 100); // i.e. Convert 8.25 to 1.0825
-        $amountWithoutTax = round($fullAmount / $taxDivider, 2); // Magento seems to sometimes be flooring instead of rounding tax inclusive prices
+        $amountWithoutTax = round(floatval($fullAmount / $taxDivider), 2); // Magento seems to sometimes be flooring instead of rounding tax inclusive prices
         return  $fullAmount - $amountWithoutTax;
     }
 
@@ -77,7 +80,7 @@ class TaxHelper
         if ($taxPercent <= 0 || $fullAmount <= 0 || !is_numeric($fullAmount))
             return 0;
 
-        return round($fullAmount * ($taxPercent / 100), 2);
+        return round(floatval($fullAmount * ($taxPercent / 100)), 2);
     }
 
     public function getShippingTaxRateFromOrder($order, $product)
@@ -115,21 +118,21 @@ class TaxHelper
 
         return $taxInfo;
 
-        if (empty($itemsAppliedTaxes))
-            return null;
+        // if (empty($itemsAppliedTaxes))
+        //     return null;
 
-        foreach ($itemsAppliedTaxes as $appliedTax)
-        {
-            foreach ($appliedTax as $taxRate)
-            {
-                if ($taxRate["item_type"] == "shipping")
-                {
-                    return $taxRate;
-                }
-            }
-        }
+        // foreach ($itemsAppliedTaxes as $appliedTax)
+        // {
+        //     foreach ($appliedTax as $taxRate)
+        //     {
+        //         if ($taxRate["item_type"] == "shipping")
+        //         {
+        //             return $taxRate;
+        //         }
+        //     }
+        // }
 
-        return null;
+        // return null;
     }
 
     public function getShippingTaxPercentFromRate($rate)
@@ -174,7 +177,7 @@ class TaxHelper
         else
             $shippingAddress->requestShippingRates($quoteItem);
 
-        return $quoteItem->getBaseShippingAmount();
+        return floatval($quoteItem->getBaseShippingAmount());
     }
 
     public function getBaseShippingTaxFor($quoteItem, $quote)
@@ -191,9 +194,27 @@ class TaxHelper
         foreach ($rates as $rate)
         {
             $percent = $this->getShippingTaxPercentFromRate($rate);
-            $tax += round($baseShippingAmount * $percent, 2);
+            $tax += round(floatval($baseShippingAmount * $percent), 2);
         }
 
         return $tax;
+    }
+
+    public function getTaxPercentForOrder($orderId, $type = "product")
+    {
+        $taxItems = $this->taxItem->getTaxItemsByOrderId($orderId);
+
+        if (is_array($taxItems))
+        {
+            foreach ($taxItems as $taxItem)
+            {
+                if ($taxItem['taxable_item_type'] == $type && $taxItem['tax_percent'])
+                {
+                    return $taxItem['tax_percent'];
+                }
+            }
+        }
+
+        return 0;
     }
 }

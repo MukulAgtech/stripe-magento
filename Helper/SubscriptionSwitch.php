@@ -2,35 +2,40 @@
 
 namespace StripeIntegration\Payments\Helper;
 
-use StripeIntegration\Payments\Helper\Logger;
-use Magento\Framework\Exception\CouldNotSaveException;
+use StripeIntegration\Payments\Exception\GenericException;
 
 class SubscriptionSwitch
 {
-    public $couponCodes = [];
-    public $subscriptions = [];
-    public $invoices = [];
-    public $paymentIntents = [];
-
-    protected $transaction = null;
+    private $subscriptions = [];
+    private $transaction = null;
+    private $stripeSubscriptionFactory;
+    private $config;
+    private $fromProduct;
+    private $toProduct;
+    private $transactionFactory;
+    private $customer;
+    private $recurringOrder;
+    private $subscriptionsHelper;
+    private $paymentsHelper;
+    private $quoteHelper;
 
     public function __construct(
-        \StripeIntegration\Payments\Helper\Rollback $rollback,
         \StripeIntegration\Payments\Helper\Generic $paymentsHelper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Model\Config $config,
         \Magento\Framework\DB\TransactionFactory $transactionFactory,
         \StripeIntegration\Payments\Helper\RecurringOrder $recurringOrder,
-        \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
-        \StripeIntegration\Payments\Model\SubscriptionFactory $subscriptionFactory
+        \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $stripeSubscriptionFactory
     ) {
-        $this->rollback = $rollback;
         $this->paymentsHelper = $paymentsHelper;
+        $this->quoteHelper = $quoteHelper;
+        $this->subscriptionsHelper = $subscriptionsHelper;
         $this->config = $config;
         $this->customer = $paymentsHelper->getCustomerModel();
         $this->transactionFactory = $transactionFactory;
         $this->recurringOrder = $recurringOrder;
-        $this->paymentIntent = $paymentIntent;
-        $this->subscriptionFactory = $subscriptionFactory;
+        $this->stripeSubscriptionFactory = $stripeSubscriptionFactory;
     }
 
     // This is called once, it loads all subscriptions from all configured Stripe accounts
@@ -46,38 +51,31 @@ class SubscriptionSwitch
         $currency = $store->getDefaultCurrency()->getCurrencyCode();
 
         if (!$this->config->reInitStripe($storeId, $currency, $mode))
-            throw new \Exception("Order #" . $order->getIncrementId() . " could not be migrated because Stripe could not be initialized for store " . $store->getName() . " ($mode mode)");
+            throw new GenericException("Order #" . $order->getIncrementId() . " could not be migrated because Stripe could not be initialized for store " . $store->getName() . " ($mode mode)");
 
-        $params = ['limit' => 100];
+        $params = [
+            'limit' => 100
+        ];
+
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        if (!empty($customer))
+        if (!empty($customerId))
             $params["customer"] = $customerId;
 
-        $subscriptions = \StripeIntegration\Payments\Model\Config::$stripeClient->subscriptions->all($params);
+        $subscriptions = $this->config->getStripeClient()->subscriptions->all($params);
 
         foreach ($subscriptions->autoPagingIterator() as $key => $subscription)
         {
             if (!isset($subscription->metadata->{"Order #"}))
                 continue;
 
-            if (!isset($subscription->metadata->{"Product ID"}))
-                continue;
+            $stripeSubscriptionModel = $this->stripeSubscriptionFactory->create()->fromSubscription($subscription);
 
-            if (isset($subscription->metadata->{"Product ID"}))
-            {
-                $productIDs = explode(",", $subscription->metadata->{"Product ID"});
-            }
-            else if (isset($subscription->metadata->{"SubscriptionProductIDs"}))
-            {
-                $productIDs = explode(",", $subscription->metadata->{"SubscriptionProductIDs"});
-            }
-            else
-            {
-                continue;
-            }
+            $productIDs = $stripeSubscriptionModel->getProductIDs();
 
             foreach ($productIDs as $productID)
+            {
                 $this->subscriptions[$storeId][$subscription->metadata->{"Order #"}][$productID] = $subscription;
+            }
         }
     }
 
@@ -86,16 +84,16 @@ class SubscriptionSwitch
         $this->initForOrder($order);
 
         if (!$order->getId())
-            throw new \Exception("Invalid subscription order specified");
+            throw new GenericException("Invalid subscription order specified");
 
         if (!$fromProduct->getId() || !$toProduct->getId())
-            throw new \Exception("Invalid subscription product specified");
+            throw new GenericException("Invalid subscription product specified");
 
-        if (!$fromProduct->getStripeSubEnabled())
-            throw new \Exception($this->fromProduct->getName() . " is not a subscription product");
+        if (!$this->subscriptionsHelper->isSubscriptionOptionEnabled($fromProduct->getId()))
+            throw new GenericException($this->fromProduct->getName() . " is not a subscription product");
 
-        if (!$toProduct->getStripeSubEnabled())
-            throw new \Exception($this->toProduct->getName() . " is not a subscription product");
+        if (!$this->subscriptionsHelper->isSubscriptionOptionEnabled($toProduct->getId()))
+            throw new GenericException($this->toProduct->getName() . " is not a subscription product");
 
         if (!$this->isSubscriptionActive($order->getStore()->getId(), $order->getIncrementId(), $fromProduct->getId()))
             return false;
@@ -103,37 +101,42 @@ class SubscriptionSwitch
         try
         {
             $this->transaction = $this->transactionFactory->create();
-            $this->rollback->reset();
             $newOrder = $this->beginMigration($order, $fromProduct, $toProduct);
             $this->transaction->save();
-            $this->rollback->reset();
-
-            // Now cancel the old subscription
-            try
-            {
-                $subscription = $this->subscriptions[$order->getStore()->getId()][$order->getIncrementId()][$fromProduct->getId()];
-                $this->subscriptionFactory->create()->cancel($subscription->id);
-            }
-            catch (\Exception $e)
-            {
-                throw new \Exception("A new order #{$newOrder->getIncrementId()} was created successfully but we could not cancel the old subscription with ID {$subscription->id}: " . $e->getMessage());
-            }
 
             return true;
         }
         catch (\Exception $e)
         {
-            $this->rollback->run($e);
+            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
             throw $e;
         }
     }
 
     protected function beginMigration($originalOrder, $fromProduct, $toProduct)
     {
+        /** @var \Stripe\Subscription */
         $subscription = $this->subscriptions[$originalOrder->getStore()->getId()][$originalOrder->getIncrementId()][$fromProduct->getId()];
-        $customer = \StripeIntegration\Payments\Model\Config::$stripeClient->customers->retrieve($subscription->customer, []);
-        $this->customer->loadFromData($subscription->customer, $customer);
-        $trialEnd = $subscription->current_period_end - time();
+
+        $paymentMethodId = null;
+        if (!empty($subscription->default_payment_method))
+        {
+            $paymentMethodId = $subscription->default_payment_method;
+        }
+        else if (!empty($subscription->latest_invoice))
+        {
+            $latestInvoice = $this->config->getStripeClient()->invoices->retrieve($subscription->latest_invoice, ['expand' => ['payment_intent']]);
+            if (!empty($latestInvoice->payment_intent->payment_method))
+            {
+                $paymentMethodId = $latestInvoice->payment_intent->payment_method;
+            }
+            else
+            {
+                throw new GenericException("Cannot migrate subscription {$subscription->id} because it does not have a payment method.");
+            }
+        }
+
+        $this->customer->fromStripeCustomerId($subscription->customer);
 
         $quote = $this->recurringOrder->createQuoteFrom($originalOrder);
         $quote->setIsRecurringOrder(false)->setRemoveInitialFee(true);
@@ -141,39 +144,27 @@ class SubscriptionSwitch
         $this->recurringOrder->setQuoteAddressesFrom($originalOrder, $quote);
         $quote->addProduct($toProduct, $subscription->quantity);
         $this->recurringOrder->setQuoteShippingMethodFrom($originalOrder, $quote);
-        $this->recurringOrder->setQuoteDiscountFrom($originalOrder, $quote);
+        $this->recurringOrder->setQuoteDiscountFrom($originalOrder, $quote, $subscription->discount);
+
         $data = [
             'additional_data' => [
-                'cc_stripejs_token' => $subscription->default_payment_method
+                'payment_method' => $paymentMethodId,
+                'is_migrated_subscription' => true
             ]
         ];
         $this->recurringOrder->setQuotePaymentMethodFrom($originalOrder, $quote, $data);
         $quote->getPayment()
             ->setAdditionalInformation("is_recurring_subscription", false)
-            ->setAdditionalInformation("is_migrated_subscription", false)
-            ->setAdditionalInformation("subscription_customer", $subscription->customer)
-            ->setAdditionalInformation("subscription_start", $subscription->current_period_end)
-            ->setAdditionalInformation("remove_initial_fee", true)
-            ->setAdditionalInformation("off_session", true);
+            ->setAdditionalInformation("remove_initial_fee", true);
 
         // Collect Totals & Save Quote
-        $quote->collectTotals()->save();
+        $quote->collectTotals();
+        $this->quoteHelper->saveQuote($quote);
 
         // Create Order From Quote
-        $this->paymentIntent->quote = $quote;
         $order = $this->recurringOrder->quoteManagement->submit($quote);
-
-        // The new subscription ID is saved in the transaction ID
-        $newSubscription = $this->findCustomerSubscription($subscription->customer, $order->getIncrementId());
-        if ($newSubscription)
-            $this->setTransactionDetailsFor($order, $newSubscription->id);
-
-        // Notify the customer about the billing changes
-        if (false) // @todo: This should be a setting
-        {
-            $comment = __("Your subscription details have changed for order #%1. A new order #%2 has been created with the new billing details. This message does not mean that your subscription has been billed. The next subscription payment will be on %3.", $originalOrder->getIncrementId(), $order->getIncrementId(), date("jS F Y"));
-            $this->paymentsHelper->sendNewOrderEmailWithComment($order, $comment);
-        }
+        $order->setState('closed')->setStatus('closed');
+        $this->transaction->addObject($order);
 
         // Cancel the newly created order
         $this->cancel($order);
@@ -182,6 +173,10 @@ class SubscriptionSwitch
         $comment = __("The billing details for a subscription on this order have changed. Please see order #%1 for information on the new billing details.", $order->getIncrementId());
         $originalOrder->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
         $this->transaction->addObject($originalOrder);
+
+        // Update the subscription price
+        $subscription = $this->subscriptionsHelper->updateSubscriptionPriceFromOrder($subscription, $order, $quote);
+        $order->getPayment()->setAdditionalInformation("subscription_id", $subscription->id);
 
         return $order;
     }
@@ -199,21 +194,8 @@ class SubscriptionSwitch
         {
             $comment = __("This order will be automatically closed because no payment has been collected for it. It can only be used as a billing details reference for the subscription items in the order. The subscription is still active and a new order will be created when it renews.");
             $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
-            $this->paymentsHelper->cancelOrCloseOrder($order, true);
+            $this->paymentsHelper->cancelOrCloseOrder($order, true, true);
         }
-    }
-
-    protected function findCustomerSubscription($customerId, $orderId)
-    {
-        $customer = \StripeIntegration\Payments\Model\Config::$stripeClient->customers->retrieve($customerId, []);
-
-        foreach ($customer->subscriptions->data as $subscription)
-        {
-            if ($subscription->metadata->{"Order #"} == $orderId)
-                return $subscription;
-        }
-
-        return null;
     }
 
     protected function setTransactionDetailsFor($order, $transactionId)
@@ -233,7 +215,7 @@ class SubscriptionSwitch
 
         $count = count($this->subscriptions[$storeId][$orderIncrementId]);
         if ($count > 1)
-            throw new \Exception("The order includes multiple subscriptions.");
+            throw new GenericException("The order includes multiple subscriptions.");
 
         $subscription = $this->subscriptions[$storeId][$orderIncrementId][$productId];
 

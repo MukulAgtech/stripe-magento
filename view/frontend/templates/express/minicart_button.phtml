@@ -5,18 +5,26 @@
         require(['domReady!', 'StripeIntegration_Payments/js/stripe_payments_express', 'Magento_Customer/js/customer-data'], function(domReady, stripeExpress, customerData)
         {
             var cart = customerData.get('cart');
-            var initPRAPI = function()
+            var initECE = function()
             {
-                stripeExpress.initStripeExpress('#payment-request-button-minicart', <?php echo $block->config->getStripeParams(); ?>, 'minicart', <?php echo $block->getButtonConfig(); ?>, function (paymentRequestButton, paymentRequest, params, prButton) {
-                    stripeExpress.initMiniCartWidget(paymentRequestButton, paymentRequest, params, prButton);
-                });
+                var locationDetails = {
+                    location: 'minicart',
+                    activeLocations: <?= $block->getActiveLocations(); // phpcs:ignore ?>,
+                };
+                stripeExpress.initStripeExpress(
+                    '#payment-request-button-minicart',
+                    <?= $block->initParams->getWalletParams(); // phpcs:ignore ?>,
+                    locationDetails,
+                    <?= $block->getButtonConfig(); // phpcs:ignore ?>,
+                    stripeExpress.initMiniCartWidget.bind(stripeExpress)
+                );
             };
-            initPRAPI();
+            initECE();
 
             cart.subscribe(function ()
             {
-                // Wait for Magento to commit the changes before re-initializing the PRAPI
-                setTimeout(initPRAPI, 500);
+                // Wait for Magento to commit the changes before re-initializing the ECE
+                setTimeout(initECE, 500);
             });
         });
     </script>

@@ -2,17 +2,22 @@
 
 namespace StripeIntegration\Payments\Helper;
 
-use Magento\Framework\Exception\LocalizedException;
 use StripeIntegration\Payments\Exception\InvalidAddressException;
 
 class Address
 {
+    private $countryFactory;
+    private $directoryHelper;
+    private $nameParserFactory;
+
     public function __construct(
         \Magento\Directory\Model\CountryFactory $countryFactory,
-        \Magento\Directory\Helper\Data $directoryHelper
+        \Magento\Directory\Helper\Data $directoryHelper,
+        \StripeIntegration\Payments\Model\Customer\NameParserFactory $nameParserFactory
     ) {
         $this->countryFactory = $countryFactory;
         $this->directoryHelper = $directoryHelper;
+        $this->nameParserFactory = $nameParserFactory;
     }
 
     public function getStripeAddressFromMagentoAddress($address)
@@ -31,7 +36,7 @@ class Address
             ],
             "name" => $address->getName(),
             "email" => $address->getEmail(),
-            "phone" => $address->getTelephone()
+            "phone" => substr((string)$address->getTelephone(), 0, 20)
         ];
 
         foreach ($data['address'] as $key => $value) {
@@ -80,95 +85,118 @@ class Address
         return $data;
     }
 
-    public function getMagentoAddressFromPRAPIPaymentMethodData($data)
+    public function getMagentoAddressFromECEAddress($data)
     {
-        $nameObject = $this->parseFullName($data['name'], __("billing"));
-        $firstName = $nameObject->getFirstname();
-        $lastName = $nameObject->getLastname();
-        $street = [
-            0 => (!empty($data['address']['line1']) ? $data['address']['line1'] : 'Unspecified Street'),
-            1 => (!empty($data['address']['line2']) ? $data['address']['line2'] : '')
-        ];
-        $city = (!empty($data['address']['city']) ? $data['address']['city'] : 'Unspecified City');
-        $region = (!empty($data['address']['state']) ? $data['address']['state'] : 'Unspecified Region');
-        $postcode = (!empty($data['address']['postal_code']) ? $data['address']['postal_code'] : 'Unspecified Postcode');
-        $country = (!empty($data['address']['country']) ? $data['address']['country'] : 'Unspecified Country');
+        $fullName = $data['name'] ?? null;
+        $payerName = $this->nameParserFactory->create()->fromString($fullName);
+        $region = $data['address']['state'] ?? null;
+        $country = $data['address']['country'] ?? null;
 
         // Get Region Id
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
         $regionId = $this->getRegionIdBy($regionName = $region, $regionCountry = $country);
 
         return [
-            'firstname' => $firstName,
-            'lastname' => $lastName,
-            'company' => '',
-            'email' => $data['email'],
-            'street' => $street,
-            'city' => $city,
+            'firstname' => $payerName->getFirstName(),
+            'middlename' => $payerName->getMiddleName(),
+            'lastname' => $payerName->getLastName(),
+            'company' => $data['address']['organization'] ?? null,
+            'email' => $data['email'] ?? null,
+            'street' => [
+                0 => $data['address']['line1'] ?? '',
+                1 => $data['address']['line2'] ?? ''
+            ],
+            'city' => $data['address']['city'] ?? null,
             'region_id' => $regionId,
             'region' => $region,
-            'postcode' => $postcode,
+            'postcode' => $data['address']['postal_code'] ?? null,
             'country_id' => $country,
             'telephone' => $data['phone'],
-            'fax' => '',
+            'fax' => null,
         ];
     }
 
-    public function getMagentoAddressFromPRAPIResult($address, $addressType)
+    public function getMagentoShippingAddressFromECEResult($result)
     {
-        if (!is_array($address))
-            throw new InvalidAddressException(__("Invalid %1 address.", $addressType));
+        if (empty($result['shippingAddress']['address'])) {
+            throw new InvalidAddressException(__("Invalid shipping address."));
+        } else {
+            $shippingAddress = $result['shippingAddress']['address'];
 
-        if (empty($address['recipient']))
-        {
-            $firstName = null;
-            $lastName = null;
+            if (empty($shippingAddress['country'])) {
+                throw new InvalidAddressException(__("Invalid shipping address country."));
+            }
+
+            if (empty($shippingAddress['line1'])) {
+                throw new InvalidAddressException(__("Invalid shipping address street."));
+            }
         }
-        else
-        {
-            $nameObject = $this->parseFullName($address['recipient'], $addressType);
-            $firstName = $nameObject->getFirstname();
-            $lastName = $nameObject->getLastname();
+
+        if (!empty($result['billingDetails'])) {
+            $billingDetails = $result['billingDetails'];
+        } else {
+            $billingDetails = [];
         }
 
-        // Get Region Id
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+        if (empty($shippingAddress['name']) && !empty($billingDetails['name'])) {
+            $shippingAddress['name'] = $billingDetails['name'];
+        }
 
-        if (empty($address['region']))
-            $regionId = null;
-        else
-            $regionId = $this->getRegionIdBy($regionName = $address['region'], $regionCountry = $address['country']);
+        if (empty($shippingAddress['phone']) && !empty($billingDetails['phone'])) {
+            $shippingAddress['phone'] = $billingDetails['phone'];
+        }
 
-        if (empty($address['city']))
-            throw new LocalizedException(__("Please specify a %1 city", $addressType));
+        if (empty($shippingAddress['email']) && !empty($billingDetails['email'])) {
+            $shippingAddress['email'] = $billingDetails['email'];
+        }
 
-        if (empty($address['postalCode']))
-            $address['postalCode'] = null;
+        $fullName = $this->nameParserFactory->create()->fromString($shippingAddress['name'] ?? null);
 
-        if (empty($address['country']))
-            throw new LocalizedException(__("Please specify a %1 country", $addressType));
-
-        if (empty($address['phone']))
-            $address['phone'] = null;
+        $regionId = $this->getRegionIdBy($regionName = $shippingAddress['state'] ?? null, $regionCountry = $shippingAddress['country'] ?? null);
 
         return [
-            'firstname' => $firstName,
-            'lastname' => $lastName,
-            'company' => (empty($address['organization']) ? null : $address['organization']),
-            'email' => '',
-            'street' => (empty($address['addressLine']) ? array("Unspecified Street") : $address['addressLine']),
-            'city' => $address['city'],
+            'firstname' => $fullName->getFirstName(),
+            'middlename' => $fullName->getMiddleName(),
+            'lastname' => $fullName->getLastName(),
+            'company' => $shippingAddress['organization'] ?? null,
+            'email' => $shippingAddress['email'] ?? null,
+            'street' => [
+                0 => $shippingAddress['line1'] ?? '',
+                1 => $shippingAddress['line2'] ?? ''
+            ],
+            'city' => $shippingAddress['city'] ?? null,
             'region_id' => $regionId,
-            'region' => (empty($address['region']) ? null : $address['region']),
-            'postcode' => $address['postalCode'],
-            'country_id' => $address['country'],
-            'telephone' => $address['phone'],
-            'fax' => ''
+            'region' => $shippingAddress['state'] ?? null,
+            'postcode' => $shippingAddress['postal_code'] ?? null,
+            'country_id' => $shippingAddress['country'],
+            'telephone' => $shippingAddress['phone'] ?? null,
+            'fax' => null
+        ];
+    }
+
+    public function getPartialMagentoAddressFromECEAddress($address, $addressType)
+    {
+        if (!is_array($address) || empty($address['country']) || empty($address['country']))
+            throw new InvalidAddressException(__("Invalid %1 country.", $addressType));
+
+        $regionId = $this->getRegionIdBy($regionName = $address['state'] ?? null, $regionCountry = $address['country'] ?? null);
+
+        return [
+            'city' => $address['city'] ?? null,
+            'region_id' => $regionId,
+            'region' => $address['state'] ?? null,
+            'postcode' => $address['postal_code'] ?? null,
+            'country_id' => $address['country'] ?? null
         ];
     }
 
     public function getRegionIdBy($regionName, $regionCountry)
     {
+        if (empty($regionCountry))
+            return null;
+
+        if (empty($regionName))
+            return null;
+
         $regions = $this->getRegionsForCountry($regionCountry);
 
         $regionName = $this->clean($regionName);
@@ -183,7 +211,10 @@ class Address
 
     public function getRegionsForCountry($countryCode)
     {
-        $values = array();
+        $values = [];
+
+        if (empty($countryCode))
+            return $values;
 
         $country = $this->countryFactory->create()->loadByCode($countryCode);
 
@@ -203,45 +234,42 @@ class Address
 
     public function clean($str)
     {
+        if (empty($str))
+            return null;
+
         return strtolower(trim($str));
     }
 
-    public function parseFullName($name, $nameType)
-    {
-        try
-        {
-            $nameParts = explode(' ', $name);
-            if (empty($nameParts))
-                throw new LocalizedException("No %1 name specified.", $nameType);
+    public function convertCamelCaseKeysToSnakeCase(array $elements): array
+     {
+        $output = [];
 
-            $firstName = array_shift($nameParts);
-            $lastName = implode(" ", $nameParts);
-
-            // @codingStandardsIgnoreStart
-            $return = new \Magento\Framework\DataObject();
-            // @codingStandardsIgnoreEnd
-            return $return->setFirstname($firstName)
-                          ->setLastname($lastName);
-        }
-        catch (\Exception $e)
+        foreach ($elements as $key => $value)
         {
-            return false;
+            $newKey = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $key));
+            $output[$newKey] = $value;
         }
 
-        return false;
-    }
+        return $output;
+     }
 
     public function filterAddressData($data)
     {
         $allowed = ['prefix', 'firstname', 'middlename', 'lastname', 'email', 'suffix', 'company', 'street', 'city', 'country_id', 'region', 'region_id', 'postcode', 'telephone', 'fax', 'vat_id'];
         $remove = [];
 
+        $data = $this->convertCamelCaseKeysToSnakeCase($data);
+
         foreach ($data as $key => $value)
+        {
             if (!in_array($key, $allowed))
                 $remove[] = $key;
+        }
 
         foreach ($remove as $key)
+        {
             unset($data[$key]);
+        }
 
         return $data;
     }
@@ -249,5 +277,21 @@ class Address
     public function isRegionRequired($countryCode)
     {
         return $this->directoryHelper->isRegionRequired($countryCode);
+    }
+
+    public function getShippingAddressFromOrder($order)
+    {
+        if (empty($order) || $order->getIsVirtual())
+            return null;
+
+        $address = $order->getShippingAddress();
+
+        if (empty($address))
+            return null;
+
+        if (empty($address->getFirstname()))
+            return null;
+
+        return $this->getStripeShippingAddressFromMagentoAddress($address);
     }
 }

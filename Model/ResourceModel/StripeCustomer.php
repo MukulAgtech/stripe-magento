@@ -55,7 +55,7 @@ class StripeCustomer extends \Magento\Framework\Model\ResourceModel\Db\AbstractD
      */
     public function load(\Magento\Framework\Model\AbstractModel $object, $value, $field = null)
     {
-        if (!is_numeric($value) && is_null($field)) {
+        if ($field === null) {
             $field = 'stripe_id';
         }
 

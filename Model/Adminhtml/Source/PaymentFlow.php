@@ -2,16 +2,16 @@
 
 namespace StripeIntegration\Payments\Model\Adminhtml\Source;
 
-use Magento\Payment\Model\Method\AbstractMethod;
+use Magento\Framework\Data\OptionSourceInterface;
 
-class PaymentFlow implements \Magento\Framework\Option\ArrayInterface
+class PaymentFlow implements OptionSourceInterface
 {
     public function toOptionArray()
     {
         return [
             [
                 'value' => 0,
-                'label' => __('Embed Stripe Elements into the native flow.')
+                'label' => __('Embed payment form into the native flow.')
             ],
             [
                 'value' => 1,

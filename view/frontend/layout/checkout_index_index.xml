@@ -10,7 +10,16 @@
               <item name="children" xsi:type="array">
                 <item name="sidebar" xsi:type="array">
                   <item name="children" xsi:type="array">
+                    <item name="subscription-update" xsi:type="array">
+                        <item name="sortOrder" xsi:type="string">1</item>
+                        <item name="component" xsi:type="string">StripeIntegration_Payments/js/view/subscription_update/sidebar</item>
+                        <item name="displayArea" xsi:type="string">summary</item>
+                        <item name="config" xsi:type="array">
+                            <item name="template" xsi:type="string">StripeIntegration_Payments/subscription_update/sidebar</item>
+                        </item>
+                    </item>
                     <item name="summary" xsi:type="array">
+                      <item name="sortOrder" xsi:type="string">2</item>
                       <item name="children" xsi:type="array">
                         <item name="totals" xsi:type="array">
                           <item name="children" xsi:type="array">
@@ -29,6 +38,14 @@
                                     <item name="template" xsi:type="string">StripeIntegration_Payments/checkout/trialing_subscriptions</item>
                                     <item name="title" xsi:type="string">Trial Subscription(s)</item>
                                 </item>
+                            </item>
+                            <item name="prorations" xsi:type="array">
+                              <item name="component"  xsi:type="string">StripeIntegration_Payments/js/view/checkout/summary/prorations</item>
+                              <item name="sortOrder" xsi:type="string">100</item>
+                              <item name="config" xsi:type="array">
+                                <item name="template" xsi:type="string">StripeIntegration_Payments/checkout/summary/prorations</item>
+                                <item name="title" xsi:type="string">Subscription Proration</item>
+                              </item>
                             </item>
                           </item>
                         </item>
@@ -54,15 +71,15 @@
                       <item name="children" xsi:type="array">
                         <item name="payment" xsi:type="array">
                           <item name="children" xsi:type="array">
-                            <!-- Apple Pay can be configured to display outside the payment form -->
+                            <!-- Express Checkout Element -->
                             <item name="beforeMethods" xsi:type="array">
                               <item name="component" xsi:type="string">uiComponent</item>
                               <item name="displayArea" xsi:type="string">beforeMethods</item>
                               <item name="children" xsi:type="array">
-                                <item name="stripe_payments_apple_pay" xsi:type="array">
-                                  <item name="component" xsi:type="string">StripeIntegration_Payments/js/view/payment/apple_pay</item>
+                                <item name="stripe_payments_express_checkout" xsi:type="array">
+                                  <item name="component" xsi:type="string">StripeIntegration_Payments/js/view/payment/express_checkout</item>
                                   <item name="config" xsi:type="array">
-                                    <item name="template" xsi:type="string">StripeIntegration_Payments/payment/apple_pay_top</item>
+                                    <item name="template" xsi:type="string">StripeIntegration_Payments/payment/express_checkout</item>
                                   </item>
                                   <item name="children" xsi:type="array">
                                     <item name="agreementss" xsi:type="array">
@@ -86,56 +103,17 @@
                                     <item name="stripe_payments" xsi:type="array">
                                       <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
                                     </item>
-                                    <item name="stripe_payments_bancontact" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_giropay" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_ideal" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_sepa" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_sepa_credit" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_sofort" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_multibanco" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_eps" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_p24" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_alipay" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_wechat" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_fpx" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_klarna" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_paypal" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_ach" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
-                                    <item name="stripe_payments_oxxo" xsi:type="array">
-                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
-                                    </item>
                                     <item name="stripe_payments_checkout" xsi:type="array">
                                       <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
+                                    </item>
+                                    <item name="stripe_payments_bank_transfers" xsi:type="array">
+                                      <item name="isBillingAddressRequired" xsi:type="boolean">true</item>
+                                    </item>
+                                  </item>
+                                  <item name="children" xsi:type="array">
+                                    <item name="messages" xsi:type="array">
+                                      <item name="component" xsi:type="string">Magento_Ui/js/view/messages</item>
+                                      <item name="displayArea" xsi:type="string">messages</item>
                                     </item>
                                   </item>
                                 </item>

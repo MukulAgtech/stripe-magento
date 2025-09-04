@@ -15,7 +15,7 @@ define(
             defaults: {
                 isFullTaxSummaryDisplayed: window.checkoutConfig.isFullTaxSummaryDisplayed || false,
                 template: 'StripeIntegration_Payments/checkout/trialing_subscriptions',
-                trialingSubscriptions: ko.observable(window.checkoutConfig.payment['stripe_payments'].trialingSubscriptions),
+                trialingSubscriptions: ko.observable(window.checkoutConfig.payment.stripe_payments.trialingSubscriptions),
                 fetching: ko.observable(false)
             },
             totals: quote.getTotals(),
@@ -26,7 +26,7 @@ define(
                 this._super();
 
                 this.observe(['trialingSubscriptions']);
-                this.trialingSubscriptions(window.checkoutConfig.payment['stripe_payments'].trialingSubscriptions);
+                this.trialingSubscriptions(window.checkoutConfig.payment.stripe_payments.trialingSubscriptions);
 
                 this.getFormattedSubscriptionsPrice = ko.computed(function()
                 {
@@ -71,6 +71,20 @@ define(
                 {
                     return this.getAmount('discount_total') !== 0;
                 }, this);
+
+                this.trialingSubscriptions(this.getTrialSubscriptions());
+
+                var grandTotal = quote.totals().grand_total;
+
+                quote.totals.subscribe(function (totals)
+                {
+                    if (grandTotal == quote.totals().grand_total)
+                        return;
+
+                    grandTotal = quote.totals().grand_total;
+
+                    this.refresh(quote);
+                }, this);
             },
 
             isDisplayed: function()
@@ -78,12 +92,28 @@ define(
                 return this.isFullMode() && this.getPureValue() !== 0;
             },
 
+            getTrialSubscriptions: function()
+            {
+                if (
+                    window.checkoutConfig &&
+                    window.checkoutConfig.payment &&
+                    window.checkoutConfig.payment.stripe_payments &&
+                    window.checkoutConfig.payment.stripe_payments.hasTrialSubscriptions &&
+                    window.checkoutConfig.payment.stripe_payments.trialingSubscriptions
+                )
+                {
+                    return window.checkoutConfig.payment.stripe_payments.trialingSubscriptions;
+                }
+
+                return null;
+            },
+
             refresh: function(quote)
             {
-                if (!quote.billingAddress())
+                if (!this.getTrialSubscriptions())
                     return;
 
-                if (!window.checkoutConfig.payment['stripe_payments'].hasTrialSubscriptions)
+                if (this.fetching())
                     return;
 
                 var self = this;
@@ -98,17 +128,16 @@ define(
                     {
                         try {
                             var data = JSON.parse(subscriptions);
-                            window.checkoutConfig.payment['stripe_payments'].trialingSubscriptions = data;
+                            window.checkoutConfig.payment.stripe_payments.trialingSubscriptions = data;
                             self.trialingSubscriptions(data);
                         } catch (e) {
                             console.warn('Could not retrieve trial subscriptions: ' + e.message);
-                            self.trialingSubscriptions(window.checkoutConfig.payment['stripe_payments'].trialingSubscriptions);
+                            self.trialingSubscriptions(window.checkoutConfig.payment.stripe_payments.trialingSubscriptions);
                         }
                     })
-                    .error(function(err)
+                    .fail(function (xhr, textStatus, errorThrown)
                     {
-                        self.trialingSubscriptions(window.checkoutConfig.payment['stripe_payments'].trialingSubscriptions);
-                        console.warn(console.warn('Could not retrieve trial subscriptions: ' + err));
+                        console.warn(console.warn('Could not retrieve trial subscriptions: ' + xhr.responseText));
                     });
             },
 
@@ -142,19 +171,34 @@ define(
 
             getPureValue: function()
             {
-                var price = this.getAmount('discount_total') - this.getAmount('subscriptions_total') - this.getAmount('shipping_total') - this.getAmount('tax_total');
-                return price;
+                var price = this.getAmount('discount_total') -
+                            this.getAmount('subscriptions_total') -
+                            this.getAmount('shipping_total') -
+                            this.getAmount('tax_total') +
+                            this.getAmount('tax_inclusive');
+
+                return Math.round(price * 10000) / 10000;
             },
 
-            getPureBaseValue: function()
+            getBasePureValue: function()
             {
-                var price = this.getAmount('base_discount_total') - this.getAmount('base_subscriptions_total') - this.getAmount('base_shipping_total') - this.getAmount('base_tax_total');
-                return price;
+                var price = this.getAmount('base_discount_total') -
+                            this.getAmount('base_subscriptions_total') -
+                            this.getAmount('base_shipping_total') -
+                            this.getAmount('base_tax_total') +
+                            this.getAmount('base_tax_inclusive');
+
+                return Math.round(price * 10000) / 10000;
+            },
+
+            getTaxAmount: function()
+            {
+                return this.getAmount('tax_total');
             },
 
             config: function()
             {
-                return window.checkoutConfig.payment['stripe_payments'];
+                return window.checkoutConfig.payment.stripe_payments;
             }
         });
     }

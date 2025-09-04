@@ -1,7 +1,7 @@
 <form method="post" class="scaffold-form">
     <fieldset class="fieldset info">
 
-<?php if (!$this->accountExists()): ?>
+<?php if (!$block->accountExists()): ?>
 
     <legend class="legend">
         <h2>Bank Account Not Found</h2>
@@ -9,7 +9,7 @@
 
     <p>Sorry, the bank account that you are trying to verify could not be found. Please contact us so that we manually verify your account.</p>
 
-<?php elseif ($this->accountVerified()): ?>
+<?php elseif ($block->accountVerified()): ?>
 
     <legend class="legend">
         <h2>Account Verified</h2>
@@ -23,7 +23,7 @@
         <h2>Verification Details</h2>
     </legend>
 
-    <p class="form-instructions">Please verify your bank account ending <b><?php echo $this->getBankAccountLast4(); ?></b> by entering the two micro-deposits that appear in your bank statement as <b>AMNTS:</b></p>
+    <p class="form-instructions">Please verify your bank account ending <b><?= $block->getBankAccountLast4(); // phpcs:ignore ?></b> by entering the two micro-deposits that appear in your bank statement as <b>AMNTS:</b></p>
 
     <div class="field required">
         <label class="label" for="amount1"><span>Amount 1</span></label>

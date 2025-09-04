@@ -2,23 +2,26 @@
 
 namespace StripeIntegration\Payments\Test\Integration\Unit\Helper;
 
-use PHPUnit\Framework\Constraint\StringContains;
-
+/**
+ * Magento 2.3.7-p3 does not enable these at class level
+ * @magentoAppIsolation enabled
+ * @magentoDbIsolation enabled
+ */
 class WebhooksTest extends \PHPUnit\Framework\TestCase
 {
+    private $objectManager;
+    private $webhooks;
+
     public function setUp(): void
     {
         $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->webhooks = $this->objectManager->get(\StripeIntegration\Payments\Helper\Webhooks::class);
     }
 
-    /**
-     * @magentoConfigFixture current_store payment/stripe_payments/active 1
-     * @magentoConfigFixture current_store payment/stripe_payments_basic/stripe_mode test
-     */
     public function testOrderLoad()
     {
         $event = [
+            'id' => 'evt_test',
             'type' => 'source.chargeable',
             'data' => [
                 'object' => [

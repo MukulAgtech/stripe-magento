@@ -2,65 +2,76 @@
 
 namespace StripeIntegration\Payments\Model;
 
-use Magento\Framework\DataObject;
-use Magento\Framework\Event\ManagerInterface;
 use Magento\Framework\Exception\LocalizedException;
-use Magento\Framework\Exception\NotFoundException;
 use Magento\Payment\Model\InfoInterface;
-use Magento\Payment\Model\MethodInterface;
-use Magento\Quote\Api\Data\CartInterface;
-use StripeIntegration\Payments\Helper;
-use Magento\Framework\Validator\Exception;
-use StripeIntegration\Payments\Helper\Logger;
-use Magento\Payment\Observer\AbstractDataAssignObserver;
-use Magento\Framework\Exception\CouldNotSaveException;
+use StripeIntegration\Payments\Exception\GenericException;
+use StripeIntegration\Payments\Exception\RefundOfflineException;
 
 class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
 {
-    protected $_code                 = "stripe_payments";
+    private $config;
+    private $paymentElement;
+    private $paymentIntent;
+    private $multishippingHelper;
+    private $refundsHelper;
+    private $subscriptionsHelper;
+    private $helper;
+    private $stripePaymentMethod;
+    private $api;
+    private $paymentIntentHelper;
+    private $tokenHelper;
+    private $setupIntentHelper;
+    private $quoteHelper;
+    private $orderHelper;
+    private $checkoutFlow;
 
-    protected $_isInitializeNeeded      = false;
-    protected $_canUseForMultishipping  = true;
-
-    /**
-     * @param ManagerInterface $eventManager
-     * @param ValueHandlerPoolInterface $valueHandlerPool
-     * @param PaymentDataObjectFactory $paymentDataObjectFactory
-     * @param string $code
-     * @param string $formBlockType
-     * @param string $infoBlockType
-     * @param StripeIntegration\Payments\Model\Config $config
-     * @param CommandPoolInterface $commandPool
-     * @param ValidatorPoolInterface $validatorPool
-     */
     public function __construct(
         \Magento\Framework\Event\ManagerInterface $eventManager,
         \Magento\Payment\Gateway\Config\ValueHandlerPoolInterface $valueHandlerPool,
         \Magento\Payment\Gateway\Data\PaymentDataObjectFactory $paymentDataObjectFactory,
-        $code,
-        $formBlockType,
-        $infoBlockType,
+        string $code,
+        string $formBlockType,
+        string $infoBlockType,
         \StripeIntegration\Payments\Model\Config $config,
-        \StripeIntegration\Payments\Model\Method\Checkout $checkoutMethod,
-        \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\Api $api,
+        \StripeIntegration\Payments\Model\PaymentElement $paymentElement,
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
-        \Magento\Checkout\Helper\Data $checkoutHelper,
-        \Magento\Framework\App\CacheInterface $cache,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethod $stripePaymentMethod,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
+        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
+        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
+        \StripeIntegration\Payments\Helper\Refunds $refundsHelper,
+        \StripeIntegration\Payments\Helper\Api $api,
+        \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\SetupIntent $setupIntentHelper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
         \Magento\Payment\Gateway\Command\CommandPoolInterface $commandPool = null,
         \Magento\Payment\Gateway\Validator\ValidatorPoolInterface $validatorPool = null
     ) {
         $this->config = $config;
-        $this->checkoutMethod = $checkoutMethod;
-        $this->helper = $helper;
-        $this->api = $api;
-        $this->customer = $helper->getCustomerModel();
+        $this->paymentElement = $paymentElement;
         $this->paymentIntent = $paymentIntent;
-        $this->checkoutHelper = $checkoutHelper;
-        $this->cache = $cache;
+        $this->stripePaymentMethod = $stripePaymentMethod;
+        $this->helper = $helper;
+        $this->subscriptionsHelper = $subscriptionsHelper;
+        $this->multishippingHelper = $multishippingHelper;
+        $this->refundsHelper = $refundsHelper;
+        $this->api = $api;
+        $this->paymentIntentHelper = $paymentIntentHelper;
+        $this->tokenHelper = $tokenHelper;
+        $this->setupIntentHelper = $setupIntentHelper;
+        $this->quoteHelper = $quoteHelper;
+        $this->orderHelper = $orderHelper;
+        $this->checkoutFlow = $checkoutFlow;
 
-        $this->saveCards = $config->getSaveCards();
-        $this->evtManager = $eventManager;
+        if ($this->helper->isMultiShipping())
+            $formBlockType = 'StripeIntegration\Payments\Block\Multishipping\Billing';
+        else if ($this->helper->isAdmin())
+            $formBlockType = 'StripeIntegration\Payments\Block\Adminhtml\Payment\Form';
+        else
+            $formBlockType = 'Magento\Payment\Block\Form';
 
         parent::__construct(
             $eventManager,
@@ -79,333 +90,344 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         parent::assignData($data);
 
         if ($this->config->getIsStripeAPIKeyError())
-            $this->helper->dieWithError("Invalid API key provided");
+            $this->helper->throwError("Invalid API key provided");
 
-        // From Magento 2.0.7 onwards, the data is passed in a different property
         $additionalData = $data->getAdditionalData();
-        if (is_array($additionalData))
-            $data->setData(array_merge($data->getData(), $additionalData));
 
         $info = $this->getInfoInstance();
 
-        $this->helper->assignPaymentData($info, $data, $this->config->useStoreCurrency());
+        $this->helper->assignPaymentData($info, $additionalData);
 
         return $this;
     }
 
-    public function authorize(InfoInterface $payment, $amount)
+    public function checkIfCartIsSupported(\Magento\Payment\Model\InfoInterface $payment, $amount)
     {
-        if ($amount > 0)
+        if (!$this->subscriptionsHelper->hasTrialSubscriptions())
+            return;
+
+        if ($this->subscriptionsHelper->isZeroAmountOrder($payment->getOrder()))
+            return;
+
+        if ($payment->getOrder()->getDiscountAmount() < 0)
         {
-            $this->paymentIntent->confirmAndAssociateWithOrder($payment->getOrder(), $payment);
+            // The cart includes both trial subscriptions and regular products. In the case of expiring discounts, the full discount will be applied
+            // on the initial payment which is incorrect. We need to apply only the discount which applies to the regular product, without applying
+            // the discount that applies on the trial subscription. Currently this is not supported.
+            if ($this->subscriptionsHelper->hasExpiringDiscountCoupons())
+            {
+                throw new LocalizedException(__("Limited-time discount coupons cannot be applied on carts that include both regular products and trial subscriptions."));
+            }
+        }
+    }
+
+    public function order(\Magento\Payment\Model\InfoInterface $payment, $amount)
+    {
+        $customer = $this->helper->getCustomerModel();
+        $customer->createStripeCustomerIfNotExists(false, $payment->getOrder());
+
+        $createParams = $this->setupIntentHelper->getCreateParams($payment->getOrder());
+        $confirmParams = $this->setupIntentHelper->getConfirmParams($payment->getOrder());
+
+        // Load the setup intent from the customer session
+        $setupIntentId = $this->helper->getCheckoutSession()->getStripeSetupIntentId();
+        if (!$setupIntentId)
+        {
+            $setupIntent = $this->config->getStripeClient()->setupIntents->create($createParams);
+        }
+        else
+        {
+            $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($setupIntentId, []);
+            $this->helper->getCheckoutSession()->setStripeSetupIntentId(null);
+
+            if ($setupIntent->status == "requires_confirmation" || $setupIntent->status == "requires_payment_method")
+            {
+                $setupIntent = $this->config->getStripeClient()->setupIntents->confirm($setupIntentId, $confirmParams);
+            }
+        }
+
+        if ($setupIntent->status == "requires_action")
+        {
+            // Save the setup intent ID in the customer session
+            $this->helper->getCheckoutSession()->setStripeSetupIntentId($setupIntent->id);
+            return $this->helper->throwError("Authentication Required: " . $setupIntent->client_secret);
+        }
+        else if ($setupIntent->status == "canceled")
+        {
+            return $this->helper->throwError("The payment method could not be saved. Please try again.");
+        }
+        else if (in_array($setupIntent->status, ["succeeded", "processing"]))
+        {
+            // Processing or succeeded status
+            $payment->setAdditionalInformation("customer_stripe_id", $customer->getStripeId());
+            $payment->setAdditionalInformation("payment_action", $this->config->getPaymentAction());
+
+            // If the order was placed with a confirmation token, switch things around to a normal PM token
+            $payment->setAdditionalInformation("token", $setupIntent->payment_method);
+            $payment->setAdditionalInformation("confirmation_token", true);
+        }
+        else
+        {
+            throw new GenericException(__("Something went wrong. Please try again."));
         }
 
         return $this;
     }
 
-    public function capture(InfoInterface $payment, $amount)
+    public function authorize(\Magento\Payment\Model\InfoInterface $payment, $amount)
     {
+        $this->checkIfCartIsSupported($payment, $amount);
+
+        if ($amount > 0)
+        {
+            if ($this->subscriptionsHelper->isSubscriptionUpdate())
+            {
+                $this->subscriptionsHelper->updateSubscription($payment);
+            }
+            else if ($this->helper->isMultiShipping())
+            {
+                $this->doNotPay($payment);
+            }
+            else if ($payment->getAdditionalInformation('is_migrated_subscription'))
+            {
+                $this->doNotPay($payment);
+            }
+            else
+            {
+                $this->pay($payment, $amount);
+            }
+        }
+
+        return $this;
+    }
+
+    public function capture(\Magento\Payment\Model\InfoInterface $payment, $amount)
+    {
+        $this->checkIfCartIsSupported($payment, $amount);
+
         if ($amount > 0)
         {
             // We get in here when the store is configured in Authorize Only mode and we are capturing a payment from the admin
             $token = $payment->getTransactionId();
             if (empty($token))
+            {
                 $token = $payment->getLastTransId(); // In case where the transaction was not created during the checkout, i.e. with a Stripe Webhook redirect
+            }
 
-            if ($token)
+            if ($payment->getAdditionalInformation('payment_action') == "order")
+            {
+                $this->api->createNewCharge($payment, $amount);
+            }
+            else if ($token)
             {
                 // Capture an authorized payment from the admin area
-                $this->helper->capture($token, $payment, $amount, $this->config->retryWithSavedCard());
+
+                $token = $this->tokenHelper->cleanToken($token);
+
+                $orders = $this->helper->getOrdersByTransactionId($token);
+                $quoteId = (($payment->getOrder() && $payment->getOrder()->getQuoteId()) ? $payment->getOrder()->getQuoteId() : null);
+                if ($this->multishippingHelper->isMultishippingQuote($quoteId))
+                {
+                    if (count($orders) > 1)
+                    {
+                        $this->multishippingHelper->captureOrdersFromAdminArea($orders, $token, $payment, $amount, $this->config->retryWithSavedCard());
+                    }
+                    else
+                    {
+                        return $this->helper->throwError(__("This order cannot be captured because no transactions have been recorded against it."));
+                    }
+                }
+                else
+                {
+                    $this->helper->capture($token, $payment, $amount, $this->config->retryWithSavedCard());
+                }
+            }
+            else if ($payment->getAdditionalInformation('is_migrated_subscription'))
+            {
+                return $this->helper->throwError(__("It is not possible to capture subscription orders that were created from the CLI."));
+            }
+            else if ($this->helper->isAdmin() && $payment->getOrder()->getState() == "pending_payment")
+            {
+                return $this->helper->throwError(__("It is not possible to capture the payment because the transaction has not yet been authorized."));
+            }
+            else if ($this->subscriptionsHelper->isSubscriptionUpdate())
+            {
+                $this->subscriptionsHelper->updateSubscription($payment);
+            }
+            else if ($this->helper->isMultiShipping())
+            {
+                $this->doNotPay($payment);
             }
             else
             {
-                // Create a new payment
-                $this->paymentIntent->confirmAndAssociateWithOrder($payment->getOrder(), $payment);
+                $this->pay($payment, $amount);
             }
         }
 
         return $this;
     }
 
-    public function checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency)
+    public function doNotPay(\Magento\Payment\Model\InfoInterface $payment)
     {
-        $cents = 100;
-        if ($this->helper->isZeroDecimal($currency))
-            $cents = 1;
+        $payment->setIsFraudDetected(false);
+        $payment->setIsTransactionPending(true); // not authorized yet
+        $payment->setIsTransactionClosed(false); // not captured
+        $payment->getOrder()->setCanSendNewEmailFlag(false);
+    }
 
-        $refundedAndCanceledAmount = $refundedAmount + $canceledAmount;
+    public function pay(InfoInterface $payment, $amount)
+    {
+        if ($payment->getAdditionalInformation("is_recurring_subscription"))
+            return $this;
 
-        if ($remainingAmount <= 0)
+        if (!$payment->getAdditionalInformation("token") && !$payment->getAdditionalInformation("confirmation_token"))
+            return $this->helper->throwError(__("Cannot place order because a payment method was not provided."));
+
+        $order = $payment->getOrder();
+
+        try
         {
-            if ($refundedAndCanceledAmount < $requestedAmount)
+            // Update the payment intent by loading it from cache - the load method with update it if its different.
+            $this->paymentElement->fromQuoteId($order->getQuoteId());
+            $this->paymentElement->updateFromOrder($order);
+            $this->paymentElement->cancelInvalidOrders($order);
+
+            $result = $this->paymentElement->confirm($order);
+
+            if (!empty($result->client_secret)) // Trial subscriptions will not have a client secret
             {
-                $humanReadable1 = $this->helper->addCurrencySymbol(($requestedAmount - $refundedAndCanceledAmount) / $cents, $currency);
-                $humanReadable2 = $this->helper->addCurrencySymbol($requestedAmount / $cents, $currency);
-                $msg = __('%1 out of %2 could not be refunded online. Creating an offline refund instead.', $humanReadable1, $humanReadable2);
-                $this->helper->addWarning($msg);
-                $this->helper->addOrderComment($msg, $order);
+                $payment->setAdditionalInformation("client_secret", $result->client_secret);
+            }
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->sendPaymentFailedEmail($this->quoteHelper->getQuote(), $e->getMessage());
+            throw $e;
+        }
+
+        if ($this->checkoutFlow->isPendingMicrodepositsVerification)
+        {
+            if ($this->tokenHelper->isSetupIntentToken($result->id))
+            {
+                $this->paymentIntent->processPendingOrder($order, $result);
+            }
+            else
+            {
+                throw new GenericException(__("Something went wrong. Please contact us for assistance."));
+            }
+        }
+        else if ($this->paymentIntent->requiresAction($result))
+        {
+            if ($this->helper->isAdmin())
+            {
+                return $this->helper->throwError(__("This payment method cannot be used because it requires a customer authentication. To avoid authentication in the admin area, please contact Stripe support to request access to the MOTO gate for your Stripe account."));
             }
 
-            return false;
-        }
+            if ($this->shouldAuthenticateManually($result))
+            {
+                // Certain versions of Magento such as 2.4.4 and 2.4.6 cause order increment ID skipping after a payment failure.
+                // We save the quote so that the order increment ID is saved. We intentionally do not use the quotes repository,
+                // because that triggers a bug in older versions of Magento (2.4.2), where configurable products with a QTY of 1
+                // would fail order placement with an error that the product quantity is not available.
+                $this->quoteHelper->getQuote()->save();
 
-        if ($refundedAndCanceledAmount >= $requestedAmount)
+                return $this->helper->throwError("Authentication Required: {$result->client_secret}");
+            }
+
+            $this->paymentIntent->processPendingOrder($order, $result);
+        }
+        else if ($this->paymentElement->isTrialSubscription())
         {
-            return false;
+            $this->paymentIntent->processTrialSubscriptionOrder($order, $this->paymentElement->getSubscription());
         }
-
-        return true;
+        else if ($this->paymentElement->getPaymentIntent())
+        {
+            if ($this->paymentIntentHelper->isSuccessful($result))
+            {
+                $this->paymentIntent->processSuccessfulOrder($order, $result);
+            }
+            else
+            {
+                $this->paymentIntent->processPendingOrder($order, $result);
+            }
+            $payment->setAdditionalInformation("server_side_transaction_id", $result->id);
+        }
+        else if ($this->checkoutFlow->isFutureSubscriptionSetup)
+        {
+            // The subscription starts at a future date
+            if ($this->tokenHelper->isSubscriptionToken($result->id))
+            {
+                $this->paymentIntent->processFutureSubscriptionOrder($order, $result->customer, $result->id);
+            }
+            else if ($this->tokenHelper->isSetupIntentToken($result->id))
+            {
+                $this->paymentIntent->processFutureSubscriptionOrder($order, $result->customer, $this->paymentElement->getSubscriptionId());
+            }
+            else
+            {
+                throw new GenericException(__("Something went wrong. Please contact us for assistance."));
+            }
+        }
+        else if ($this->paymentElement->getSetupIntent())
+        {
+            $this->paymentIntent->processPendingOrder($order, $result);
+        }
     }
 
-    public function setRefundedAmount($amount, $requestedAmount, $currency, $order)
+    private function shouldAuthenticateManually($intent)
     {
-        $currency = strtolower($currency);
-        $orderCurrency = strtolower($order->getOrderCurrencyCode());
-        $baseCurrency = strtolower($order->getBaseCurrencyCode());
+        $methods = $this->config->getManualAuthenticationPaymentMethods();
 
-        $cents = 100;
-        if ($this->helper->isZeroDecimal($currency))
-            $cents = 1;
-
-        // If this is a partial refund (2nd or 3rd), there will be an amount set already which we need to adjust instead of overwrite
-        if ($order->getTotalRefunded() > 0)
+        if (!empty($intent->payment_method) && is_string($intent->payment_method))
         {
-            $diff = $amount - $requestedAmount;
-            if ($diff == 0)
-                return $this; // Let Magento set the refund amount
+            $paymentMethod = $this->stripePaymentMethod->fromPaymentMethodId($intent->payment_method)->getStripeObject();
 
-            $refunded = $diff / $cents;
-        }
-        else
-        {
-            $refunded = $amount / $cents;
+            if (in_array($paymentMethod->type, $methods))
+            {
+                return true;
+            }
         }
 
-        if ($currency == $orderCurrency)
-        {
-            $order->setTotalRefunded($order->getTotalRefunded() + $refunded);
-            $baseRefunded = $this->helper->convertOrderAmountToBaseAmount($refunded, $currency, $order);
-            $order->setBaseTotalRefunded($order->getBaseTotalRefunded() + $baseRefunded);
-        }
-        else if ($currency == $baseCurrency)
-        {
-            $rate = ($order->getBaseToOrderRate() ? $order->getBaseToOrderRate() : 1);
-            $order->setTotalRefunded($order->getTotalRefunded() + round($refunded * $rate, 2));
-            $order->setBaseTotalRefunded($order->getBaseTotalRefunded() + $refunded);
-        }
-        else
-        {
-            $this->helper->addWarning(__("Could not set order refunded amount because the currency %1 matches neither the order currency, nor the base currency."), $currency);
-        }
-
-        return $this;
+        return false;
     }
 
     public function cancel(InfoInterface $payment, $amount = null)
     {
-        if ($payment->getCreditmemo() && $payment->getCreditmemo()->getInvoice())
-            $invoice = $payment->getCreditmemo()->getInvoice();
-        else
-            $invoice = null;
-
-        $method = $payment->getMethod();
-        $useStoreCurrency = $payment->getAdditionalInformation("use_store_currency");
-
-        if ($method == "stripe_payments" && !$useStoreCurrency)
+        if ($payment->getCancelOfflineWithComment())
         {
-            // Authorized Only
-            $amount = (empty($amount)) ? $payment->getOrder()->getBaseGrandTotal() : $amount;
-            $currency = $payment->getOrder()->getBaseCurrencyCode();
-        }
-        else
-        {
-            // Captured
-            $creditmemo = $payment->getCreditmemo();
-            if (!empty($creditmemo))
-            {
-                $rate = $creditmemo->getBaseToOrderRate();
-                if (!empty($rate) && is_numeric($rate) && $rate > 0)
-                {
-                    $amount = round($amount * $rate, 2);
-                    $diff = $amount - $payment->getAmountPaid();
-                    if ($diff > 0 && $diff <= 1) // Solves a currency conversion rounding issue (Magento rounds .5 down)
-                        $amount = $payment->getAmountPaid();
-                }
-            }
-
-            // Authorized
-            $amount = (empty($amount)) ? $payment->getOrder()->getGrandTotal() : $amount;
-            $currency = $payment->getOrder()->getOrderCurrencyCode();
-        }
-
-        if ($payment->getRefundTransactionId())
-            $transactionId = $this->helper->cleanToken($payment->getRefundTransactionId());
-        else if ($invoice && $invoice->getTransactionId())
-            $transactionId = $this->helper->cleanToken($invoice->getTransactionId());
-        else
-            $transactionId = $this->helper->cleanToken($payment->getLastTransId());
-
-        // Case where an invoice is in Pending status, with no transaction ID, receiving a source.failed event which cancels the invoice.
-        if (empty($transactionId))
-        {
-            $humanReadable = $this->helper->addCurrencySymbol($amount, $currency);
-            $msg = __("Cannot refund %1 online because the order has no transaction ID. Creating an offline Credit Memo instead.", $humanReadable);
-            $this->helper->addWarning($msg);
-            $this->helper->addOrderComment($msg, $payment->getOrder());
+            $this->helper->overrideCancelActionComment($payment, $payment->getCancelOfflineWithComment());
             return $this;
         }
 
-        try {
-            $refundSessionId = rand(); // In case cancel() is called multiple times in one of the automated tests
+        try
+        {
+            $paymentIntentId = $this->refundsHelper->getTransactionId($payment);
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId, []);
 
-            $stripe = $this->config->getStripeClient();
-
-            $order = $payment->getOrder();
-            $refundableAmount = $this->helper->getAmountRefundable($order, $refundSessionId);
-
-            if ($refundableAmount < $amount)
+            if ($this->multishippingHelper->isMultishippingPayment($paymentIntent) && $paymentIntent->status == "requires_capture")
             {
-                $humanReadable = $this->helper->addCurrencySymbol($refundableAmount, $currency);
-                throw new LocalizedException(__("The most amount that can be refunded online is %1.", $humanReadable));
+                $this->refundsHelper->refundMultishipping($paymentIntent, $payment, $amount);
+            }
+            else
+            {
+                $this->refundsHelper->refund($payment, $amount);
+            }
+        }
+        catch (RefundOfflineException $e)
+        {
+            if ($this->helper->isAdmin())
+            {
+                $this->helper->addWarning($e->getMessage());
             }
 
-            // Refund strategy with $refundableAmount and $capturableAmount:
-            // - Fully cancel authorizations; it is not possible to partially refund the order if there are authorizations, because you must first capture them. You can only cancel the whole order.
-            // - Refund the current invoice next; there should be only one.
-            // - Refund paid amounts from subscription PIs; there can be one or more depending on how many subscriptions were in the cart.
-
-            $cents = 100;
-            if ($this->helper->isZeroDecimal($currency))
-                $cents = 1;
-
-            $refundedAmount = 0;
-            $canceledAmount = 0;
-            $requestedAmount = round($amount * $cents);
-            $remainingAmount = $requestedAmount;
-
-            // 1. Fully cancel authorizations. It is not possible to partially refund the order if there are authorizations,
-            // because you must first capture them. You can only cancel the whole order.
-            $paymentIntents = $this->helper->getOrderPaymentIntents($order, $refundSessionId);
-            foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
-            {
-                if ($paymentIntent->status != \StripeIntegration\Payments\Model\PaymentIntent::AUTHORIZED
-                    || $paymentIntent->amount > $remainingAmount)
-                    continue;
-
-                foreach ($paymentIntent->charges->data as $charge)
-                {
-                    // If it is an uncaptured authorization
-                    if (!$charge->captured)
-                    {
-                        $humanReadable = $this->helper->addCurrencySymbol($charge->amount / $cents, $currency);
-
-                        // which has not expired yet
-                        if (!$charge->refunded)
-                        {
-                            $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
-                            $msg = __('We refunded online/released the uncaptured amount of %1 via Stripe. Charge ID: %2', $humanReadable, $charge->id);
-                            $this->helper->addOrderComment($msg, $order);
-                            // We intentionally do not cancel the $charge in this block, there is a $paymentIntent->cancel() further down
-                        }
-                        // which has expired
-                        else
-                        {
-                            $msg = __('We refunded offline the expired authorization of %1. Charge ID: %2', $humanReadable, $charge->id);
-                            $this->helper->addOrderComment($msg, $order);
-                        }
-
-                        $remainingAmount -= $charge->amount;
-                        $canceledAmount += $charge->amount;
-                    }
-                }
-
-                // Fully cancel the payment intent
-                $paymentIntent->cancel();
-            }
-
-            if (!$this->checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency))
-            {
-                $this->setRefundedAmount($refundedAmount, $requestedAmount, $currency, $order);
-                return $this;
-            }
-
-            // 2. Refund the current invoice next; there should be only one match.
-            foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
-            {
-                if ($paymentIntentId != $transactionId)
-                    continue;
-
-                foreach ($paymentIntent->charges->data as $charge)
-                {
-                    if ($charge->captured && !$charge->invoice)
-                    {
-                        $amountToRefund = min($remainingAmount, $charge->amount - $charge->amount_refunded);
-                        if ($amountToRefund <= 0)
-                            continue;
-
-                        $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
-
-                        $refund = $stripe->refunds->create(['charge' => $charge->id, 'amount' => $amountToRefund]);
-
-                        $humanReadable = $this->helper->addCurrencySymbol($amountToRefund / $cents, $currency);
-                        $msg = __('We refunded online %1 via Stripe. Charge ID: %2', $humanReadable, $charge->id);
-                        $this->helper->addOrderComment($msg, $order);
-
-                        $remainingAmount -= $amountToRefund;
-                        $refundedAmount += $amountToRefund;
-                    }
-
-                    if (!$this->checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency))
-                    {
-                        $this->setRefundedAmount($refundedAmount, $requestedAmount, $currency, $order);
-                        return $this;
-                    }
-                }
-            }
-
-            if (!$this->checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency))
-            {
-                $this->setRefundedAmount($refundedAmount, $requestedAmount, $currency, $order);
-                return $this;
-            }
-
-            // 3. Refund amounts from subscription payments; there can be one or more depending on how many subscriptions were in the cart.
-            foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
-            {
-                foreach ($paymentIntent->charges->data as $charge)
-                {
-                    if ($charge->captured && $charge->invoice)
-                    {
-                        $amountToRefund = min($remainingAmount, $charge->amount - $charge->amount_refunded);
-                        if ($amountToRefund <= 0)
-                            continue;
-
-                        $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
-                        $refund = $stripe->refunds->create(['charge' => $charge->id, 'amount' => $amountToRefund]);
-
-                        $humanReadable = $this->helper->addCurrencySymbol($amountToRefund / $cents, $currency);
-                        $msg = __('We refunded online %1 via Stripe. Charge ID: %2. Invoice ID: %3', $humanReadable, $charge->id, $charge->invoice);
-                        $this->helper->addOrderComment($msg, $order);
-
-                        $remainingAmount -= $amountToRefund;
-                        $refundedAmount += $amountToRefund;
-                    }
-
-                    if (!$this->checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency))
-                    {
-                        $this->setRefundedAmount($refundedAmount, $requestedAmount, $currency, $order);
-                        return $this;
-                    }
-                }
-            }
-
-            // We are calling checkIfWeCanRefundMore one last time in case an order comment/warning needs to be added
-            $this->checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency);
-            $this->setRefundedAmount($refundedAmount, $requestedAmount, $currency, $order);
+            if ($this->refundsHelper->isCancelation($payment))
+                $this->helper->overrideCancelActionComment($payment, $e->getMessage());
+            else
+                $this->orderHelper->addOrderComment($e->getMessage(), $payment->getOrder());
         }
         catch (\Exception $e)
         {
-            $this->helper->dieWithError(__('Could not refund payment: %1', $e->getMessage()), $e);
+            $this->helper->throwError(__('Could not refund payment: %1', $e->getMessage()), $e);
         }
 
         return $this;
@@ -442,33 +464,88 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
 
     public function canCapture()
     {
-        return parent::canCapture();
-    }
-
-    public function isApplePay()
-    {
         $info = $this->getInfoInstance();
         if ($info)
-            return $info->getAdditionalInformation("is_prapi");
-
-        return false;
+        {
+            $paymentAction = $info->getAdditionalInformation("payment_action");
+            $token = $info->getAdditionalInformation("token");
+            if ($paymentAction == "order" && !empty($token))
+            {
+                return true;
+            }
+        }
+        return parent::canCapture();
     }
 
     public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
-        if ($quote->getIsRecurringOrder())
+        if ($quote && $quote->getIsRecurringOrder())
+            return true;
+
+        if ($this->subscriptionsHelper->isSubscriptionUpdate())
             return true;
 
         if (!$this->config->isEnabled())
             return false;
 
-        if ($this->checkoutMethod->isAvailable($quote) && !$this->isApplePay())
+        if ($this->helper->isAdmin())
+            return parent::isAvailable($quote);
+
+        if ($this->config->isRedirectPaymentFlow() && !$this->isExpressCheckout() && !$this->helper->isMultiShipping())
             return false;
 
         return parent::isAvailable($quote);
     }
 
-    // Fixes https://github.com/magento/magento2/issues/5413 in Magento 2.1
-    public function setId($code) { }
-    public function getId() { return $this->_code; }
+    public function isExpressCheckout()
+    {
+        return $this->checkoutFlow->isExpressCheckout;
+    }
+
+    public function getConfigPaymentAction()
+    {
+        $info = $this->getInfoInstance();
+        if ($info && $info->getAdditionalInformation("is_migrated_subscription") ||
+            $this->subscriptionsHelper->isSubscriptionUpdate())
+        {
+            return 'authorize';
+        }
+
+        // Subscriptions do not support authorize only mode
+        if ($this->subscriptionsHelper->hasSubscriptions())
+        {
+            return 'authorize_capture';
+        }
+
+        return $this->config->getPaymentAction();
+    }
+
+    public function canEdit()
+    {
+        $info = $this->getInfoInstance();
+
+        if (!empty($info->getTransactionId()))
+            return false;
+
+        if (!empty($info->getLastTransId()))
+            return false;
+
+        if (empty($info->getAdditionalInformation("token")))
+            return false;
+
+        if (empty($info->getAdditionalInformation("customer_stripe_id")))
+            return false;
+
+        $token = $info->getAdditionalInformation("token");
+
+        if (strpos($token, "pm_") !== 0)
+            return false;
+
+        return true;
+    }
+
+    protected function getConfig()
+    {
+        return $this->config;
+    }
 }

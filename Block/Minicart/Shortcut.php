@@ -7,7 +7,7 @@ use Magento\Catalog\Block\ShortcutInterface;
 
 class Shortcut extends StripeButton implements ShortcutInterface
 {
-    const ALIAS_ELEMENT_INDEX = 'alias';
+    public const ALIAS_ELEMENT_INDEX = 'alias';
 
     /**
      * Path to template file in theme.
@@ -44,8 +44,6 @@ class Shortcut extends StripeButton implements ShortcutInterface
 
     public function setIsShoppingCart($isShoppingCart)
     {
-        $this->isShoppingCart = $isShoppingCart;
-
         if ($isShoppingCart)
             $this->_template = 'StripeIntegration_Payments::express/cart_button.phtml';
         else
@@ -59,16 +57,10 @@ class Shortcut extends StripeButton implements ShortcutInterface
      */
     protected function shouldRender()
     {
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        //$payment = $objectManager->create('Magento\Payment\Model\MethodInterface');
-        $session = $objectManager->create('Magento\Checkout\Model\Session');
-
-        if ($this->getIsCart()) {
+        if ($this->getIsCart())
             return true;
-        }
 
-        return $this->expressHelper->getStoreConfig('payment/stripe_payments_express/cart_button', $session->getQuote()->getStoreId())
-               && $this->isMiniCart;
+        return $this->isEnabled("minicart") && $this->isMiniCart;
     }
 
     /**
@@ -78,9 +70,8 @@ class Shortcut extends StripeButton implements ShortcutInterface
      */
     protected function _toHtml()
     {
-        if (!$this->shouldRender()) {
+        if (!$this->shouldRender())
             return '';
-        }
 
         return parent::_toHtml();
     }

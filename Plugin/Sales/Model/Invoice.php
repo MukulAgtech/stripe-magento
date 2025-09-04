@@ -4,35 +4,61 @@ namespace StripeIntegration\Payments\Plugin\Sales\Model;
 
 class Invoice
 {
+    private $transactions = [];
+    private $transactionSearchResultFactory;
+    private $productFactory;
+    private $dataHelper;
+    private $products;
+    private $subscriptionHelper;
+
     public function __construct(
-        \Magento\Catalog\Model\ProductFactory $productFactory
+        \Magento\Sales\Api\Data\TransactionSearchResultInterfaceFactory $transactionSearchResultFactory,
+        \Magento\Catalog\Model\ProductFactory $productFactory,
+        \StripeIntegration\Payments\Helper\Data $dataHelper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionHelper
     )
     {
+        $this->transactionSearchResultFactory = $transactionSearchResultFactory;
         $this->productFactory = $productFactory;
+        $this->dataHelper = $dataHelper;
+        $this->subscriptionHelper = $subscriptionHelper;
     }
 
-    public function aroundCanCapture($subject, \Closure $proceed)
+    public function getTransactions($order)
     {
-        // Deprecated as of v2.7.1
-        return /* !$this->hasSubscriptions($subject) && */ $proceed();
+        if (isset($this->transactions[$order->getId()]))
+            return $this->transactions[$order->getId()];
+
+        $transactions = $this->transactionSearchResultFactory->create()->addOrderIdFilter($order->getId());
+        return $this->transactions[$order->getId()] = $transactions;
     }
 
     public function aroundCanCancel($subject, \Closure $proceed)
     {
-        // Deprecated as of v2.7.1
-        return /* !$this->hasSubscriptions($subject) && */ $proceed();
-    }
+        $order = $subject->getOrder();
 
-    public function isUnpaid($subject)
-    {
-        $transactionId = $subject->getTransactionId();
-        if (empty($transactionId))
-            return true;
+        $isStripePaymentMethod = (strpos($order->getPayment()->getMethod(), "stripe_") === 0);
 
-        if (strpos($transactionId, "sub_") !== false) // Trialing subscription invoice
-            return true;
+        if (!$isStripePaymentMethod || !$this->dataHelper->isAdmin())
+            return $proceed();
 
-        return false;
+        $isPending = ($subject->getState() == \Magento\Sales\Model\Order\Invoice::STATE_OPEN);
+        $transactions = $this->getTransactions($order);
+        $hasTransactions = ($transactions->getSize() > 0);
+        $wasCaptured = false;
+        foreach ($transactions->getItems() as $transaction)
+        {
+            if ($transaction->getTxnType() == "capture")
+                $wasCaptured = true;
+        }
+
+        if ($isPending && $hasTransactions)
+            return false;
+
+        if ($wasCaptured)
+            return false;
+
+        return $proceed();
     }
 
     public function hasSubscriptions($subject)
@@ -45,7 +71,7 @@ class Invoice
                 continue;
 
             $product = $this->loadProductById($item->getProductId());
-            if ($product->getStripeSubEnabled())
+            if ($product && $this->subscriptionHelper->isSubscriptionOptionEnabled($product->getId()))
                 return true;
         }
 

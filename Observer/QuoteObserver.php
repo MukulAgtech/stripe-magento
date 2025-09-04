@@ -2,35 +2,35 @@
 
 namespace StripeIntegration\Payments\Observer;
 
-use Magento\Framework\Event\Observer;
 use Magento\Payment\Observer\AbstractDataAssignObserver;
-use StripeIntegration\Payments\Helper\Logger;
 
 class QuoteObserver extends AbstractDataAssignObserver
 {
     public $hasSubscriptions = null;
 
+    private $config;
+    private $taxCalculation;
+    private $quoteHelper;
+
     public function __construct(
-        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\Tax\Calculation $taxCalculation
     )
     {
-        $this->helper = $helper;
+        $this->quoteHelper = $quoteHelper;
         $this->config = $config;
         $this->taxCalculation = $taxCalculation;
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
-    public function execute(Observer $observer)
+    public function execute(\Magento\Framework\Event\Observer $observer)
     {
         $quote = $observer->getEvent()->getQuote();
-        $eventName = $observer->getEvent()->getName();
 
-        if (empty($quote) || (!$this->config->isEnabled() && !$this->config->isEnabled("checkout")))
+        if (empty($quote) || !$this->config->isEnabled() || !$this->config->isSubscriptionsEnabled())
             return;
 
         if ($this->config->priceIncludesTax())
@@ -39,7 +39,7 @@ class QuoteObserver extends AbstractDataAssignObserver
         $this->taxCalculation->method = null;
 
         if ($this->hasSubscriptions === null)
-            $this->hasSubscriptions = $this->helper->hasSubscriptionsIn($quote->getAllItems());
+            $this->hasSubscriptions = $this->quoteHelper->hasSubscriptionsIn($quote->getAllItems());
 
         if ($this->hasSubscriptions)
         {

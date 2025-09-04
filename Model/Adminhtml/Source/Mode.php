@@ -4,8 +4,8 @@ namespace StripeIntegration\Payments\Model\Adminhtml\Source;
 
 class Mode
 {
-    const TEST = 'test';
-    const LIVE = 'live';
+    public const TEST = 'test';
+    public const LIVE = 'live';
 
     public function toOptionArray()
     {

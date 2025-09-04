@@ -2,113 +2,205 @@
 
 namespace StripeIntegration\Payments\Helper;
 
-use StripeIntegration\Payments\Helper\Logger;
 use StripeIntegration\Payments\Exception\WebhookException;
+use StripeIntegration\Payments\Exception\OrderNotFoundException;
+use StripeIntegration\Payments\Exception\RetryLaterException;
+use StripeIntegration\Payments\Exception\SubscriptionUpdatedException;
+use StripeIntegration\Payments\Exception\MissingOrderException;
 
 class Webhooks
 {
-    public $eventOrderIds = [];
-
-    protected $unifiedEvents = [
-        "charge.captured",
-        "charge.failed",
-        "customer.subscription.created",
-        "checkout.session.expired",
-        "invoice.finalized",
-        "invoice.payment_succeeded",
-        "invoice.voided",
-        "review.closed",
-    ];
+    private $output = null;
+    private $debug = false;
+    private $webhooksLogger;
+    private $eventManager;
+    private $invoiceFactory;
+    private $paymentElementFactory;
+    private $config;
+    private $creditmemoFactory;
+    private $creditmemoService;
+    private $urlInterface;
+    private $webhookCollection;
+    private $webhookEventCollectionFactory;
+    private $paymentIntentFactory;
+    private $checkoutSessionFactory;
+    private $webhookEventFactory;
+    private $emailHelper;
+    private $response;
+    private $request;
+    private $subscriptionsHelper;
+    private $helper;
+    private $cache;
+    private $creditmemoHelper;
+    private $orderCommentSender;
+    private $orderHelper;
+    private $missingOrderHandlerFactory;
 
     public function __construct(
         \Magento\Framework\App\Request\Http $request,
         \Magento\Framework\App\Response\Http $response,
         \StripeIntegration\Payments\Logger\WebhooksLogger $webhooksLogger,
-        \Psr\Log\LoggerInterface $logger,
         \Magento\Framework\Event\ManagerInterface $eventManager,
-        \StripeIntegration\Payments\Helper\Api $api,
         \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Model\InvoiceFactory $invoiceFactory,
-        \Magento\Sales\Model\Order\Email\Sender\OrderSender $orderSender,
-        \Magento\Framework\App\CacheInterface $cache,
-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+        \StripeIntegration\Payments\Model\PaymentElementFactory $paymentElementFactory,
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Webhooks\MissingOrderHandlerFactory $missingOrderHandlerFactory,
         \Magento\Sales\Model\Order\CreditmemoFactory $creditmemoFactory,
         \Magento\Sales\Model\Service\CreditmemoService $creditmemoService,
-        \Magento\Framework\DB\TransactionFactory $transactionFactory,
-        \Magento\Sales\Model\Order\Invoice $invoiceModel,
         \Magento\Framework\UrlInterface $urlInterface,
         \StripeIntegration\Payments\Model\ResourceModel\Webhook\Collection $webhookCollection,
-        \StripeIntegration\Payments\Model\ResourceModel\Source\CollectionFactory $sourceCollectionFactory,
+        \StripeIntegration\Payments\Model\ResourceModel\WebhookEvent\CollectionFactory $webhookEventCollectionFactory,
         \StripeIntegration\Payments\Model\PaymentIntentFactory $paymentIntentFactory,
         \StripeIntegration\Payments\Model\CheckoutSessionFactory $checkoutSessionFactory,
-        \StripeIntegration\Payments\Helper\WebhooksSetup $webhooksSetup
+        \StripeIntegration\Payments\Model\WebhookEventFactory $webhookEventFactory,
+        \StripeIntegration\Payments\Helper\Email $emailHelper,
+        \StripeIntegration\Payments\Helper\Creditmemo $creditmemoHelper,
+        \Magento\Framework\App\CacheInterface $cache,
+        \Magento\Sales\Model\Order\Email\Sender\OrderCommentSender $orderCommentSender
     ) {
         $this->request = $request;
         $this->response = $response;
         $this->webhooksLogger = $webhooksLogger;
-        $this->logger = $logger;
-        $this->cache = $cache;
-        $this->api = $api;
         $this->helper = $helper;
-        $this->stripeCustomer = $helper->getCustomerModel();
+        $this->orderHelper = $orderHelper;
+        $this->subscriptionsHelper = $subscriptionsHelper;
         $this->eventManager = $eventManager;
         $this->invoiceFactory = $invoiceFactory;
-        $this->orderSender = $orderSender;
-        $this->storeManager = $storeManager;
+        $this->paymentElementFactory = $paymentElementFactory;
         $this->config = $config;
+        $this->missingOrderHandlerFactory = $missingOrderHandlerFactory;
         $this->creditmemoFactory = $creditmemoFactory;
         $this->creditmemoService = $creditmemoService;
-        $this->transactionFactory = $transactionFactory;
-        $this->invoiceModel = $invoiceModel;
         $this->urlInterface = $urlInterface;
         $this->webhookCollection = $webhookCollection;
-        $this->sourceCollectionFactory = $sourceCollectionFactory;
+        $this->webhookEventCollectionFactory = $webhookEventCollectionFactory;
         $this->paymentIntentFactory = $paymentIntentFactory;
         $this->checkoutSessionFactory = $checkoutSessionFactory;
-        $this->webhooksSetup = $webhooksSetup;
+        $this->webhookEventFactory = $webhookEventFactory;
+        $this->emailHelper = $emailHelper;
+        $this->creditmemoHelper = $creditmemoHelper;
+        $this->cache = $cache;
+        $this->orderCommentSender = $orderCommentSender;
     }
 
-    public function dispatchEvent()
+    public function setOutput(\Symfony\Component\Console\Output\OutputInterface $output)
     {
+        $this->output = $output;
+    }
+
+    protected function verifyRequestMethod()
+    {
+        if ($this->request->getMethod() == 'GET')
+            throw new WebhookException("Your webhooks endpoint is accessible from your location.", 200);
+    }
+
+    public function dispatchEvent($stdEvent = null, $processMoreThanOnce = false)
+    {
+        $webhookEventModel = null;
+
         try
         {
-            if ($this->request->getMethod() == 'GET')
-                throw new WebhookException("Your webhooks endpoint is accessible!", 200);
+            if (!$stdEvent)
+            {
+                $this->verifyRequestMethod();
 
-            $this->verifyWebhookSignature();
+                // Retrieve the request's body and parse it as JSON
+                $body = $this->request->getContent();
+                $event = json_decode($body, true);
+                $stdEvent = json_decode($body);
 
-            // Retrieve the request's body and parse it as JSON
-            $body = $this->request->getContent();
-            $event = json_decode($body, true);
-            $stdEvent = json_decode($body);
+                $eventType = $this->getEventType($event);
 
-            if (empty($event['type']))
-                throw new WebhookException(__("Unknown event type"));
+                if (isset($event['id']))
+                    $eventId = " (" . $event['id'] . ")";
+                else
+                    $eventId = "";
+
+                $this->log("Received $eventType" . $eventId);
+
+                $this->verifyWebhookSignature();
+            }
+            else
+            {
+                $event = json_decode(json_encode($stdEvent), true);
+
+                $eventType = $this->getEventType($event);
+
+                if (isset($event['id']))
+                    $eventId = " (" . $event['id'] . ")";
+                else
+                    $eventId = "";
+
+                $this->log("Received $eventType" . $eventId);
+            }
+
+            if (!empty($this->request->getParam('dev')))
+            {
+                $processMoreThanOnce = true;
+            }
+
+            $webhookModel = $this->webhookCollection->findFromRequest($this->request->getContent(), $this->request->getHeader('Stripe-Signature'));
+            if ($webhookModel && $webhookModel->getId())
+            {
+                $webhookModel->pong()->save();
+            }
+
+            $webhookEventModel = $this->webhookEventFactory->create()->fromStripeObject($event, $processMoreThanOnce);
 
             if ($event['type'] == "product.created")
             {
                 $this->onProductCreated($event, $stdEvent);
-                $this->log("200 OK");
+                $webhookEventModel->markAsProcessed();
+                $this->log("200 OK" . $eventId);
                 return;
             }
 
-            if ($this->cache->load($event['id']) && empty($this->request->getParam('dev')))
-                throw new WebhookException(__("Event with ID %1 has already been processed.", $event['id']), 202);
-
-            $eventType = $this->getEventType($event);
-            $this->log("Received $eventType");
-
             $this->response->setStatusCode(500);
-            $this->eventManager->dispatch($eventType, array(
-                    'arrEvent' => $event,
-                    'stdEvent' => $stdEvent,
-                    'object' => $event['data']['object']
-                ));
+            $this->eventManager->dispatch($eventType, [
+                'arrEvent' => $event,
+                'stdEvent' => $stdEvent,
+                'object' => $event['data']['object'],
+                'paymentMethod' => $this->getPaymentMethodFrom($event)
+            ]);
+
             $this->response->setStatusCode(200);
 
-            $this->cache($event);
-            $this->log("200 OK");
+            $webhookEventModel->markAsProcessed();
+            $this->log("200 OK" . $eventId);
+        }
+        catch (OrderNotFoundException $e)
+        {
+            if (isset($event) && is_array($event))
+            {
+                $handler = $this->missingOrderHandlerFactory->create()->fromEvent($event);
+                if ($handler->wasAdminNotified())
+                {
+                    $this->response->setStatusCode(200);
+                    $webhookEventModel->markAsProcessed();
+                    $this->log("202 There is no matching order in Magento (" . $event['id'] . ")");
+                    return;
+                }
+            }
+
+            $statusCode = 200;
+
+            if ($webhookEventModel)
+            {
+                $webhookEventModel->refresh()->setLastErrorFromException($e, $e->statusCode);
+            }
+
+            $this->response->setStatusCode($statusCode);
+            $this->error(__("Event queued for processing"), $statusCode, true);
+        }
+        catch (RetryLaterException $e)
+        {
+            $statusCode = 409;
+            $webhookEventModel->delete();
+            $this->response->setStatusCode($statusCode);
+            $this->error(__($e->getMessage()), $statusCode, true);
         }
         catch (WebhookException $e)
         {
@@ -121,8 +213,10 @@ class Webhooks
 
             $this->error($e->getMessage(), $statusCode, true);
 
-            if (!empty($statusCode) && !empty($event) && $statusCode < 400)
-                $this->cache($event);
+            if ($webhookEventModel)
+            {
+                $webhookEventModel->refresh()->setLastErrorFromException($e, $statusCode);
+            }
         }
         catch (\Exception $e)
         {
@@ -132,67 +226,33 @@ class Webhooks
             $this->log($e->getMessage());
             $this->log($e->getTraceAsString());
             $this->error($e->getMessage(), $statusCode);
+
+            if ($webhookEventModel)
+            {
+                $webhookEventModel->refresh()->setLastErrorFromException($e, $statusCode);
+            }
         }
     }
 
     protected function getEventType(array $event)
     {
-        $isUnified = true;
+        if (empty($event['type']))
+            return "payload with no event type";
+
         $eventType = "stripe_payments_webhook_" . str_replace(".", "_", $event['type']);
-
-        try
-        {
-            // For Stripe Checkout, all events are unified
-            $orderId = $this->getOrderIdFromObject($event['data']['object']); // Does not throw an exception
-            if ($orderId)
-            {
-                $order = $this->loadWebhookOrderByIncrementId($orderId, $event); // Throws an exception only if the order is not found in Magento
-                if ($order->getPayment() && $order->getPayment()->getMethod())
-                {
-                    if ($this->helper->isStripeCheckoutMethod($order->getPayment()->getMethod()))
-                        return $eventType;
-                }
-            }
-
-            // For other payment methods, events are processed separately
-            $paymentMethod = $this->getPaymentMethodFrom($event);
-            if (!in_array($event['type'], $this->unifiedEvents) && !empty($paymentMethod))
-                $isUnified = false;
-
-            if (!$isUnified)
-            {
-                $eventType .= "_$paymentMethod";
-                return $eventType;
-            }
-        }
-        catch (\Exception $e)
-        {
-            $this->log($e->getMessage());
-        }
-
         return $eventType;
     }
 
     protected function getPaymentMethodFrom($event)
     {
-        // Bancontact, Giropay, iDEAL
         if (isset($event['data']['object']['type']))
             $paymentMethod = $event['data']['object']['type'];
-        // SOFORT and SEPA
-        else if (isset($event['data']['object']['source']['type']))
-            $paymentMethod = $event['data']['object']['source']['type'];
-        // ACH bank accounts
-        else if (isset($event['data']['object']['source']['object']))
-            $paymentMethod = $event['data']['object']['source']['object'];
         else if (isset($event['data']['object']['payment_method_types']))
             $paymentMethod = implode("_", $event['data']['object']['payment_method_types']);
         else if (isset($event['data']['object']['payment_method_details']))
             $paymentMethod = $event['data']['object']['payment_method_details']['type'];
         else
             $paymentMethod = '';
-
-        // Magento 2 event names do not allow numbers
-        $paymentMethod = str_replace("p24", "przelewy", $paymentMethod);
 
         return $paymentMethod;
     }
@@ -201,10 +261,7 @@ class Webhooks
     {
         if ($event['data']['object']['name'] == "Webhook Configuration")
         {
-            $storeCode = $event['data']['object']['metadata']['store_code'];
-            $mode = ucfirst($event['data']['object']['metadata']['mode']) . " Mode";
-            $this->log("Received automatic webhook configuration for $storeCode ($mode)");
-            $this->eventManager->dispatch("automatic_webhook_configuration", array('event' => $stdEvent));
+            $this->eventManager->dispatch("automatic_webhook_configuration", ['event' => $stdEvent]);
         }
         else if ($event['data']['object']['name'] == "Webhook Ping")
         {
@@ -214,12 +271,25 @@ class Webhooks
 
     public function error($msg, $status, $displayError = false)
     {
+        if ($this->output)
+        {
+            if ($status)
+            {
+                if ($status < 300)
+                    return $this->output->writeln("$status $msg");
+                else
+                    return $this->output->writeln("<error>$status $msg</error>");
+            }
+            else
+                return $this->output->writeln("<error>$msg</error>");
+        }
+
         if ($status && $status > 0)
             $this->log("$status $msg");
         else
             $this->log("No status: $msg");
 
-        if (!$displayError)
+        if (!$displayError && !$this->debug)
             $msg = "An error has occurred. Please check var/log/stripe_payments_webhooks.log for more details.";
 
         $this->response
@@ -230,12 +300,21 @@ class Webhooks
 
     public function log($msg)
     {
+        if ($this->output)
+            $this->output->writeln($msg);
         // Magento 2.0.0 - 2.4.3
-        if (method_exists($this->webhooksLogger, 'addInfo'))
+        else if (method_exists($this->webhooksLogger, 'addInfo'))
             $this->webhooksLogger->addInfo($msg);
         // Magento 2.4.4+
         else
             $this->webhooksLogger->info($msg);
+    }
+
+    private function addError(&$errors, $message)
+    {
+        $count = count($errors) + 1;
+        $key = hash('md2', $message);
+        $errors[$key] = "#" . $count . " " . $message;
     }
 
     public function verifyWebhookSignature()
@@ -245,73 +324,133 @@ class Webhooks
             return;
 
         $success = false;
+        $errors = [];
         foreach ($signingSecrets as $signingSecret)
         {
             try
             {
-                if (!isset($_SERVER['HTTP_STRIPE_SIGNATURE']))
-                    throw new \Stripe\Exception\SignatureVerificationException("Webhook signature could not be found in the request headers.", 400);
+                $httpStripeSignature = $this->request->getHeader('Stripe-Signature');
+                if (empty($httpStripeSignature))
+                {
+                    $this->addError($errors, "Webhook signature could not be found in the request headers.");
+                    continue;
+                }
 
                 // throws SignatureVerificationException
-                $event = \Stripe\Webhook::constructEvent($this->request->getContent(), $_SERVER['HTTP_STRIPE_SIGNATURE'], $signingSecret);
+                $event = \Stripe\Webhook::constructEvent($this->request->getContent(), $httpStripeSignature, $signingSecret);
 
                 $success = true;
             }
             catch(\UnexpectedValueException $e)
             {
+                $this->addError($errors, $e->getMessage());
                 throw new WebhookException("Invalid webhook payload.", 400);
-            }
-            catch(\Stripe\Exception\SignatureVerificationException $e)
-            {
-
             }
         }
 
         if (!$success)
+        {
+            $this->log("Webhook origin check failed with " . count($errors) . " errors:\n" . implode("\n", $errors));
             throw new WebhookException("Webhook origin check failed.", 400);
-    }
-
-    public function cache($event)
-    {
-        if (empty($event['id']))
-            throw new WebhookException("No event ID specified");
-
-        $this->cache->save("processed", $event['id'], array('stripe_payments_webhooks_events_processed'), 24 * 60 * 60);
+        }
     }
 
     // Does not throw an exception
-    public function getOrderIdFromObject(array $object)
+    public function getOrderIdFromObject(array $object, $includeMultishipping = false)
     {
         // For most payment methods, the order ID is here
         if (!empty($object['metadata']['Order #']))
             return $object['metadata']['Order #'];
 
-        // For orders placed over the Sources API, i.e. Elements based Bancontact, SOFORT etc
-        if (!empty($object["source"]['metadata']['Order #']))
-            return $object["source"]['metadata']['Order #'];
+        // Multishipping cases
+        if (!empty($object['metadata']['Multishipping']) && !empty($object['metadata']['Orders']))
+        {
+            $data = $object['metadata']['Orders'];
+            $data = str_replace(" ", "", $data);
+            $data = str_replace("#", "", $data);
+            return explode(",", $data);
+        }
 
-        // For invoices created from the Magento admin, we have the order ID in the stripe_invoices DB table
         if ($object['object'] == 'invoice')
         {
+            // For invoices created from the Magento admin
             $entry = $this->invoiceFactory->create()->load($object['id'], 'invoice_id');
             if ($entry->getOrderIncrementId())
+            {
                 return $entry->getOrderIncrementId();
+            }
 
+            if (!empty($object["subscription"]))
+            {
+                // If the subscription was updated with no proration, no new order exists. The quote will be used to create the new order
+                $subscriptionModel = $this->subscriptionsHelper->loadSubscriptionModelBySubscriptionId($object['subscription']);
+                if ($subscriptionModel && $subscriptionModel->getReorderFromQuoteId())
+                {
+                    throw new SubscriptionUpdatedException($subscriptionModel->getReorderFromQuoteId());
+                }
+
+                // Subscriptions that were just bought with PaymentElement do not have metadata yet
+                $paymentElement = $this->paymentElementFactory->create()->load($object['subscription'], 'subscription_id');
+                if ($paymentElement->getOrderIncrementId())
+                {
+                    return $paymentElement->getOrderIncrementId();
+                }
+
+                // This may be a more appropriate entry to check than PaymentElement, but it needs more testing before we swap them.
+                if ($subscriptionModel && $subscriptionModel->getOrderIncrementId())
+                {
+                    return $subscriptionModel->getOrderIncrementId();
+                }
+            }
+
+            // Subscriptions bought using Stripe Checkout
             foreach ($object['lines']['data'] as $lineItem)
             {
-                // The invoice may include a subscription bought using Stripe Checkout
                 if ($lineItem['type'] == "subscription" && !empty($lineItem['metadata']['Order #']))
+                {
                     return $lineItem['metadata']['Order #'];
+                }
+            }
+        }
+        else if ($object['object'] == 'setup_intent')
+        {
+            $paymentElement = $this->paymentElementFactory->create()->load($object['id'], 'setup_intent_id');
+            if ($paymentElement->getOrderIncrementId())
+            {
+                return $paymentElement->getOrderIncrementId();
             }
         }
         // If the merchant refunds a charge of a recurring subscription order from the Stripe dashboard, we need to drill down to the parent subscription
-        else if ($object['object'] == 'charge' && !empty($object['invoice']) && !empty($object['customer']))
+        else if ($object['object'] == 'charge' && !empty($object['invoice']) && !empty($object['customer']) && $this->config->reInitStripeFromCustomerId($object['customer']))
         {
-            $this->config->reInitStripeFromCustomerId($object['customer']); // @todo: this statement should not be in this method
             $stripe = $this->config->getStripeClient();
-            $invoice = $stripe->invoices->retrieve($object['invoice'], ['expand' => ['subscription']]);
+
+            $charge = $stripe->charges->retrieve($object['id'], ['expand' => ['payment_intent']]);
+            if (!empty($charge->payment_intent->metadata->{"Order #"}))
+            {
+                return $charge->payment_intent->metadata->{"Order #"};
+            }
+
+            $count = 3;
+            $invoice = null;
+            do
+            {
+                try
+                {
+                    $invoice = $stripe->invoices->retrieve($object['invoice'], ['expand' => ['subscription']]);
+                }
+                catch (\Exception $e)
+                {
+                    // Sometimes we get: This object cannot be accessed right now because another API request or Stripe process is currently accessing it.
+                }
+                $count--;
+            }
+            while ($count > 0 && empty($invoice));
+
             if (!empty($invoice->subscription->metadata->{"Order #"}))
                 return $invoice->subscription->metadata->{"Order #"};
+            else if (!empty($invoice->metadata->{"Order #"}))
+                return $invoice->metadata->{"Order #"};
         }
         else if ($object['object'] == "checkout.session")
         {
@@ -322,39 +461,29 @@ class Webhooks
         // Triggered via stripe_payments_webhook_review_closed
         else if (!empty($object['payment_intent']))
         {
-            $paymentIntent = $this->paymentIntentFactory->create()->load($object['payment_intent'], 'pi_id');
-            $orderId = $paymentIntent->getOrderIncrementId();
-            if ($orderId)
-                return $orderId;
-        }
+            if ($includeMultishipping)
+            {
+                // Search for all orders which have this payment intent as a transaction ID
+                $orders = $this->helper->getOrdersByTransactionId($object['payment_intent']);
+                if (!empty($orders))
+                {
+                    $ids = [];
+                    foreach ($orders as $order)
+                        $ids[$order->getIncrementId()] = $order->getIncrementId();
 
-        $method = $this->getPaymentMethod($object);
-
-        if ($method == "klarna")
-        {
-            $orderId = $this->getKlarnaOrderNumber($object);
-            if ($orderId)
-                return $orderId;
-        }
-        else if ($method == "sepa_credit_transfer")
-        {
-            $source = $this->loadSepaCreditTransferSourceFromObject($object);
-
-            if ($source && $source->getOrderIncrementId())
-                return $source->getOrderIncrementId();
+                    return $ids;
+                }
+            }
+            else
+            {
+                $paymentIntent = $this->paymentIntentFactory->create()->load($object['payment_intent'], 'pi_id');
+                $orderId = $paymentIntent->getOrderIncrementId();
+                if ($orderId)
+                    return $orderId;
+            }
         }
 
         return null;
-    }
-
-    public function loadSepaCreditTransferSourceFromObject(array $object)
-    {
-        $collection = $this->sourceCollectionFactory->create();
-        $sources = $collection->getSourcesById($object["source"]);
-        if ($sources->count() == 0)
-            return null;
-        else
-            return $sources->getFirstItem();
     }
 
     public function getPaymentMethod(array $object)
@@ -363,43 +492,69 @@ class Webhooks
         if (!empty($object["type"]))
             return $object["type"];
 
-        // ACH Debit
-        if (!empty($object["payment_method_details"]["type"]))
-            return $object["payment_method_details"]["type"];
-
         return null;
     }
 
-    public function loadOrderFromInvoiceId($invoiceId, $event)
+    protected function recordOrderIdAgainstEvent($eventId, $orderIncrementId)
     {
-        $entry = $this->invoiceFactory->create()->load($invoiceId, 'invoice_id');
-        if (!$entry->getOrderIncrementId())
-            throw new WebhookException("We could not find the order for the invoice associated with this charge.", 202);
+        $webhookEventModel = $this->webhookEventFactory->create()->load($eventId, 'event_id');
 
-        return $this->loadWebhookOrderByIncrementId($entry->getOrderIncrementId(), $event);
+        if (!$webhookEventModel->getId())
+        {
+            return;
+        }
+
+        if (is_array($orderIncrementId))
+        {
+            $webhookEventModel->setOrderIncrementId(implode(",", $orderIncrementId))->save();
+        }
+        else if (is_string($orderIncrementId))
+        {
+            $webhookEventModel->setOrderIncrementId($orderIncrementId)->save();
+        }
     }
 
-    public function loadOrderFromEvent(array $event)
+    public function loadOrderFromEvent(?array $event, $includeMultishipping = false)
     {
-        $orderId = $this->getOrderIdFromObject($event['data']['object']);
+        if (!is_array($event) || empty($event['id']))
+            throw new WebhookException(__("Received invalid request payload."), 400);
+
+        $orderId = $this->getOrderIdFromObject($event['data']['object'], $includeMultishipping);
 
         if (empty($orderId))
-            throw new WebhookException(__("Received %1 webhook but there was no associated Order #", $event['type']), 202);
+            throw new MissingOrderException(__("Received %1 webhook but there was no associated Order #", $event['type']), 202);
 
-        return $this->loadWebhookOrderByIncrementId($orderId, $event);
-    }
+        $this->recordOrderIdAgainstEvent($event['id'], $orderId);
 
-    public function loadSubscriptionProductFromEvent($event)
-    {
-        if (empty($event['data']['object']['metadata']['Product ID']))
-            throw new WebhookException("Could not find a Product ID in the event's metadata.");
+        if (is_array($orderId))
+        {
+            if (!$includeMultishipping)
+                throw new WebhookException(__("This is a multi-shipping event that has not been implemented; ignoring."), 202);
 
-        return $this->helper->loadProductById($event['data']['object']['metadata']['Product ID']);
+            $orders = [];
+            $orderIds = $orderId;
+            foreach ($orderIds as $orderId)
+                $orders[] = $this->loadWebhookOrderByIncrementId($orderId, $event);
+
+            return $orders;
+        }
+        else
+        {
+            if ($includeMultishipping)
+            {
+                return [ $this->loadWebhookOrderByIncrementId($orderId, $event) ];
+            }
+            else
+            {
+                return $this->loadWebhookOrderByIncrementId($orderId, $event);
+            }
+        }
     }
 
     public function initStripeFrom($order, $event)
     {
         $paymentMethodCode = $order->getPayment()->getMethod();
+        $orderId = $order->getIncrementId();
         if (strpos($paymentMethodCode, "stripe") !== 0)
             throw new WebhookException("Order #$orderId was not placed using Stripe", 202);
 
@@ -412,54 +567,15 @@ class Webhooks
         $this->webhookCollection->pong($this->config->getPublishableKey($mode));
     }
 
-    public function getKlarnaOrderNumber(array $object)
-    {
-        $sourceId = $object['id'];
-
-        if (empty($sourceId))
-            return null;
-
-        if (isset($this->eventOrderIds[$sourceId]))
-            return $this->eventOrderIds[$sourceId];
-
-        $orderId = null;
-
-        $wait = 2;
-        do
-        {
-            // With Klarna the source is authorized in the front-end before we have an order number, so we load it from the cache instead
-            // because the order number does not exist in the source's metadata
-            $orderId = $this->cache->load($sourceId);
-
-            // There is a possibility we receive the webhook before the order is committed to the database (because Magento is slow), so we wait if not found
-            if (empty($orderId))
-            {
-                $wait--;
-                sleep(4);
-            }
-        }
-        while (empty($orderId) && $wait > 0);
-
-        return $this->eventOrderIds[$sourceId] = $orderId;
-    }
-
-    protected function loadWebhookOrderByIncrementId($orderId, $event, $count = 5)
+    protected function loadWebhookOrderByIncrementId($orderId, $event)
     {
         if (empty($orderId))
             throw new WebhookException(__("Ignoring %1 webhook event with no associated order ID.", $event['type']), 202);
 
-        $order = $this->helper->loadOrderByIncrementId($orderId);
-
-        if ((empty($order) || empty($order->getId())) && $count >= 0)
-        {
-            // Webhooks Race Condition: Sometimes we may receive the webhook before Magento commits the order to the database,
-            // so we give it a few seconds and try again. Can happen when multiple subscriptions are purchased together.
-            sleep(4);
-            return $this->loadWebhookOrderByIncrementId($orderId, $event, $count - 1);
-        }
+        $order = $this->orderHelper->loadOrderByIncrementId($orderId);
 
         if (empty($order) || empty($order->getId()))
-            throw new WebhookException(__("Received %1 webhook with Order #%2 but could not find the order in Magento.", $event['type'], $orderId), 202);
+            throw new OrderNotFoundException(__("Received %1 webhook with Order #%2 but could not find the order in Magento.", $event['type'], $orderId), 202);
 
         $this->initStripeFrom($order, $event);
 
@@ -492,23 +608,13 @@ class Webhooks
             $amount = $object['amount'];
         }
 
-        $params = array(
+        $params = [
             "amount" => $amount,
             "currency" => $object['currency'],
             "source" => $webhookSourceId,
             "description" => $stripeParams['description'],
             "metadata" => $stripeParams['metadata']
-        );
-
-        if ($object["type"] == "klarna")
-        {
-            if (!$this->config->isAuthorizeOnly("klarna"))
-                $params["capture"] = true;
-        }
-
-        $statementDescription = $this->getStatementDescriptionFor($order, $object);
-        if ($statementDescription !== null)
-            $params["statement_descriptor"] = $statementDescription;
+        ];
 
         // For reusable sources, we will always need a customer ID
         $customerStripeId = $payment->getAdditionalInformation('customer_stripe_id');
@@ -549,7 +655,7 @@ class Webhooks
                     $invoice = $this->helper->invoiceOrder($order, $charge->id);
 
                 if ($sendNewOrderEmail)
-                    $this->helper->sendNewOrderEmailFor($order);
+                    $this->orderHelper->sendNewOrderEmailFor($order, true);
             }
             // SEPA, SOFORT and other asynchronous methods will be pending
             else if ($charge->status == 'pending')
@@ -557,14 +663,14 @@ class Webhooks
                 $invoice = $this->helper->invoicePendingOrder($order, $charge->id);
 
                 if ($sendNewOrderEmail)
-                    $this->helper->sendNewOrderEmailFor($order);
+                    $this->orderHelper->sendNewOrderEmailFor($order, true);
             }
             else
             {
                 // In theory we should never have failed charges because they would throw an exception
                 $comment = "Authorization failed. Transaction ID: {$charge->id}. Charge status: {$charge->status}";
                 $order->addStatusHistoryComment($comment);
-                $order->save();
+                $this->orderHelper->saveOrder($order);
             }
 
             return $charge;
@@ -573,7 +679,7 @@ class Webhooks
         {
             $comment = "Order could not be charged because of a card error: " . $e->getMessage();
             $order->addStatusHistoryComment($comment);
-            $order->save();
+            $this->orderHelper->saveOrder($order);
             $this->log($e->getMessage());
             throw new WebhookException($e->getMessage(), 202);
         }
@@ -581,38 +687,10 @@ class Webhooks
         {
             $comment = "Order could not be charged because of server side error: " . $e->getMessage();
             $order->addStatusHistoryComment($comment);
-            $order->save();
+            $this->orderHelper->saveOrder($order);
             $this->log($e->getMessage());
             throw new WebhookException($e->getMessage(), 202);
         }
-    }
-
-    public function getStatementDescriptionFor($order, $object)
-    {
-        if ($object["type"] == "klarna")
-        {
-            return "Order #" . $order->getIncrementId();
-        }
-
-        return null;
-    }
-
-    public function getCurrentRefundFrom($webhookData)
-    {
-        $lastRefundDate = 0;
-        $currentRefund = null;
-
-        foreach ($webhookData['refunds']['data'] as $refund)
-        {
-            // There might be multiple refunds, and we are looking for the most recent one
-            if ($refund['created'] > $lastRefundDate)
-            {
-                $lastRefundDate = $refund['created'];
-                $currentRefund = $refund;
-            }
-        }
-
-        return $currentRefund;
     }
 
     public function refundOfflineOrCancel($order)
@@ -645,195 +723,264 @@ class Webhooks
             $order->cancel();
         }
 
-        $this->helper->saveOrder($order);
+        $this->orderHelper->saveOrder($order);
     }
 
-    public function refund($order, $object)
+    public function sendRecurringOrderFailedEmail($eventArray, $exception)
     {
-        if ($order->getState() == "holded" && $order->canUnhold())
-            $order->unhold();
-
-        $dbTransaction = $this->transactionFactory->create();
-
-        // Check if the order has an invoice with the charge ID we are refunding
-        $chargeId = $object['id'];
-        $chargeAmount = $object['amount'];
-        $currentRefund = $this->getCurrentRefundFrom($object);
-        $currency = $currentRefund['currency'];
-        $baseToOrderRate = $order->getBaseToOrderRate();
-        $payment = $order->getPayment();
-        if (isset($object["payment_intent"]))
-            $pi = $object["payment_intent"];
-        else
-            $pi = "not_exists";
-
-        // Calculate the real refund amount
-        $isMultiCurrencyRefund = ($currentRefund['currency'] != $order->getOrderCurrencyCode());
-        $refundAmount = $this->helper->convertStripeAmountToOrderAmount($currentRefund['amount'], $currentRefund['currency'], $order);
-        $baseRefundAmount = $this->helper->convertStripeAmountToBaseOrderAmount($currentRefund['amount'], $currentRefund['currency'], $order);
-
-        $baseTotalNotRefunded = $order->getBaseGrandTotal() - $order->getBaseTotalRefunded();
-        $totalNotRefunded = $order->getGrandTotal() - $order->getTotalRefunded();
-
-        $baseOrderCurrency = strtolower($order->getBaseCurrencyCode());
-        $orderCurrency = strtolower($order->getCurrencyCode());
-
-        if ($isMultiCurrencyRefund)
-            $isPartialRefund = ($totalNotRefunded > $refundAmount);
-        else
-            $isPartialRefund = ($baseTotalNotRefunded > $baseRefundAmount);
-
-        if (!$order->canCreditmemo())
+        try
         {
-            if ($order->canCancel())
-            {
-                if (!$isPartialRefund)
-                {
-                    $order->cancel();
-                    $order->save();
-                    return true;
-                }
-                else if ($isPartialRefund)
-                {
-                    // Don't do anything on a partial refund, we expect a paynemt_intent.succeeded to arrive for the partial capture.
-                    return false;
-                }
-            }
-            else if (!$isPartialRefund)
-            {
-                $invoices = $order->getInvoiceCollection();
-                $canceled = 0;
-                foreach ($invoices as $invoice)
-                {
-                    if ($invoice->canCancel())
-                    {
-                        $dbTransaction->addObject($invoice);
-                        $invoice->cancel();
-                        $canceled++;
-                    }
-                }
-                if ($canceled > 0)
-                {
-                    if ($order->canCancel())
-                        $order->cancel();
+            $generalName = $this->emailHelper->getName('general');
+            $generalEmail = $this->emailHelper->getEmail('general');
 
-                    $dbTransaction->addObject($order)->save();
-                    return true;
-                }
-            }
-
-            $msg = __('A refund was issued via Stripe, but a Credit Memo could not be created.');
-            $this->helper->addOrderComment($msg, $order);
-            $dbTransaction->addObject($order)->save();
-            return false;
-        }
-
-        if ($baseTotalNotRefunded < $baseRefundAmount)
-        {
-            $humanReadable1 = $this->helper->addCurrencySymbol($refundAmount, $currency);
-            $humanReadable2 = $this->helper->addCurrencySymbol($totalNotRefunded, $currency);
-            $msg = __('A refund of %1 was issued via Stripe, but the amount is bigger than the available of %2.', $humanReadable1, $humanReadable2);
-            $this->helper->addOrderComment($msg, $order);
-            $dbTransaction->addObject($order)->save();
-            return false;
-        }
-        else
-        {
-            $creditmemo = $this->creditmemoFactory->createByOrder($order);
-            $baseDiff = $baseTotalNotRefunded - $baseRefundAmount;
-
-            if ($isPartialRefund)
-            {
-                // We don't have any information from Stripe on what products we are refunding
-                $creditmemo->setItems([]);
-                $creditmemo->setShippingAmount(0);
-                $creditmemo->setAdjustmentPositive($baseDiff);
-                $creditmemo->setAdjustmentNegative(0);
-            }
+            if ($eventArray['livemode'])
+                $mode = '';
             else
+                $mode = 'test/';
+
+            $object = $eventArray['data']['object'];
+
+            $templateVars = [
+                'paymentLink' => "https://dashboard.stripe.com/{$mode}payments/" . $object["payment_intent"],
+                'subscriptionLink' => "https://dashboard.stripe.com/{$mode}subscriptions/" . $object["subscription"],
+                'customerLink' => "https://dashboard.stripe.com/{$mode}customers/" . $object["customer"],
+                'errorMessage' => $exception->getMessage(),
+                'stackTrace' => $exception->getTraceAsString(),
+                'eventLink' => "https://dashboard.stripe.com/{$mode}events/" . $eventArray["id"]
+            ];
+
+            $sent = $this->emailHelper->send('stripe_failed_recurring_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
+
+            if (!$sent)
             {
-                $creditmemo->setItems($order->getAllItems());
-                $creditmemo->setShippingAmount($order->getShippingAmount());
-                $creditmemo->setAdjustmentPositive(0);
-                $creditmemo->setAdjustmentNegative(0);
+                $this->helper->logError($exception->getMessage(), $exception->getTraceAsString());
             }
         }
-
-        $invoice = $this->getInvoiceWithTransactionId($chargeId, $order);
-
-        if (!$invoice)
-            $invoice = $this->getInvoiceWithTransactionId($pi, $order);
-
-        if ($invoice)
-            $creditmemo->setInvoice($invoice);
-
-        $creditmemo->setBaseSubtotal(0);
-        $creditmemo->setSubtotal(0);
-        $creditmemo->setBaseGrandTotal($baseRefundAmount);
-        $creditmemo->setGrandTotal($refundAmount);
-
-        $this->creditmemoService->refund($creditmemo, true);
-
-        $comment = __("We refunded %1 through Stripe.", $this->helper->addCurrencySymbol($refundAmount, $currency));
-        $order->addStatusToHistory($status = false, $comment);
-
-        $dbTransaction
-            ->addObject($order)
-            ->addObject($creditmemo)
-            ->addObject($payment)
-            ->save();
-
-        return true;
+        catch (\Exception $e)
+        {
+            $this->helper->logError($e->getMessage(), $e->getTraceAsString());
+            $this->helper->logError($exception->getMessage(), $exception->getTraceAsString());
+        }
     }
 
-    public function getInvoiceWithTransactionId($transactionId, $order)
+    public function detectRaceCondition($orderIncrementId, $clashingEventTypes)
     {
-        foreach($order->getInvoiceCollection() as $item)
+        $count = $this->webhookEventCollectionFactory->create()->getProcessingEventsCount($orderIncrementId, $clashingEventTypes);
+
+        if ($count > 0)
         {
-            $invoiceTransactionId = $this->helper->cleanToken($item->getTransactionId());
-            if ($transactionId == $invoiceTransactionId)
-                return $item;
+            throw new RetryLaterException("Race condition detected. Another webhook event is mutating data on the same order. Try again shortly.");
+        }
+    }
+
+    public function setPaymentDescriptionAfterSubscriptionUpdate($order, \Stripe\Invoice $invoice)
+    {
+        if (empty($invoice->billing_reason))
+            return;
+
+        if ($invoice->billing_reason != "subscription_update")
+            return;
+
+        if (empty($invoice->payment_intent->id))
+            return;
+
+        $paymentIntent = $invoice->payment_intent;
+        if (!empty($paymentIntent->description) && $paymentIntent->description != "Subscription update")
+            return;
+
+        $description = $this->orderHelper->getOrderDescription($order);
+
+        try
+        {
+            $this->config->getStripeClient()->paymentIntents->update($paymentIntent->id, [
+                'description' => $description
+            ]);
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->logError($e->getMessage(), $e->getTraceAsString());
+        }
+    }
+
+    public function setSubscriptionStatusWhenCustomerUpdate($subscriptionId, $subscriptionStatus)
+    {
+        $subscriptionModel = $this->subscriptionsHelper->loadSubscriptionModelBySubscriptionId($subscriptionId);
+        if ($subscriptionModel)
+        {
+            $subscriptionModel->setStatus($subscriptionStatus);
+            $subscriptionModel->save();
+        }
+    }
+
+    public function getValidWebhookUrl($store)
+    {
+        try
+        {
+            $url = $this->getWebhookUrl($store);
+            if ($this->isValidUrl($url))
+            {
+                return $url;
+            }
+        }
+        catch (\Exception $e)
+        {
+            return null;
         }
 
         return null;
     }
 
-    public function removeEndpoint()
+    public function getWebhookUrl($store)
     {
-        $url = $this->urlInterface->getCurrentUrl();
-        $endpoints = \Stripe\WebhookEndpoint::all();
-        foreach ($endpoints as $endpoint)
+        $url = $store->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_WEB, true);
+
+        if (empty($url))
         {
-            if (strpos($url, $endpoint->url) === 0)
+            return null;
+        }
+
+        $url = filter_var($url, FILTER_SANITIZE_URL);
+        $url = rtrim(trim($url), "/");
+        $url .= '/stripe/webhooks';
+        return $url;
+    }
+
+    protected function isValidUrl($url)
+    {
+        // Validate URL
+        if (filter_var($url, FILTER_VALIDATE_URL) === false)
+            return false;
+
+        return true;
+    }
+
+    public function setDebug(bool $value)
+    {
+        $this->debug = $value;
+    }
+
+    public function wasCapturedFromAdmin($object)
+    {
+        if (!empty($object['id']) && $this->cache->load("admin_captured_" . $object['id']))
+        {
+            return true;
+        }
+
+        if (!empty($object['payment_intent']) && is_string($object['payment_intent']) && $this->cache->load("admin_captured_" . $object['payment_intent']))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function processTrialingSubscriptionOrder($order, $subscription)
+    {
+        if (is_string($subscription))
+            $subscription = $this->config->getStripeClient()->subscriptions->retrieve($subscription);
+
+        if ($subscription->status != "trialing")
+        {
+            // We are not interested in processing any other cases here.
+            return;
+        }
+
+        // Trial subscriptions should still be fulfilled. A new order will be created when the trial ends.
+        $state = \Magento\Sales\Model\Order::STATE_PROCESSING;
+        $status = $order->getConfig()->getStateDefaultStatus($state);
+        $comment = __("Your trial period for order #%1 has started.", $order->getIncrementId());
+        $order->setState($state)->addStatusToHistory($status, $comment, $isCustomerNotified = true);
+
+        if ($this->subscriptionsHelper->isZeroAmountOrder($order))
+        {
+            if (!$order->getEmailSent())
             {
-                $endpoint = \Stripe\WebhookEndpoint::retrieve($endpoint->id);
-                $endpoint->delete();
+                $this->orderHelper->sendNewOrderEmailFor($order, true);
             }
+
+            // There will be no charge.succeeded event for trial subscription orders, so create the invoice here.
+            // Then refund the amount that was not collected for the trial subscription. This is because when the
+            // subscription activates, a new order will be created with a separate invoice.
+            $this->helper->invoiceOrder($order, null, \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE);
+            $baseRefundTotal = $order->getBaseGrandTotal();
+            $creditmemo = $this->creditmemoHelper->refundOfflineOrderBaseAmount($order, $baseRefundTotal);
+            $this->creditmemoHelper->save($creditmemo);
+        }
+
+        $this->orderHelper->saveOrder($order);
+    }
+
+    public function addOrderCommentWithEmail($order, $comment)
+    {
+        if (is_string($comment))
+            $comment = __($comment);
+
+        try
+        {
+            $this->orderCommentSender->send($order, $notify = true, $comment);
+        }
+        catch (\Exception $e)
+        {
+            // Just ignore this case
+        }
+
+        try
+        {
+            $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = true);
+            $this->orderHelper->saveOrder($order);
+        }
+        catch (\Exception $e)
+        {
+            $this->log($e->getMessage());
+            $this->log($e->getTraceAsString());
         }
     }
 
-    // When multiple events arrive at the same time, lock the current process so that we don't get DB deadlocks
-    // Works similar to a queuing system, but is real time rather than cron-based
-    public function lock()
+    public function addOrderComment($order, $comment)
     {
-        $wait = 10; // seconds to wait for lock
-        $sleep = 2; // poll every X seconds
-        do
-        {
-            $lock = $this->cache->load("stripe_payments_webhooks_lock");
-            if ($lock)
-            {
-                sleep($sleep);
-                $wait -= $sleep;
-            }
-
-        } while ($lock && $wait > 0);
-
-        $this->cache->save(1, "stripe_payments_webhooks_lock", array(), $lifetime = 60);
+        $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
+        $this->orderHelper->saveOrder($order);
     }
 
-    public function unlock()
+    public function deduplicatePaymentMethod($object)
     {
-        $this->cache->remove("stripe_payments_webhooks_lock");
+        try
+        {
+            if (!empty($object['customer']))
+            {
+                $type = $object['type'];
+                if (!empty($object[$type]['fingerprint']))
+                {
+                    $this->helper->deduplicatePaymentMethod(
+                        $object['customer'],
+                        $object['id'],
+                        $type,
+                        $object[$type]['fingerprint'],
+                        $this->config->getStripeClient()
+                    );
+                }
+            }
+        }
+        catch (\Exception $e)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    protected function orderAgeLessThan($minutes, $order)
+    {
+        $created = strtotime($order->getCreatedAt());
+        $now = time();
+        return (($now - $created) < ($minutes * 60));
+    }
+
+    public function wasRefundedFromAdmin($object)
+    {
+        if (!empty($object['id']) && $this->cache->load("admin_refunded_" . $object['id']))
+            return true;
+
+        return false;
     }
 }

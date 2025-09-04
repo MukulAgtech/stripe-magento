@@ -6,10 +6,7 @@ use Magento\Sales\Model\Order;
 
 class LoadInitialFee
 {
-    /**
-     * @var InitialFeeManagement
-     */
-    private $extensionManagement;
+    private $initialFeeManagement;
 
     public function __construct(InitialFeeManagement $initialFeeManagement)
     {

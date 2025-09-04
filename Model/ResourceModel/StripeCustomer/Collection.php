@@ -31,7 +31,10 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         if (!$collection->getSize())
             return null;
         else
+        {
+            /** @var \StripeIntegration\Payments\Model\StripeCustomer $customer */
             $customer = $collection->getFirstItem();
+        }
 
         if (!$customer->getPk())
             $customer->setPk($pk)->save();
@@ -51,7 +54,10 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         if (!$collection->getSize())
             return null;
         else
+        {
+            /** @var \StripeIntegration\Payments\Model\StripeCustomer $customer */
             $customer = $collection->getFirstItem();
+        }
 
         if (!$customer->getPk())
             $customer->setPk($pk)->save();

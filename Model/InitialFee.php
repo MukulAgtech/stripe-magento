@@ -8,6 +8,9 @@ use Magento\Quote\Model\Quote\Address\Total;
 
 class InitialFee extends AbstractTotal
 {
+    private $helper;
+    private $storeManager;
+
     public function __construct(
         \StripeIntegration\Payments\Helper\InitialFee $helper,
         \Magento\Store\Model\StoreManagerInterface $storeManager
@@ -43,7 +46,6 @@ class InitialFee extends AbstractTotal
             {
                 $addressQty = $item->getQty();
                 $item = $item->getQuoteItem();
-                $item->setQty($addressQty);
             }
 
             $quoteItems[] = $item;
@@ -53,7 +55,7 @@ class InitialFee extends AbstractTotal
         if (is_numeric($rate))
         {
             $amount = $this->helper->getTotalInitialFeeFor($quoteItems, $quote, $rate);
-            $baseAmount = round($amount / $rate, 2);
+            $baseAmount = round(floatval($amount / $rate), 2);
         }
         else
         {

@@ -3,10 +3,12 @@
 namespace StripeIntegration\Payments\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
-use StripeIntegration\Payments\Helper\Logger;
 
 class CustomerRegistration implements ObserverInterface
 {
+    private $customer;
+    private $orderCollectionFactory;
+
     public function __construct(
         \StripeIntegration\Payments\Helper\Generic $helper,
         \Magento\Sales\Model\ResourceModel\Order\CollectionFactory $orderCollectionFactory
@@ -17,7 +19,6 @@ class CustomerRegistration implements ObserverInterface
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
     public function execute(\Magento\Framework\Event\Observer $observer)

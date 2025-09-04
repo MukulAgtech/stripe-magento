@@ -6,8 +6,8 @@
             <description>Configure the Stripe API keys.</description>
         </annotations>
         <arguments>
-            <argument name="pk" defaultValue="{{_CREDS.stripe/api_acc1_pk}}" type="string"/>
-            <argument name="sk" defaultValue="{{_CREDS.stripe/api_acc1_sk}}" type="string"/>
+            <argument name="pk" defaultValue="{{_CREDS.stripe/acc_de_pk}}" type="string"/>
+            <argument name="sk" defaultValue="{{_CREDS.stripe/acc_de_sk}}" type="string"/>
         </arguments>
 
         <magentoCLI command="app:config:dump" stepKey="dumpConfig"/>

@@ -2,59 +2,62 @@
 
 namespace StripeIntegration\Payments\Block\Customer;
 
-use Magento\Framework\App\Filesystem\DirectoryList;
-use Magento\Framework\Filesystem;
-use Magento\Framework\View\Element;
-use StripeIntegration\Payments\Helper\Logger;
-
 class Subscriptions extends \Magento\Framework\View\Element\Template
 {
-    public $customerCards = null;
-    public $helper;
+    private $helper;
+    private $subscriptionsHelper;
+    private $customerPaymentMethods = null;
+    private $subscriptionModels = [];
+    private $activeSubscriptions;
+    private $canceledSubscriptions;
+    private static $allSubscriptions;
+    private $paymentMethodHelper;
+    private $stripeCustomer;
+    private $subscriptionFactory;
+    private $canceledSubscriptionsHtml;
+    private $subscriptionCollectionFactory;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
-        array $data = [],
+        \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $subscriptionFactory,
+        \StripeIntegration\Payments\Model\ResourceModel\Subscription\CollectionFactory $subscriptionCollectionFactory,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\Config $config,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
+        array $data = []
     ) {
+        $this->subscriptionFactory = $subscriptionFactory;
+        $this->subscriptionCollectionFactory = $subscriptionCollectionFactory;
         $this->stripeCustomer = $helper->getCustomerModel();
         $this->helper = $helper;
-        $this->config = $config;
+        $this->paymentMethodHelper = $paymentMethodHelper;
         $this->subscriptionsHelper = $subscriptionsHelper;
 
         parent::__construct($context, $data);
     }
 
-    public function getSubscriptions()
+    protected function getAllSubscriptions()
     {
         try
         {
-            $subscriptions = $this->stripeCustomer->getSubscriptions();
-            $products = [];
-
-            foreach ($subscriptions as $subscription)
+            if (!empty(self::$allSubscriptions))
             {
-                $subscriptionItems = $this->stripeCustomer->getSubscriptionItems($subscription->id);
-
-                foreach ($subscriptionItems as $subscriptionItem)
-                {
-                    if (!empty($subscriptionItem->price->product))
-                        $products[$subscriptionItem->price->product->id] = $subscriptionItem->price->product;
-                }
+                return self::$allSubscriptions;
             }
+
+            $subscriptions = $this->stripeCustomer->getAllSubscriptions();
 
             foreach ($subscriptions as &$subscription)
             {
-                foreach ($subscription->items->data as $item)
+                foreach ($subscription->items->data as &$item)
                 {
-                    if (!empty($item->price->product) && is_string($item->price->product) && !empty($products[$item->price->product]))
-                        $item->price->product = $products[$item->price->product];
+                    if (!empty($item->price->product) && is_string($item->price->product) &&
+                        !empty($subscription->plan->product) && !is_string($subscription->plan->product))
+                        $item->price->product = $subscription->plan->product;
                 }
             }
 
-            return $subscriptions;
+            return self::$allSubscriptions = $subscriptions;
         }
         catch (\Exception $e)
         {
@@ -64,136 +67,122 @@ class Subscriptions extends \Magento\Framework\View\Element\Template
         }
     }
 
-    public function getSubscriptionCard($sub)
+    public function getActiveSubscriptions()
     {
-        if (!empty($sub->default_payment_method->type) && $sub->default_payment_method->type == 'card')
-            return $this->helper->convertPaymentMethodToCard($sub->default_payment_method);
+        try
+        {
+            if (isset($this->activeSubscriptions))
+            {
+                return $this->activeSubscriptions;
+            }
+
+            $allSubscriptions = $this->getAllSubscriptions();
+            $activeSubscriptions = [];
+
+            foreach ($allSubscriptions as $subscription)
+            {
+                if (in_array($subscription->status, ['canceled', 'incomplete', 'incomplete_expired']))
+                    continue;
+
+                $activeSubscriptions[$subscription->id] = $subscription;
+            }
+
+            return $this->activeSubscriptions = $activeSubscriptions;
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->addError($e->getMessage());
+            $this->helper->logError($e->getMessage());
+            $this->helper->logError($e->getTraceAsString());
+        }
+    }
+
+    public function getCanceledSubscriptions()
+    {
+        try
+        {
+            if (isset($this->canceledSubscriptions))
+            {
+                return $this->canceledSubscriptions;
+            }
+
+            $allSubscriptions = $this->getAllSubscriptions();
+            $canceledSubscriptions = [];
+            $reactivatedSubscriptions = $this->subscriptionCollectionFactory->create()->getBySubscriptionStatus('reactivated');
+
+            foreach ($allSubscriptions as $subscription)
+            {
+                if ($subscription->status != 'canceled')
+                    continue;
+
+                if (!in_array($subscription->id, $reactivatedSubscriptions) && $this->checkProductIsSaleable($subscription))
+                {
+                    $canceledSubscriptions[$subscription->id] = $subscription;
+
+                    if (count($canceledSubscriptions) >= 3) {
+                        break;
+                    }
+                }
+            }
+
+            return $this->canceledSubscriptions = $canceledSubscriptions;
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->addError($e->getMessage());
+            $this->helper->logError($e->getMessage());
+            $this->helper->logError($e->getTraceAsString());
+        }
+    }
+
+    public function getSubscriptionDefaultPaymentMethod($sub)
+    {
+        if (!empty($sub->default_payment_method))
+        {
+            $methods = [
+                $sub->default_payment_method->type => [
+                    $sub->default_payment_method
+                ]
+            ];
+            $formattedMethods = $this->paymentMethodHelper->formatPaymentMethods($methods);
+            return array_pop($formattedMethods);
+        }
 
         return null;
     }
 
-    public function getSubscriptionCardId($sub)
+    public function getSubscriptionPaymentMethodId($sub)
     {
-        $card = $this->getSubscriptionCard($sub);
+        $method = $this->getSubscriptionDefaultPaymentMethod($sub);
 
-        if ($card)
-            return $card->id;
+        if ($method)
+            return $method['id'];
         else
             return null;
     }
 
-    public function getInvoiceAmount($sub)
+    public function getCanceledSubscriptionsHtml()
     {
-        $total = 0;
-        $currency = null;
+        if (isset($this->canceledSubscriptionsHtml))
+            return $this->canceledSubscriptionsHtml;
 
-        if (empty($sub->items->data))
-            return __("Billed");
-
-        foreach ($sub->items->data as $item)
-        {
-            $amount = 0;
-            $qty = $item->quantity;
-
-            if (!empty($item->price->type) && $item->price->type != "recurring")
-                continue;
-
-            if (!empty($item->price->unit_amount))
-                $amount = $qty * $item->price->unit_amount;
-
-            if (!empty($item->price->currency))
-                $currency = $item->price->currency;
-
-            if (!empty($item->tax_rates[0]->percentage))
-            {
-                $rate = 1 + $item->tax_rates[0]->percentage / 100;
-                $amount = $rate * $amount;
-            }
-
-            $total += $amount;
-        }
-
-        return $this->helper->formatStripePrice($total, $currency);
+        return $this->canceledSubscriptionsHtml = $this->getLayout()
+            ->createBlock(\StripeIntegration\Payments\Block\Customer\Subscriptions::class)
+            ->setTemplate('customer/canceled_subscriptions.phtml')
+            ->toHtml();
     }
 
-    public function getInvoiceItems($sub)
+    public function getSubscriptionName($sub)
     {
-        $items = [];
-
-        if (empty($sub->items->data))
-            return $items;
-
-        foreach ($sub->items->data as $item)
-        {
-            if ($item->quantity > 1)
-                $qty = $item->quantity . " x ";
-            else
-                $qty = "";
-
-            if (!empty($item->price->product->name))
-                $items[] = $qty . $item->price->product->name;
-        }
-
-        return $items;
+        return $this->subscriptionsHelper->generateSubscriptionName($sub);
     }
 
-    public function formatSubscriptionName($sub)
+    public function getCustomerPaymentMethods()
     {
-        return $this->subscriptionsHelper->formatSubscriptionName($sub);
-    }
+        if (isset($this->customerPaymentMethods))
+            return $this->customerPaymentMethods;
 
-    public function formatDelivery($sub)
-    {
-        $interval = $sub->plan->interval;
-        $count = $sub->plan->interval_count;
-
-        if ($count > 1)
-            return __("every %1 %2", $count, $interval . "s");
-        else
-            return __("every %1", $interval);
-    }
-
-    public function formatLastBilled($sub)
-    {
-        $startDate = $sub->created;
-
-        if (isset($sub->metadata["Trial"]))
-        {
-            $trialDays = $sub->metadata["Trial"];
-            $startDate += (strtotime("+$trialDays") - time());
-        }
-
-        $date = $sub->current_period_start;
-
-        if ($startDate > $date)
-        {
-            $day = date("j", $startDate);
-            $sup = date("S", $startDate);
-            $month = date("F", $startDate);
-
-            return __("trialing until %1<sup>%2</sup> %3", $day, $sup, $month);
-        }
-        else
-        {
-            $day = date("j", $date);
-            $sup = date("S", $date);
-            $month = date("F", $date);
-
-            return __("last billed %1<sup>%2</sup>&nbsp;%3", $day, $sup, $month);
-        }
-    }
-
-    public function getCustomerCards()
-    {
-        if (isset($this->customerCards))
-            return $this->customerCards;
-
-        $this->customerCards = $this->stripeCustomer->getCustomerCards();
-
-        if (empty($this->customerCards))
-            $this->customerCards = []; // Set the variable to avoid unnecessary API calls
-
-        return $this->customerCards;
+        return $this->customerPaymentMethods = $this->stripeCustomer->getSavedPaymentMethods(\StripeIntegration\Payments\Helper\PaymentMethod::SUPPORTS_SUBSCRIPTIONS, true);
     }
 
     public function getStatus($sub)
@@ -214,107 +203,49 @@ class Subscriptions extends \Magento\Framework\View\Element\Template
         }
     }
 
-    // Shipping Metadata strings
-    protected static $first = "Shipping First Name";
-    protected static $last = "Shipping Last Name";
-    protected static $company = "Shipping Company";
-    protected static $street = "Shipping Street";
-    protected static $postcode = "Shipping Postcode";
-    protected static $city = "Shipping City";
-    protected static $country = "Shipping Country";
-    protected static $region = "Shipping Region";
-    protected static $telephone = "Shipping Telephone";
-
-    public static function editableContent()
+    public function getSubscriptionModel(\Stripe\Subscription $subscription): ?\StripeIntegration\Payments\Model\Stripe\Subscription
     {
-        return [
-            self::$first,
-            self::$last,
-            self::$company,
-            self::$street,
-            self::$postcode,
-            self::$city,
-            self::$telephone
-        ];
+        if (isset($this->subscriptionModels[$subscription->id]))
+            return $this->subscriptionModels[$subscription->id];
+
+        try
+        {
+            $subscriptionModel = $this->subscriptionFactory->create()->fromSubscription($subscription);
+            $this->subscriptionModels[$subscription->id] = $subscriptionModel;
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->logError("Could not load subscription model for subscription {$subscription->id}: " . $e->getMessage());
+            $this->subscriptionModels[$subscription->id] = null;
+        }
+
+        return $this->subscriptionModels[$subscription->id];
     }
 
-    public function getFormatedShippingLines($subscription)
+    protected function checkProductIsSaleable($subscription)
     {
-        $data = $subscription->metadata;
+        $productIDs = [];
 
-        $lines = [];
+        if (isset($subscription->metadata->{"Product ID"}))
+        {
+            $productIDs = explode(",", $subscription->metadata->{"Product ID"});
+        }
+        else if (isset($subscription->metadata->{"SubscriptionProductIDs"}))
+        {
+            $productIDs = explode(",", $subscription->metadata->{"SubscriptionProductIDs"});
+        }
 
-        // Name line
-        if (!empty($data[self::$first]) && !empty($data[self::$last]))
-            $name = $data[self::$first] . " " . $data[self::$last];
-        else if (!empty($data[self::$first]))
-            $name = $data[self::$first];
-        else if (!empty($data[self::$last]))
-            $name = $data[self::$last];
-        else
-            $name = "";
+        if (!empty($productIDs)) {
+            foreach ($productIDs as $productId) {
+                $product = $this->helper->loadProductById($productId);
+                if ($product && $product->getIsSalable()) {
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
 
-        if (!empty($name))
-            $lines['name'] = $name;
-
-        // Add the company if we have it
-        if (!empty($data[self::$company]))
-            $lines['company'] = $data[self::$company];
-
-        // Street
-        if (!empty($data[self::$street]))
-            $lines['street'] = $data[self::$street];
-
-        // City and postcode
-        if (!empty($data[self::$city]) && !empty($data[self::$postcode]))
-            $city = $data[self::$city] . " " . $data[self::$postcode];
-        else if (!empty($data[self::$city]))
-            $city = $data[self::$city];
-        else if (!empty($data[self::$postcode]))
-            $city = $data[self::$postcode];
-        else
-            $city = "";
-
-        if (!empty($city))
-            $lines['city'] = $city;
-
-        // Region
-        if (!empty($data[self::$region]))
-            $lines['region'] = $data[self::$region];
-
-        // Country
-        if (!empty($data[self::$country]))
-            $lines['country'] = $data[self::$country];
-
-        // Telephone
-        if (!empty($data[self::$telephone]))
-            $lines['telephone'] = "Tel: " . $data[self::$telephone];
-
-        return $lines;
-    }
-
-    public function getFormatedShippingAddress($subscription)
-    {
-        $lines = $this->getFormatedShippingLines($subscription);
-        $data = [];
-
-        if (!empty($lines['name']))
-            $data[] = $lines['name'];
-
-        if (!empty($lines['city']))
-            $data[] = $lines['city'];
-        else if (!empty($lines['region']))
-            $data[] = $lines['region'];
-
-        if (!empty($lines['country']))
-            $data[] = $lines['country'];
-
-        return implode(", ", $data);
-    }
-
-    public function hasEditableContent($subscription)
-    {
-        $lines = $this->getFormatedShippingLines($subscription);
-        return !empty($lines);
+        return false;
     }
 }

@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+    <!-- Magento events -->
     <event name="payment_method_assign_data">
         <observer name="stripe_payments_data_assign" instance="StripeIntegration\Payments\Observer\DataAssignObserver" />
     </event>
@@ -23,11 +24,13 @@
     <event name="customer_register_success">
         <observer name="stripe_customer_register_success" instance="StripeIntegration\Payments\Observer\CustomerRegistration" />
     </event>
-    <event name="email_order_set_template_vars_before">
-        <observer name="stripe_email_order_set_template_vars_before" instance="StripeIntegration\Payments\Observer\SetOrderTemplateVars" />
-    </event>
     <event name="customer_save_after_data_object">
         <observer name="stripe_customer_save_after_data_object" instance="StripeIntegration\Payments\Observer\CustomerDetailsChanged" />
+    </event>
+
+    <!-- Before remove from cart -->
+    <event name="sales_quote_remove_item">
+        <observer name="stripe_sales_quote_remove_item_observer" instance="StripeIntegration\Payments\Observer\AfterRemoveCartItem" />
     </event>
 
     <!-- Initial Fee -->
@@ -48,18 +51,6 @@
     </event>
 
     <!-- Webhooks -->
-    <event name="stripe_payments_webhook_charge_refunded_card">
-        <observer name="stripe_payments_webhook_charge_refunded_card_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_refunded_bank_account">
-        <observer name="stripe_payments_webhook_charge_refunded_bank_account_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_refunded_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_charge_refunded_sepa_credit_transfer_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
     <event name="stripe_payments_webhook_charge_refunded">
         <observer name="stripe_payments_webhook_charge_refunded_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
@@ -72,10 +63,32 @@
         <observer name="stripe_payments_webhook_customer_subscription_created_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-
-    <!-- Stripe Checkout / Unified events -->
-    <event name="stripe_payments_webhook_payment_intent_payment_failed_card">
-        <observer name="stripe_payments_webhook_payment_intent_payment_failed_card_observer"
+    <event name="stripe_payments_webhook_customer_subscription_deleted">
+        <observer name="stripe_payments_webhook_customer_subscription_deleted_observer"
+                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_customer_subscription_updated">
+        <observer name="stripe_payments_webhook_customer_subscription_updated_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_payment_intent_payment_failed">
+        <observer name="stripe_payments_webhook_payment_intent_payment_failed_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_payment_intent_partially_funded">
+        <observer name="stripe_payments_webhook_payment_intent_partially_funded_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_payment_intent_canceled">
+        <observer name="stripe_payments_webhook_payment_intent_canceled_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_payment_intent_processing">
+        <observer name="stripe_payments_webhook_payment_intent_processing_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_payment_method_attached">
+        <observer name="stripe_payments_webhook_payment_method_attached_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
     <event name="stripe_payments_webhook_charge_succeeded">
@@ -86,22 +99,34 @@
         <observer name="stripe_payments_webhook_checkout_session_expired_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-    <event name="stripe_payments_webhook_charge_failed">
-        <observer name="stripe_payments_webhook_charge_failed_observer"
+    <event name="stripe_payments_webhook_checkout_session_completed">
+        <observer name="stripe_payments_webhook_checkout_session_completed_observer"
+            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
+    </event>
+    <event name="stripe_payments_webhook_invoice_upcoming">
+        <observer name="stripe_payments_webhook_invoice_upcoming_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
 
-    <!-- PayPal -->
-    <event name="stripe_payments_webhook_payment_intent_succeeded_paypal">
-        <observer name="stripe_payments_webhook_payment_intent_succeeded_paypal_observer"
+    <!-- Automatic webhooks configuration -->
+    <event name="admin_system_config_changed_section_web">
+        <observer name="admin_system_config_changed_section_web_observer" instance="StripeIntegration\Payments\Observer\ConfigChangedObserver"/>
+    </event>
+    <event name="admin_system_config_changed_section_payment">
+        <observer name="admin_system_config_changed_section_payment_observer" instance="StripeIntegration\Payments\Observer\ConfigChangedObserver"/>
+    </event>
+
+    <!-- Setup Intents -->
+    <event name="stripe_payments_webhook_setup_intent_succeeded">
+        <observer name="stripe_payments_webhook_setup_intent_succeeded_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-    <event name="stripe_payments_webhook_payment_intent_payment_failed_paypal">
-        <observer name="stripe_payments_webhook_payment_intent_payment_failed_paypal_observer"
+    <event name="stripe_payments_webhook_setup_intent_canceled">
+        <observer name="stripe_payments_webhook_setup_intent_canceled_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-    <event name="stripe_payments_webhook_charge_succeeded_paypal">
-        <observer name="stripe_payments_webhook_charge_succeeded_paypal_observer"
+    <event name="stripe_payments_webhook_setup_intent_setup_failed">
+        <observer name="stripe_payments_webhook_setup_intent_setup_failed_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
 
@@ -112,10 +137,6 @@
     </event>
 
     <!-- Invoicing via Stripe Billing -->
-    <event name="stripe_payments_webhook_invoice_finalized">
-        <observer name="stripe_payments_webhook_invoice_finalized_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
     <event name="sales_order_payment_cancel_invoice">
         <observer name="sales_order_payment_cancel_invoice_observer" instance="StripeIntegration\Payments\Observer\CancelInvoice" />
     </event>
@@ -131,26 +152,6 @@
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
 
-    <!-- FPX -->
-    <event name="stripe_payments_webhook_payment_intent_succeeded_fpx">
-        <observer name="stripe_payments_webhook_payment_intent_succeeded_fpx_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_payment_intent_payment_failed_fpx">
-        <observer name="stripe_payments_webhook_payment_intent_payment_failed_fpx_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-
-    <!-- OXXO -->
-    <event name="stripe_payments_webhook_payment_intent_succeeded_oxxo">
-        <observer name="stripe_payments_webhook_payment_intent_succeeded_oxxo_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_payment_intent_payment_failed_oxxo">
-        <observer name="stripe_payments_webhook_payment_intent_payment_failed_oxxo_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-
     <!-- Subscriptions -->
     <event name="stripe_payments_webhook_invoice_payment_succeeded">
         <observer name="stripe_payments_webhook_invoice_payment_succeeded_observer"
@@ -160,218 +161,18 @@
         <observer name="stripe_payments_webhook_invoice_payment_failed_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-    <event name="adminhtml_controller_salesrule_prepare_save">
-        <observer name="stripe_payments_coupon_edit_observer"
-            instance="StripeIntegration\Payments\Observer\CouponEditObserver" />
-    </event>
 
-    <!-- SEPA Credit Transfers -->
-    <event name="stripe_payments_webhook_source_transaction_created_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_source_transaction_created_sepa_credit_transfer_observer"
+    <!-- Redirect based APMs -->
+    <event name="stripe_payments_webhook_source_chargeable">
+        <observer name="stripe_payments_webhook_source_chargeable_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-
-    <!-- source.chargeable -->
-    <event name="stripe_payments_webhook_source_chargeable_bancontact">
-        <observer name="stripe_payments_webhook_source_chargeable_bancontact_observer"
+    <event name="stripe_payments_webhook_source_canceled">
+        <observer name="stripe_payments_webhook_source_canceled_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
-    <event name="stripe_payments_webhook_source_chargeable_giropay">
-        <observer name="stripe_payments_webhook_source_chargeable_giropay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_ideal">
-        <observer name="stripe_payments_webhook_source_chargeable_ideal_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_sepa_debit">
-        <observer name="stripe_payments_webhook_source_chargeable_sepa_debit_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_sofort">
-        <observer name="stripe_payments_webhook_source_chargeable_sofort_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_multibanco">
-        <observer name="stripe_payments_webhook_source_chargeable_multibanco_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_eps">
-        <observer name="stripe_payments_webhook_source_chargeable_eps_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_przelewy">
-        <observer name="stripe_payments_webhook_source_chargeable_przelewy_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_alipay">
-        <observer name="stripe_payments_webhook_source_chargeable_alipay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_wechat">
-        <observer name="stripe_payments_webhook_source_chargeable_wechat_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_klarna">
-        <observer name="stripe_payments_webhook_source_chargeable_klarna_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_chargeable_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_source_chargeable_sepa_credit_transfer_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-
-    <!-- source.canceled -->
-    <event name="stripe_payments_webhook_source_canceled_bancontact">
-        <observer name="stripe_payments_webhook_source_canceled_bancontact_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_bancontact">
-        <observer name="stripe_payments_webhook_source_failed_bancontact_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_giropay">
-        <observer name="stripe_payments_webhook_source_canceled_giropay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_giropay">
-        <observer name="stripe_payments_webhook_source_failed_giropay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_ideal">
-        <observer name="stripe_payments_webhook_source_canceled_ideal_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_multibanco">
-        <observer name="stripe_payments_webhook_source_canceled_multibanco_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_eps">
-        <observer name="stripe_payments_webhook_source_canceled_eps_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_przelewy">
-        <observer name="stripe_payments_webhook_source_canceled_przelewy_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_alipay">
-        <observer name="stripe_payments_webhook_source_canceled_alipay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_wechat">
-        <observer name="stripe_payments_webhook_source_canceled_wechat_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_klarna">
-        <observer name="stripe_payments_webhook_source_canceled_klarna_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_source_canceled_sepa_credit_transfer_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-
-    <!-- source.failed -->
-    <event name="stripe_payments_webhook_source_failed_ideal">
-        <observer name="stripe_payments_webhook_source_failed_ideal_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_sepa_debit">
-        <observer name="stripe_payments_webhook_source_canceled_sepa_debit_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_sepa_debit">
-        <observer name="stripe_payments_webhook_source_failed_sepa_debit_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_canceled_sofort">
-        <observer name="stripe_payments_webhook_source_canceled_sofort_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_sofort">
-        <observer name="stripe_payments_webhook_source_failed_sofort_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_multibanco">
-        <observer name="stripe_payments_webhook_source_failed_multibanco_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_eps">
-        <observer name="stripe_payments_webhook_source_failed_eps_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_przelewy">
-        <observer name="stripe_payments_webhook_source_failed_przelewy_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_alipay">
-        <observer name="stripe_payments_webhook_source_failed_alipay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_wechat">
-        <observer name="stripe_payments_webhook_source_failed_wechat_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_klarna">
-        <observer name="stripe_payments_webhook_source_failed_klarna_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_source_failed_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_source_failed_sepa_credit_transfer_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-
-    <!-- charge.succeeded -->
-    <event name="stripe_payments_webhook_charge_succeeded_bancontact">
-        <observer name="stripe_payments_webhook_charge_succeeded_bancontact_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_giropay">
-        <observer name="stripe_payments_webhook_charge_succeeded_giropay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_ideal">
-        <observer name="stripe_payments_webhook_charge_succeeded_ideal_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_sepa_debit">
-        <observer name="stripe_payments_webhook_charge_succeeded_sepa_debit_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_sofort">
-        <observer name="stripe_payments_webhook_charge_succeeded_sofort_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_multibanco">
-        <observer name="stripe_payments_webhook_charge_succeeded_multibanco_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_eps">
-        <observer name="stripe_payments_webhook_charge_succeeded_eps_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_przelewy">
-        <observer name="stripe_payments_webhook_charge_succeeded_przelewy_observer"
-                  instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_alipay">
-        <observer name="stripe_payments_webhook_charge_succeeded_alipay_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_wechat">
-        <observer name="stripe_payments_webhook_charge_succeeded_wechat_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_klarna">
-        <observer name="stripe_payments_webhook_charge_succeeded_klarna_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_sepa_credit_transfer">
-        <observer name="stripe_payments_webhook_charge_succeeded_sepa_credit_transfer_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_card">
-        <observer name="stripe_payments_webhook_charge_succeeded_card_observer"
+    <event name="stripe_payments_webhook_source_failed">
+        <observer name="stripe_payments_webhook_source_failed_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
 
@@ -379,16 +180,6 @@
     <event name="automatic_webhook_configuration">
         <observer name="automatic_webhook_configuration_observer"
             instance="StripeIntegration\Payments\Observer\WebhooksConfigurationObserver" />
-    </event>
-
-    <!-- ACH -->
-    <event name="stripe_payments_webhook_customer_source_updated">
-        <observer name="stripe_payments_webhook_customer_source_updated_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
-    </event>
-    <event name="stripe_payments_webhook_charge_succeeded_bank_account">
-        <observer name="stripe_payments_webhook_charge_succeeded_bank_account_observer"
-            instance="StripeIntegration\Payments\Observer\WebhooksObserver" />
     </event>
 
 </config>

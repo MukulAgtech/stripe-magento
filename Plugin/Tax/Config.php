@@ -4,9 +4,7 @@ namespace StripeIntegration\Payments\Plugin\Tax;
 
 class Config
 {
-    // Disabled constructor:
-    // Loading the product or cart while switching store currency seems to create an infinite recursion.
-    // We are disabling the check and forcing CALC_ROW_BASE for now until a solution is found.
+    private $taxCalculation;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Tax\Calculation $taxCalculation
@@ -15,16 +13,15 @@ class Config
         $this->taxCalculation = $taxCalculation;
     }
 
-    public function aroundGetAlgorithm(
+    public function afterGetAlgorithm(
         $subject,
-        \Closure $proceed,
+        $result,
         $storeId = null
     ) {
-        $algorithm = $proceed($storeId);
-
-        if (!empty($this->taxCalculation->method))
+        if (!empty($this->taxCalculation->method)) {
             return $this->taxCalculation->method;
+        }
 
-        return $algorithm;
+        return $result;
     }
 }

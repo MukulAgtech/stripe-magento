@@ -2,32 +2,20 @@
 
 namespace StripeIntegration\Payments\Controller\Adminhtml\Configure;
 
-use StripeIntegration\Payments\Helper\Logger;
+use Magento\Framework\App\ActionInterface;
 
-class Webhooks extends \Magento\Framework\App\Action\Action
+class Webhooks implements ActionInterface
 {
-    protected $resultPageFactory;
+    private $resultJsonFactory;
+    private $webhooksSetup;
 
-    /**
-     * @param \Magento\Framework\App\Action\Context $context
-     * @param \Magento\Framework\View\Result\PageFactory resultPageFactory
-     */
     public function __construct(
-        \Magento\Framework\App\Action\Context $context,
-        \Magento\Framework\View\Result\PageFactory $resultPageFactory,
         \Magento\Framework\Controller\Result\JsonFactory $resultJsonFactory,
-        \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\WebhooksSetup $webhooksSetup,
-        \Magento\Framework\DB\Transaction $dbTransaction
+        \StripeIntegration\Payments\Helper\WebhooksSetup $webhooksSetup
     )
     {
-        parent::__construct($context);
-
-        $this->resultPageFactory = $resultPageFactory;
         $this->resultJsonFactory = $resultJsonFactory;
-        $this->helper = $helper;
         $this->webhooksSetup = $webhooksSetup;
-        $this->dbTransaction = $dbTransaction;
     }
 
     public function execute()

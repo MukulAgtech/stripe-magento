@@ -2,41 +2,57 @@
 
 namespace StripeIntegration\Payments\Model;
 
-use Magento\Framework\Validator\Exception;
-use Magento\Framework\Exception\LocalizedException;
-use StripeIntegration\Payments\Helper\Logger;
+use StripeIntegration\Payments\Exception\SCANeededException;
+use StripeIntegration\Payments\Exception\GenericException;
 
 class PaymentIntent extends \Magento\Framework\Model\AbstractModel
 {
-    public $paymentIntent = null;
-    public $paymentIntentsCache = [];
-    public $quote = null; // Overwrites default quote
-    public $order = null;
-    public $capture = null; // Overwrites default capture method
-    public $savedCard = null;
-    protected $customParams = [];
+    private $paymentIntent = null;
 
-    const SUCCEEDED = "succeeded";
-    const AUTHORIZED = "requires_capture";
-    const CAPTURE_METHOD_MANUAL = "manual";
-    const CAPTURE_METHOD_AUTOMATIC = "automatic";
-    const REQUIRES_ACTION = "requires_action";
-    const CANCELED = "canceled";
-    const AUTHENTICATION_FAILURE = "payment_intent_authentication_failure";
+    public const SUCCEEDED = "succeeded";
+    public const AUTHORIZED = "requires_capture";
+    public const CAPTURE_METHOD_MANUAL = "manual";
+    public const CAPTURE_METHOD_AUTOMATIC = "automatic";
+    public const REQUIRES_ACTION = "requires_action";
+    public const CANCELED = "canceled";
+    public const AUTHENTICATION_FAILURE = "payment_intent_authentication_failure";
+
+    private $compare;
+    private $addressHelper;
+    private $cache;
+    private $addressFactory;
+    private $customer;
+    private $subscriptionsHelper;
+    private $paymentIntentHelper;
+    private $dataHelper;
+    private $helper;
+    private $config;
+    private $stripePaymentMethod;
+    private $stripePaymentIntent;
+    private $paymentIntentCollection;
+    private $resourceModel;
+    private $checkoutFlow;
+    private $quoteHelper;
+    private $orderHelper;
+    private $convert;
 
     public function __construct(
+        \StripeIntegration\Payments\Helper\Data $dataHelper,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Compare $compare,
-        \StripeIntegration\Payments\Helper\Rollback $rollback,
-        \StripeIntegration\Payments\Helper\SetupIntent $setupIntent,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Address $addressHelper,
+        \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\Convert $convert,
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethod $stripePaymentMethod,
+        \StripeIntegration\Payments\Model\Stripe\PaymentIntent $stripePaymentIntent,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\Collection $paymentIntentCollection,
         \Magento\Customer\Model\AddressFactory $addressFactory,
-        \Magento\Quote\Model\QuoteFactory $quoteFactory,
-        \Magento\Quote\Api\CartRepositoryInterface $quoteRepository,
-        \Magento\Framework\Session\Generic $session,
-        \Magento\Checkout\Helper\Data $checkoutHelper,
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent $resourceModel,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
         \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
@@ -44,20 +60,24 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         array $data = []
         )
     {
+        $this->dataHelper = $dataHelper;
         $this->helper = $helper;
         $this->compare = $compare;
-        $this->rollback = $rollback;
-        $this->setupIntent = $setupIntent;
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->addressHelper = $addressHelper;
+        $this->paymentIntentHelper = $paymentIntentHelper;
+        $this->convert = $convert;
         $this->cache = $context->getCacheManager();
         $this->config = $config;
         $this->customer = $helper->getCustomerModel();
-        $this->quoteFactory = $quoteFactory;
-        $this->quoteRepository = $quoteRepository;
         $this->addressFactory = $addressFactory;
-        $this->session = $session;
-        $this->checkoutHelper = $checkoutHelper;
+        $this->stripePaymentMethod = $stripePaymentMethod;
+        $this->stripePaymentIntent = $stripePaymentIntent;
+        $this->checkoutFlow = $checkoutFlow;
+        $this->paymentIntentCollection = $paymentIntentCollection;
+        $this->resourceModel = $resourceModel;
+        $this->quoteHelper = $quoteHelper;
+        $this->orderHelper = $orderHelper;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
     }
@@ -67,325 +87,336 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         $this->_init('StripeIntegration\Payments\Model\ResourceModel\PaymentIntent');
     }
 
-    public function setCustomParams($params)
+    // If we already created any payment intents for this quote, load them
+    private function invalidateFrom($params, $quote, $order)
     {
-        $this->customParams = $params;
-    }
-
-    // Same as loadFromCache, but does not destroy it if it is invalid
-    public function preloadFromCache($quote, $order)
-    {
-        if (empty($quote))
-            return false;
+        if (!$quote || !$quote->getId() || !$this->getPiId())
+            return null;
 
         $quoteId = $quote->getId();
 
-        if (empty($quoteId))
-            $quoteId = $quote->getQuoteId(); // Admin order quotes
-
-        if (empty($quoteId))
-            return false;
-
-        $key = 'payment_intent_' . $quoteId;
-        if ($this->helper->isAPIRequest())
-            $paymentIntentId = $this->cache->load($key);
-        else
-            $paymentIntentId = $this->session->getData($key);
-
-        if (!empty($paymentIntentId) && strpos($paymentIntentId, "pi_") === 0)
-        {
-            if (isset($this->paymentIntentsCache[$paymentIntentId]) && $this->paymentIntentsCache[$paymentIntentId] instanceof \Stripe\PaymentIntent)
-                $this->paymentIntent = $this->paymentIntentsCache[$paymentIntentId];
-            else
-            {
-                try
-                {
-                    $this->loadPaymentIntent($paymentIntentId, $order);
-                    $this->updateCache($quoteId);
-                }
-                catch (\Exception $e)
-                {
-                    // If the Stripe API keys or the Mode was changed mid-checkout-session, we may get here
-                    return null;
-                }
-            }
-        }
-        else
-            return false;
-
-        return $quoteId;
-    }
-
-    // If we already created any payment intents for this quote, load them
-    public function loadFromCache($params, $quote, $order)
-    {
-        $quoteId = $this->preloadFromCache($quote, $order);
-        if (!$quoteId)
-            return null;
-
-        if ($this->isInvalid($params, $quote, $order) || $this->hasPaymentActionChanged())
-        {
-            $this->destroy($quoteId, true);
-            return null;
-        }
-
-        return $this->paymentIntent;
-    }
-
-    public function loadFromIdentifier($identifier, $params, $quote, $order)
-    {
-        if (empty($identifier))
-            return null;
-
-        $key = 'payment_intent_' . $identifier;
-        if ($this->helper->isAPIRequest())
-            $paymentIntentId = $this->cache->load($key);
-        else
-            $paymentIntentId = $this->session->getData($key);
-
-        if (!empty($paymentIntentId) && strpos($paymentIntentId, "pi_") === 0)
-        {
-            if (isset($this->paymentIntentsCache[$paymentIntentId]) && $this->paymentIntentsCache[$paymentIntentId] instanceof \Stripe\PaymentIntent)
-                $paymentIntent = $this->paymentIntentsCache[$paymentIntentId];
-            else
-            {
-                $this->loadPaymentIntent($paymentIntentId, $order);
-                $this->updateCache($identifier, $paymentIntent);
-            }
-        }
-        else
-            return null;
-
-        if ($this->isInvalid($params, $quote, $order, $paymentIntent) || $this->hasPaymentActionChanged($paymentIntent))
-        {
-            $this->destroy($identifier, true, $paymentIntent);
-            return null;
-        }
-
-        return $paymentIntent;
-    }
-
-    public function loadFromPayment($payment, $order = null)
-    {
-        if (empty($payment))
-            throw new LocalizedException(__("Unhandled attempt to place multi-shipping order without a payment object"));
-
-        $paymentIntentId = $payment->getAdditionalInformation("payment_intent_id");
-
-        if (empty($paymentIntentId))
-        {
-            $this->paymentIntent = null;
-            return null;
-        }
+        $paymentIntent = null;
 
         try
         {
-            $this->loadPaymentIntent($paymentIntentId, $order);
-            $this->updateCache($paymentIntentId); // We sent a $paymentIntentId and not a $quoteId intentionally!
-            return $this->paymentIntent;
+            $paymentIntent = $this->loadPaymentIntent($this->getPiId(), $order);
         }
         catch (\Exception $e)
         {
-            $this->paymentIntent = null;
+            // If the Stripe API keys or the Mode was changed mid-checkout-session, we may get here
+            $this->destroy();
             return null;
         }
+
+        if ($this->isInvalid($params, $quote, $order, $paymentIntent))
+        {
+            $this->destroy($paymentIntent);
+            return null;
+        }
+
+        if ($this->isDifferentFrom($paymentIntent, $params, $quote, $order))
+        {
+            $paymentIntent = $this->updateFrom($paymentIntent, $params, $quote, $order);
+        }
+
+        if ($paymentIntent)
+        {
+            $this->updateModelFrom($quote, $paymentIntent, $order);
+        }
+        else
+        {
+            $this->destroy();
+        }
+
+        return $this->paymentIntent = $paymentIntent;
     }
 
-    public function loadPaymentIntent($paymentIntentId, $order = null)
+    public function canCancel($paymentIntent = null)
     {
-        $this->paymentIntent = \Stripe\PaymentIntent::retrieve($paymentIntentId);
+        if (empty($paymentIntent))
+            $paymentIntent = $this->paymentIntent;
 
-        if (!empty($this->paymentIntent->customer))
+        if (empty($paymentIntent))
         {
-            $customer = $this->helper->getCustomerModelByStripeId($this->paymentIntent->customer);
+            return false;
+        }
+
+        if ($this->paymentIntentHelper->isSuccessful($paymentIntent))
+        {
+            return false;
+        }
+
+        if ($this->paymentIntentHelper->isAsyncProcessing($paymentIntent))
+        {
+            return false;
+        }
+
+        if ($paymentIntent->status == $this::CANCELED)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function canUpdate($paymentIntent)
+    {
+        return $this->canCancel($paymentIntent);
+    }
+
+    private function loadPaymentIntent($paymentIntentId, $order = null)
+    {
+        $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId);
+
+        // If the PI has a customer attached, load the customer locally as well
+        if (!empty($paymentIntent->customer))
+        {
+            $customer = $this->helper->getCustomerModelByStripeId($paymentIntent->customer);
             if ($customer)
                 $this->customer = $customer;
 
             if (!$this->customer->getStripeId())
-                $this->customer->createStripeCustomer($order, ["id" => $this->paymentIntent->customer]);
+            {
+                $this->customer->createStripeCustomer($order, ["id" => $paymentIntent->customer]);
+            }
         }
 
+        return $this->paymentIntent = $paymentIntent;
     }
 
-    protected function hasPaymentActionChanged($paymentIntent = null)
-    {
-        if (!$paymentIntent)
-            $paymentIntent = $this->paymentIntent;
-
-        $captureMethod = $this->getCaptureMethod();
-        return ($captureMethod != $paymentIntent->capture_method);
-    }
-
-    public function create($params, $quote, $order = null)
+    public function createPaymentIntentFrom($params, $quote, $order = null)
     {
         if (empty($params['amount']) || $params['amount'] <= 0)
             return null;
 
-        if ($this->helper->isMultiShipping() && $order)
-            $this->loadFromPayment($order->getPayment(), $order);
-        else
-            $this->loadFromCache($params, $quote, $order);
+        $paymentIntent = $this->invalidateFrom($params, $quote, $order);
 
-        if (!$this->paymentIntent)
+        if (!$paymentIntent)
         {
-            $this->paymentIntent = \Stripe\PaymentIntent::create($params);
-            $this->updateCache($quote->getId());
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->create($params);
+            $this->updateModelFrom($quote, $paymentIntent, $order);
 
             if ($order)
             {
                 $payment = $order->getPayment();
-                $payment->setAdditionalInformation("payment_intent_id", $this->paymentIntent->id);
-                $payment->setAdditionalInformation("payment_intent_client_secret", $this->paymentIntent->client_secret);
+                $payment->setAdditionalInformation("payment_intent_id", $paymentIntent->id);
             }
         }
-        else if ($this->differentFrom($params, $quote, $order))
-        {
-            $this->updateFrom($params, $quote, $order);
-        }
 
-        return $this->paymentIntent;
+        return $this->paymentIntent = $paymentIntent;
     }
 
-    protected function updateCache($quoteId, $paymentIntent = null)
+    private function updateModelFrom($quote, $paymentIntent, $order = null)
     {
-        $key = 'payment_intent_' . $quoteId;
-        if (empty($paymentIntent))
-            $paymentIntent = $this->paymentIntent;
-
-        $data = $paymentIntent->id;
-
-        if ($this->helper->isAPIRequest())
+        if ($order)
         {
-            $tags = ['stripe_payments_payment_intents'];
-            $lifetime = 12 * 60 * 60; // 12 hours
-            $this->cache->save($data, $key, $tags, $lifetime);
+            $quoteId = $order->getQuoteId();
+            $customerEmail = $order->getCustomerEmail();
         }
         else
-            $this->session->setData($key, $data);
-
-        $this->paymentIntentsCache[$paymentIntent->id] = $paymentIntent;
-    }
-
-    public function getPaymentMethodDetails($quote, $paymentMethodId, $order = null)
-    {
-        $params = ['payment_method' => $paymentMethodId];
-        $paymentMethod = null;
-
-        if ($this->helper->isAdmin())
         {
-            $paymentMethod = $this->config->getStripeClient()->paymentMethods->retrieve($paymentMethodId, []);
-            if (!empty($paymentMethod->customer))
-                $this->customer = $this->helper->getCustomerModelByStripeId($paymentMethod->customer);
+            $quoteId = $quote->getId();
+            $customerEmail = $quote->getCustomerEmail();
         }
 
-        if ($order && $order->getPayment()->getAdditionalInformation("save_card"))
-            $save = true;
-        else if ($this->config->alwaysSaveCards())
-            $save = true;
-        else
-            $save = false;
-
-        if ($save)
+        if (!$this->getQuoteId())
         {
-            if (!$this->customer->getStripeId())
-                $this->customer->createStripeCustomerIfNotExists(true, $order);
+            $this->resourceModel->load($this, $quoteId, 'quote_id');
+        }
 
-            if ($this->helper->isAdmin() && $this->config->isMOTOExemptionsEnabled())
-                $params['save_payment_method'] = true;
-            else if ($this->helper->isMultiShipping())
+        $oldPiId = $this->getPiId();
+
+        $this->setPiId($paymentIntent->id);
+        $this->setQuoteId($quoteId);
+        $this->setCustomerEmail($customerEmail);
+
+        if ($order)
+        {
+            if ($order->getIncrementId())
+                $this->setOrderIncrementId($order->getIncrementId());
+
+            if ($order->getId())
+                $this->setOrderId($order->getId());
+
+            $customerId = $order->getCustomerId();
+            if (!empty($customerId))
+                $this->setCustomerId($customerId);
+            else
+                $this->setCustomerId(null);
+
+            if ($order->getPayment()->getAdditionalInformation("confirmation_token"))
             {
-                if ($this->savedCard != $paymentMethodId)
-                {
-                    $params['save_payment_method'] = true;
-                    $this->savedCard = $paymentMethodId;
-                }
+                $this->setPmId($order->getPayment()->getAdditionalInformation("confirmation_token"));
+            }
+            else if ($order->getPayment()->getAdditionalInformation("token"))
+            {
+                $this->setPmId($order->getPayment()->getAdditionalInformation("token"));
             }
             else
             {
-                if ($this->config->isAuthorizeOnly() && $this->config->retryWithSavedCard())
-                    $params['setup_future_usage'] = "off_session";
-                else
-                    $params['setup_future_usage'] = "on_session";
+                $this->setPmId(null);
+            }
+        }
+        else
+        {
+            $this->setOrderId(null);
+            $this->setOrderIncrementId(null);
+            $this->setCustomerId(null);
+            $this->setPmId(null);
+        }
+
+        $this->resourceModel->save($this);
+
+        // For some reason, saving the model creates a new entry instead of replacing the old one
+        // so we manually remove the old one
+        if ($oldPiId && $oldPiId != $this->getPiId() && $quoteId)
+        {
+            $this->paymentIntentCollection->deleteForQuoteIdAndPiId($quoteId, $oldPiId);
+        }
+    }
+
+    public function getMultishippingParamsFrom($quote, $orders, $paymentMethodId)
+    {
+        $amount = 0;
+        $currency = null;
+        $orderIncrementIds = [];
+
+        foreach ($orders as $order)
+        {
+            $amount += round(floatval($order->getGrandTotal()), 2);
+            $currency = $order->getOrderCurrencyCode();
+            $orderIncrementIds[] = $order->getIncrementId();
+        }
+
+        $params['amount'] = $this->convert->magentoAmountToStripeAmount($amount, $currency);
+        $params['currency'] = strtolower($currency);
+        $params['capture_method'] = $this->config->getCaptureMethod();
+
+        if ($usage = $this->config->getSetupFutureUsage($quote))
+            $params['setup_future_usage'] = $usage;
+
+        $params['payment_method'] = $paymentMethodId;
+
+        $this->setCustomerFromPaymentMethodId($paymentMethodId);
+
+        if (!$this->customer->getStripeId())
+        {
+            $this->customer->createStripeCustomerIfNotExists();
+        }
+
+        if ($this->customer->getStripeId())
+            $params["customer"] = $this->customer->getStripeId();
+
+        $params["description"] = $this->helper->getMultishippingOrdersDescription($quote, $orders);
+        $params["metadata"] = $this->config->getMultishippingMetadata($quote, $orders);
+
+        $customerEmail = $quote->getCustomerEmail();
+        if ($customerEmail && $this->config->isReceiptEmailsEnabled())
+            $params["receipt_email"] = $customerEmail;
+
+        $params['automatic_payment_methods'] = [ "enabled" => true ];
+
+        $pmc = $this->config->getPaymentMethodConfiguration();
+        if ($pmc)
+        {
+            $params['payment_method_configuration'] = $pmc;
+        }
+
+        return $params;
+    }
+
+    public function setCustomerFromPaymentMethodId($paymentMethodId, $order = null)
+    {
+        $paymentMethod = $this->stripePaymentMethod->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+        if (!empty($paymentMethod->customer))
+        {
+            $customer = $this->helper->getCustomerModelByStripeId($paymentMethod->customer);
+            if (!$customer)
+            {
+
+                $this->customer->createStripeCustomer($order, ["id" => $paymentMethod->customer]);
+            }
+            else
+            {
+                $this->customer = $customer;
+            }
+        }
+    }
+
+    public function getParamsFrom($quote, $order, $paymentMethodId = null)
+    {
+        if (empty($order))
+            throw new GenericException("An order is required for PaymentIntent parameters.");
+
+        $amount = $order->getGrandTotal();
+        $currency = $order->getOrderCurrencyCode();
+        $payment = $order->getPayment();
+        $savePaymentMethod = (bool)$payment->getAdditionalInformation("save_payment_method");
+
+        if (empty($paymentMethodId) && $payment->getAdditionalInformation("token"))
+        {
+            $paymentMethodId = $payment->getAdditionalInformation("token");
+        }
+
+        if ($payment->getAdditionalInformation("confirmation_token"))
+        {
+            // The ECE uses payment method types to filter the available payment methods. It needs to be consistent on the server side.
+            $params['payment_method_types'] = $this->config->getECEPaymentMethodTypes();
+        }
+        else
+        {
+            $params['automatic_payment_methods'] = [ 'enabled' => 'true' ];
+
+            $pmc = $this->config->getPaymentMethodConfiguration();
+            if ($pmc)
+            {
+                $params['payment_method_configuration'] = $pmc;
+            }
+        }
+
+        $params['amount'] = $this->convert->magentoAmountToStripeAmount($amount, $currency);
+        $params['currency'] = strtolower($currency);
+
+        $statementDescriptor = $this->config->getStatementDescriptor();
+        if (!empty($statementDescriptor))
+            $params["statement_descriptor_suffix"] = $statementDescriptor;
+
+        if ($paymentMethodId)
+        {
+            $params['payment_method'] = $paymentMethodId;
+            $this->setCustomerFromPaymentMethodId($paymentMethodId, $order);
+        }
+
+        if (!$this->customer->getStripeId())
+        {
+            if ($this->helper->isCustomerLoggedIn() || $this->config->alwaysSaveCards())
+            {
+                $this->customer->createStripeCustomerIfNotExists(false, $order);
             }
         }
 
         if ($this->customer->getStripeId())
             $params["customer"] = $this->customer->getStripeId();
 
-        if ($this->config->isInstallmentPlansEnabled())
-            $params["payment_method_options"]["card"]["installments"]["enabled"] = true;
-
-        return $params;
-    }
-
-    public function getParamsFrom($quote, $order = null, $paymentMethodId = null)
-    {
-        if (!empty($this->customParams))
-            return $this->customParams;
-
         if ($order)
         {
-            $payment = $order->getPayment();
-
-            if ($this->config->useStoreCurrency($order))
-            {
-                $amount = $order->getGrandTotal();
-                $currency = $order->getOrderCurrencyCode();
-            }
-            else
-            {
-                $amount = $order->getBaseGrandTotal();
-                $currency = $order->getBaseCurrencyCode();
-            }
-        }
-        else
-        {
-            if ($this->config->useStoreCurrency($order))
-            {
-                $amount = $quote->getGrandTotal();
-                $currency = $quote->getQuoteCurrencyCode();
-            }
-            else
-            {
-                $amount = $quote->getBaseGrandTotal();
-                $currency = $quote->getBaseCurrencyCode();
-            }
-        }
-
-        $cents = 100;
-        if ($this->helper->isZeroDecimal($currency))
-            $cents = 1;
-
-        $params['amount'] = round($amount * $cents);
-        $params['currency'] = strtolower($currency);
-        $params['capture_method'] = $this->getCaptureMethod();
-        $params["payment_method_types"] = ["card"]; // For now
-        $params['confirmation_method'] = 'manual';
-
-        if ($paymentMethodId)
-        {
-            $extraParams = $this->getPaymentMethodDetails($quote, $paymentMethodId, $order);
-            $params = array_merge($params, $extraParams);
-        }
-
-        if ($order)
-        {
-            $params["description"] = $this->helper->getOrderDescription($order);
+            $params["description"] = $this->orderHelper->getOrderDescription($order);
             $params["metadata"] = $this->config->getMetadata($order);
         }
-
-        $params['amount'] = $this->adjustAmountForSubscriptions($params['amount'], $params['currency'], $quote, $order);
-
-        $statementDescriptor = $this->config->getStatementDescriptor();
-        if (!empty($statementDescriptor))
-            $params["statement_descriptor"] = $statementDescriptor;
         else
-            unset($params['statement_descriptor']);
+        {
+            $params["description"] = $this->quoteHelper->getQuoteDescription($quote);
+        }
+
+        // Add subscription initial fees to the amount, or remove any trial subscription amounts
+        $subscriptionsTotal = $this->getSubscriptionsAmount($quote, $order);
+        $stripeSubscriptionsTotal = $this->convert->magentoAmountToStripeAmount($subscriptionsTotal, $currency);
+        $params['amount'] -= $stripeSubscriptionsTotal;
 
         $shipping = $this->getShippingAddressFrom($quote, $order);
         if ($shipping)
             $params['shipping'] = $shipping;
-        else
+        else if (isset($params['shipping']))
             unset($params['shipping']);
 
         if ($order)
@@ -398,7 +429,7 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
 
         if ($this->config->isLevel3DataEnabled())
         {
-            $level3Data = $this->helper->getLevel3DataFrom($order, $this->config->useStoreCurrency($order));
+            $level3Data = $this->helper->getLevel3DataFrom($order);
             if ($level3Data)
                 $params["level3"] = $level3Data;
         }
@@ -406,30 +437,24 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         return $params;
     }
 
-    // Adds initial fees, or removes item amounts if there is a trial set
-    protected function adjustAmountForSubscriptions($amount, $currency, $quote, $order = null)
+    protected function getSubscriptionsAmount($quote, $order = null)
     {
-        $cents = 100;
-        if ($this->helper->isZeroDecimal($currency))
-            $cents = 1;
-
         if ($order)
-            $data = $this->subscriptionsHelper->createSubscriptions($order, true);
+        {
+            $subscription = $this->subscriptionsHelper->getSubscriptionFromOrder($order);
+        }
         else
-            $data = $this->subscriptionsHelper->createSubscriptions($quote, true);
+        {
+            $subscription = $this->subscriptionsHelper->getSubscriptionFromQuote($quote);
+        }
 
-        if (!empty($data['error']))
-            throw new LocalizedException($data['error']);
+        $subscriptionsTotal = 0;
+        if (!empty($subscription['profile']))
+        {
+            $subscriptionsTotal += $this->subscriptionsHelper->getSubscriptionTotalFromProfile($subscription['profile']);
+        }
 
-        return round((($amount/$cents) - $data['subscriptionsTotal']) * $cents);
-    }
-
-    // Checks if the payment methods in the parameter are the same with the payment methods on $this->paymentMethods
-    protected function samePaymentMethods($methods)
-    {
-        $currentMethods = $this->paymentIntent->payment_method_types;
-        return (empty(array_diff($methods, $currentMethods)) &&
-            empty(array_diff($currentMethods, $methods)));
+        return max(0, $subscriptionsTotal);
     }
 
     public function getClientSecret($paymentIntent = null)
@@ -440,18 +465,12 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         if (empty($paymentIntent))
             return null;
 
-        if (!$this->config->isEnabled())
-            return null;
-
         return $paymentIntent->client_secret;
     }
 
     public function getStatus()
     {
         if (empty($this->paymentIntent))
-            return null;
-
-        if (!$this->config->isEnabled())
             return null;
 
         return $this->paymentIntent->status;
@@ -465,137 +484,128 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         return $this->paymentIntent->id;
     }
 
-    protected function getQuote($quoteId = null)
-    {
-        // Capturing an expired authorization
-        if ($this->quote)
-            return $this->quote;
-
-        return $this->helper->getQuote($quoteId);
-    }
-
-    public function isInvalid($params, $quote, $order, $paymentIntent = null)
+    // Returns true if the payment intent:
+    // a) is in a state that cannot be used for a purchase
+    // b) a parameter that cannot be updated has changed
+    public function isInvalid($params, $quote, $order, $paymentIntent)
     {
         if ($params['amount'] <= 0)
-            return true;
-
-        if (!$paymentIntent)
         {
-            if (empty($this->paymentIntent))
-                return true;
+            return true;
+        }
 
-            $paymentIntent = $this->paymentIntent;
+        if (empty($paymentIntent))
+        {
+            return true;
         }
 
         if ($paymentIntent->status == $this::CANCELED)
+        {
             return true;
-        else if ($paymentIntent->amount != $params['amount'])
-            return true;
+        }
 
-        if (!$this->customer->getStripeId())
-            $this->customer->createStripeCustomerIfNotExists(true, $order); // This is a troubled line. We shouldn't create a customer if there is no need.
+        // You cannot modify `customer` on a PaymentIntent once it already has been set. To fulfill a payment with a different Customer,
+        // cancel this PaymentIntent and create a new one.
+        if (!empty($paymentIntent->customer))
+        {
+            if (empty($params["customer"]) || $paymentIntent->customer != $params["customer"])
+            {
+                return true;
+            }
+        }
 
-        $customerId = $this->customer->getStripeId();
-        if (!empty($paymentIntent->customer) && $paymentIntent->customer != $customerId)
-            return true;
+        // You passed an empty string for 'shipping'. We assume empty values are an attempt to unset a parameter; however 'shipping'
+        // cannot be unset. You should remove 'shipping' from your request or supply a non-empty value.
+        if (!empty($paymentIntent->shipping))
+        {
+            if (isset($params["shipping"]) && empty($params["shipping"]))
+            {
+                return true;
+            }
+        }
+
+        // Case where the user navigates to the standard checkout, the PI is created,
+        // and then the customer switches to multishipping checkout.
+        if ($this->helper->isMultiShipping() || $this->checkoutFlow->isExpressCheckout)
+        {
+            if (!empty($paymentIntent->automatic_payment_methods))
+            {
+                return true;
+            }
+        }
+        // ...and vice versa
+        else
+        {
+            if (empty($paymentIntent->automatic_payment_methods))
+            {
+                return true;
+            }
+        }
+
+        if ($this->paymentIntentHelper->isSuccessful($paymentIntent) ||
+            $this->paymentIntentHelper->isAsyncProcessing($paymentIntent) ||
+            $this->paymentIntentHelper->requiresOfflineAction($paymentIntent)
+            )
+        {
+            $expectedValues = [
+                'amount' => $params['amount'],
+                'currency' => $params['currency']
+            ];
+
+            if ($this->compare->isDifferent($paymentIntent, $expectedValues))
+            {
+                $this->helper->logError("PaymentIntent " . $paymentIntent->id . " was successful, but is in an invalid state: " . $this->compare->lastReason);
+                return true;
+            }
+        }
 
         return false;
     }
 
-    public function updateFrom($params, $quote, $order)
+    public function updateFrom($paymentIntent, $params, $quote, $order, $cache = true)
     {
         if (empty($quote))
-            return $this;
+            return null;
 
-        if (!$this->config->isEnabled())
-            return $this;
-
-        if (!$this->paymentIntent)
-            return $this;
-
-        if ($this->isSuccessfulStatus())
-            return $this;
-
-        if ($this->differentFrom($params, $quote, $order))
+        if ($this->isDifferentFrom($paymentIntent, $params, $quote, $order))
         {
-            $paymentIntentParams = $this->getFilteredParamsForUpdate($params);
+            $paymentIntent = $this->updateStripeObject($paymentIntent, $params);
 
-            foreach ($paymentIntentParams as $key => $value)
-                $this->paymentIntent->{$key} = $value;
-
-            // We can only set the customer, we cannot change it
-            if (!empty($params["customer"]) && empty($this->paymentIntent->customer))
-                $this->paymentIntent->customer = $params["customer"];
-
-            $this->updatePaymentIntent($quote);
-        }
-    }
-
-    // Performs an API update of the PI
-    public function updatePaymentIntent($quote)
-    {
-        $this->paymentIntent->save();
-        $this->updateCache($quote->getId());
-    }
-
-    public function destroy($quoteId, $cancelPaymentIntent = false, $paymentIntent = null)
-    {
-        if (!$paymentIntent)
-        {
-            $paymentIntent = $this->paymentIntent;
-            $this->paymentIntent = null;
+            if ($cache)
+                $this->updateModelFrom($quote, $paymentIntent, $order);
         }
 
-        $key = 'payment_intent_' . $quoteId;
-        if ($this->helper->isAPIRequest())
-            $this->cache->remove($key);
-        else
-            $this->session->unsetData($key);
-
-        if ($paymentIntent && $cancelPaymentIntent && $paymentIntent->status != $this::CANCELED)
-            $paymentIntent->cancel();
-
-        if (isset($this->paymentIntentsCache[$key]))
-            unset($this->paymentIntentsCache[$key]);
-
-        $this->customParams = [];
+        return $this->paymentIntent = $paymentIntent;
     }
 
-    // At the final place order step, if the amount and currency has not changed, Magento will not call
-    // the quote observer. But the customer may have changed the shipping address, in which case a
-    // payment intent update is needed. We want to unset the amount and currency in this case because
-    // the Stripe API will throw an error, because the PI has already been authorized at the checkout
-    protected function getFilteredParamsForUpdate($params)
+    public function updateStripeObject($paymentIntent, $params)
     {
-        $newParams = [];
-        $allowedParams = ["amount", "currency", "description", "metadata", "shipping", "level3", "on_behalf_of"];
+        $updateParams = $this->paymentIntentHelper->getFilteredParamsForUpdate($params, $paymentIntent);
 
-        foreach ($allowedParams as $key)
+        return $this->config->getStripeClient()->paymentIntents->update($paymentIntent->id, $updateParams);
+    }
+
+    public function destroy($paymentIntentToCancel = null)
+    {
+        if ($paymentIntentToCancel && $this->canCancel($paymentIntentToCancel))
         {
-            if (isset($params[$key]))
-                $newParams[$key] = $params[$key];
+            $description = "The customer switched to a different payment flow.";
+            $metadata = null;
+            $this->config->getStripeClient()->paymentIntents->update($paymentIntentToCancel->id, [
+                "description" => $description,
+                "metadata" => $metadata
+            ]);
+            $paymentIntentToCancel->cancel();
         }
 
-        if ($newParams["amount"] == $this->paymentIntent->amount)
-            unset($newParams["amount"]);
-
-        if ($newParams["currency"] == $this->paymentIntent->currency)
-            unset($newParams["currency"]);
-
-        if (empty($newParams["shipping"]))
-            unset($newParams["shipping"]);
-
-        return $newParams;
+        $this->paymentIntent = null;
     }
 
-    public function differentFrom($params, $quote, $order = null)
+    public function isDifferentFrom($paymentIntent, $params, $quote, $order = null)
     {
-        $expectedValues = [
-            "amount" => $params["amount"],
-            "currency" => $params["currency"]
-        ];
+        $expectedValues = [];
 
-        foreach (["metadata", "description", "shipping", "level3"] as $key)
+        foreach ($this->paymentIntentHelper->getUpdateableParams($params, $paymentIntent) as $key)
         {
             if (empty($params[$key]))
                 $expectedValues[$key] = "unset";
@@ -603,140 +613,19 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
                 $expectedValues[$key] = $params[$key];
         }
 
-        return $this->compare->isDifferent($this->paymentIntent, $expectedValues);
-    }
-
-    public function isLevel3DataDifferent($params)
-    {
-        if (empty($this->paymentIntent->level3) && empty($params['level3']))
-            return false;
-
-        if (empty($this->paymentIntent->level3) && !empty($params['level3']))
-            return true;
-
-        if (!empty($this->paymentIntent->level3) && empty($params['level3']))
-            return true;
-
-        $comparisonKeys1 = ["merchant_reference", "customer_reference", "shipping_address_zip", "shipping_from_zip", "shipping_amount"];
-        $comparisonKeys2 = ["product_code", "product_description", "unit_cost", "quantity", "tax_amount", "discount_amount"];
-
-        foreach ($comparisonKeys1 as $key)
-        {
-            if (empty($params['level3'][$key]) && !empty($this->paymentIntent->level3->{$key}))
-                return true;
-
-            if (!empty($params['level3'][$key]) && empty($this->paymentIntent->level3->{$key}))
-                return true;
-
-            if (empty($params['level3'][$key]) && empty($this->paymentIntent->level3->{$key}))
-                continue;
-
-            if ($this->paymentIntent->level3->{$key} != $params['level3'][$key])
-                return true;
-        }
-
-        if (empty($this->paymentIntent->level3->line_items) && !empty($params['level3']['line_items']))
-            return true;
-
-        if (!empty($this->paymentIntent->level3->line_items) && empty($params['level3']['line_items']))
-            return true;
-
-        if (empty($this->paymentIntent->level3->line_items) && empty($params['level3']['line_items']))
-            return false;
-
-        if (count($this->paymentIntent->level3->line_items) != count($params['level3']['line_items']))
-            return true;
-
-        foreach ($this->paymentIntent->level3->line_items as $key => $lineItem)
-        {
-            $paramItem = $params['level3']['line_items'][$key];
-            foreach ($comparisonKeys2 as $key)
-            {
-
-                if (empty($paramItem[$key]) && !empty($lineItem->{$key}))
-                    return true;
-
-                if (!empty($paramItem[$key]) && empty($lineItem->{$key}))
-                    return true;
-
-                if (empty($paramItem[$key]) && empty($lineItem->{$key}))
-                    continue;
-
-                if ($lineItem->{$key} != $paramItem[$key])
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    public function isMetadataDifferent($params)
-    {
-        if (empty($params["metadata"]))
-            return false;
-
-        foreach ($params["metadata"] as $key => $value)
-        {
-            if ($this->paymentIntent->metadata[$key] != $value)
-                return true;
-        }
-
-        return false;
-    }
-
-    public function isDescriptionDifferent($params)
-    {
-        if (empty($params["description"]) && empty($this->paymentIntent->description))
-            return false;
-
-        if (empty($params["description"]))
-            return true;
-
-        if (empty($this->paymentIntent->description))
-            return true;
-
-        return ($params["description"] != $this->paymentIntent->description);
-    }
-
-    public function isAddressDifferentFrom($quote, $order = null)
-    {
-        $newShipping = $this->getShippingAddressFrom($quote, $order);
-
-        // If both are empty, they are the same
-        if (empty($this->paymentIntent->shipping) && empty($newShipping))
-            return false;
-
-        // If one of them is empty, they are different
-        if (empty($this->paymentIntent->shipping) && !empty($newShipping))
-            return true;
-
-        if (!empty($this->paymentIntent->shipping) && empty($newShipping))
-            return true;
-
-        $comparisonKeys1 = ["name", "phone"];
-        $comparisonKeys2 = ["city", "country", "line1", "line2", "postal_code", "state"];
-
-        foreach ($comparisonKeys1 as $key) {
-            if ($this->paymentIntent->shipping->{$key} != $newShipping[$key])
-                return true;
-        }
-
-        foreach ($comparisonKeys2 as $key) {
-            if ($this->paymentIntent->shipping->address->{$key} != $newShipping["address"][$key])
-                return true;
-        }
-
-        return false;
+        return $this->compare->isDifferent($paymentIntent, $expectedValues);
     }
 
     public function getShippingAddressFrom($quote, $order = null)
     {
         if ($order)
             $obj = $order;
-        else
+        else if ($quote)
             $obj = $quote;
+        else
+            throw new GenericException("No quote or order specified");
 
-        if (empty($obj) || $obj->getIsVirtual())
+        if (!$obj || $obj->getIsVirtual())
             return null;
 
         $address = $obj->getShippingAddress();
@@ -754,36 +643,6 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         return $this->addressHelper->getStripeShippingAddressFromMagentoAddress($address);
     }
 
-    public function isSuccessfulStatus($paymentIntent = null)
-    {
-        if (empty($paymentIntent))
-            $paymentIntent = $this->paymentIntent;
-
-        return ($paymentIntent->status == PaymentIntent::SUCCEEDED ||
-            $paymentIntent->status == PaymentIntent::AUTHORIZED);
-    }
-
-    public function refreshCache($quoteId, $order = null)
-    {
-        if (!$this->paymentIntent)
-            return;
-
-        $this->loadPaymentIntent($this->paymentIntent->id, $order);
-        $this->updateCache($quoteId);
-    }
-
-    public function getCaptureMethod()
-    {
-        // Overwrite for when capturing an expired authorization
-        if ($this->capture)
-            return $this->capture;
-
-        if ($this->config->isAuthorizeOnly())
-            return PaymentIntent::CAPTURE_METHOD_MANUAL;
-
-        return PaymentIntent::CAPTURE_METHOD_AUTOMATIC;
-    }
-
     public function requiresAction($paymentIntent = null)
     {
         if (empty($paymentIntent))
@@ -795,232 +654,60 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         );
     }
 
-    public function triggerAuthentication($piSecrets)
+    public function confirm($paymentIntent, $confirmParams)
     {
-        if (count($piSecrets) > 0)
+        try
         {
-            if (!$this->helper->isMultiShipping())
-                $this->rollback->run();
-
-            if ($this->helper->isAdmin())
-                $this->helper->dieWithError(__("This card cannot be used because it requires a 3D Secure authentication by the customer. Your Stripe account needs to be MOTO enabled to use 3D Secure cards from the admin area."));
-
-            // Front-end checkout case, this will trigger the 3DS modal.
-            $this->helper->dieWithError("Authentication Required: " . implode(",", $piSecrets));
-        }
-    }
-
-    public function redirectToMultiShippingAuthorizationPage($payment, $paymentIntentId)
-    {
-        $this->session->setAuthorizationRedirect("stripe/authorization/multishipping");
-        $payment->setIsTransactionPending(true);
-        $payment->setIsTransactionClosed(0);
-        $payment->setIsFraudDetected(false);
-        $payment->setAdditionalInformation('authentication_pending', true);
-        $payment->setTransactionId($paymentIntentId);
-        $payment->setLastTransId($paymentIntentId);
-
-        return $this->paymentIntent;
-    }
-
-    public function getInstallmentPlan($payment)
-    {
-        if (!$this->paymentIntent)
-            return null;
-
-        $selectedPlan = $payment->getAdditionalInformation("selected_plan");
-
-        if (!is_numeric($selectedPlan) || $selectedPlan < 0)
-            return null;
-
-        if (!isset($this->paymentIntent->payment_method_options->card->installments->available_plans[$selectedPlan]))
-            return null;
-
-        $plan = $this->paymentIntent->payment_method_options->card->installments->available_plans[$selectedPlan];
-
-        return [
-            "type" => $plan->type,
-            "interval" => $plan->interval,
-            "count" => $plan->count
-        ];
-    }
-
-    public function getConfirmParams($order)
-    {
-        $confirmParams = [];
-
-        if ($this->helper->isAdmin() && $this->config->isMOTOExemptionsEnabled())
-            $confirmParams["payment_method_options"]["card"]["moto"] = "true";
-
-        if ($installmentPlan = $this->getInstallmentPlan($order->getPayment()))
-            $confirmParams["payment_method_options"]["card"]["installments"]["plan"] = $installmentPlan;
-
-        // This should only trigger with Apple Pay and with Installments where we only had the quote at the PI creation time
-        if (empty($this->paymentIntent->payment_method) || $this->helper->isMultiShipping())
-            $confirmParams["payment_method"] = $order->getPayment()->getAdditionalInformation("token");
-
-        return $confirmParams;
-    }
-
-    public function attachPaymentMethodToCustomer($paymentMethodId, $order)
-    {
-        $this->customer->createStripeCustomerIfNotExists(true, $order);
-        $paymentMethod = \Stripe\PaymentMethod::retrieve($paymentMethodId);
-
-        if (empty($paymentMethod->customer))
-        {
-            $this->config->getStripeClient()->paymentMethods->attach($paymentMethodId, [ 'customer' => $this->customer->getStripeId() ]);
-        }
-        else if ($paymentMethod->customer != $this->customer->getStripeId())
-        {
-            $this->config->getStripeClient()->paymentMethods->detach($paymentMethodId, []);
-            $this->config->getStripeClient()->paymentMethods->attach($paymentMethodId, [ 'customer' => $this->customer->getStripeId() ]);
-        }
-    }
-
-    public function confirmAndAssociateWithOrder($order, $payment)
-    {
-        if ($payment->getAdditionalInformation("is_recurring_subscription"))
-            return null;
-
-        if (!$payment->getAdditionalInformation("token"))
-            $this->helper->dieWithError("An error occurred while tokenizing the card details.");
-
-        // Whether the payment attempt succeeds or fails, we want to have a new SetupIntent at the next payment attempt
-        $this->setupIntent->destroy();
-
-        $hasSubscriptions = $this->helper->hasSubscriptionsIn($order->getAllItems());
-
-        $quote = $order->getQuote();
-
-        if (empty($quote) || !is_numeric($quote->getGrandTotal()))
-            $this->quote = $quote = $this->getQuote($order->getQuoteId());
-
-        if (empty($quote) || !is_numeric($quote->getGrandTotal()))
-        {
-            if ($this->helper->isAdmin())
-                $this->helper->dieWithError(__("Sorry, this invoice cannot be manually captured."));
-            else
-                $this->helper->dieWithError(__("Invalid quote used for Payment Intent"));
-        }
-
-        // Save the quote so that we don't lose the reserved order ID in the case of a payment error
-        $quote->save();
-
-        // We mainly call this for 3DS orders, so that the customer object is preloaded on the 2nd payment attempt.
-        // Loading the customer is needed if a database transaction rolled back the stripe_customers table at an Authentication Required error.
-        $this->preloadFromCache($quote, $order);
-
-        // Create subscriptions if any
-        $params = $this->getParamsFrom($quote, $order, $payment->getAdditionalInformation("token"));
-        $piSecrets = $this->createSubscriptionsFor($order, $params);
-
-        if (!$this->paymentIntent // When capturing expired authorizations, we set $this->paymentIntent before confirming it with the order
-            || $this->helper->isMultiShipping()
-            || $this->isInvalid($params, $quote, $order, $this->paymentIntent)
-            || $this->differentFrom($params, $quote, $order)
-            )
-        {
-            $this->paymentIntent = $this->create($params, $quote, $order); // Load or create the Payment Intent
-        }
-
-        // If this is a subscriptions only order, no payment intent will be created
-        if (!$this->paymentIntent && $hasSubscriptions)
-        {
-            if (count($piSecrets) > 0 && $this->helper->isMultiShipping())
-            {
-                reset($piSecrets);
-                $paymentIntentId = key($piSecrets); // count($piSecrets) should always be 1 here
-                return $this->redirectToMultiShippingAuthorizationPage($payment, $paymentIntentId);
-            }
-
-            $this->triggerAuthentication($piSecrets);
-
-            // Let's save the Stripe customer ID on the order's payment in case the customer registers after placing the order
-            if (!empty($this->subscriptionData['stripeCustomerId']))
-                $payment->setAdditionalInformation("customer_stripe_id", $this->subscriptionData['stripeCustomerId']);
-
-            $payment->setLastTransId("cannot_capture_subscriptions");
-
-            return null;
-        }
-
-        if (!$this->paymentIntent)
-            throw new LocalizedException(__("Unable to create payment intent"));
-
-        if (!$this->isSuccessfulStatus())
-        {
-            $confirmParams = $this->getConfirmParams($order);
-
-            if (!empty($this->paymentIntent->setup_future_usage) && $this->paymentIntent->setup_future_usage)
-                $this->deleteSavedCard($payment->getAdditionalInformation("token"));
+            $this->paymentIntent = $paymentIntent;
 
             try
             {
-                $this->updateData($this->paymentIntent->id, $order);
-                $this->paymentIntent->confirm($confirmParams);
-                $this->prepareRollback();
+                $result = $this->config->getStripeClient()->paymentIntents->confirm($paymentIntent->id, $confirmParams);
+                $this->stripePaymentIntent->fromObject($result);
             }
-            catch (\Exception $e)
+            catch (\Stripe\Exception\InvalidRequestException $e)
             {
-                $this->prepareRollback();
-                return $this->helper->maskException($e);
+                if (!$this->dataHelper->isMOTOError($e->getError()))
+                    throw $e;
+
+                $this->cache->save($value = "1", $key = "no_moto_gate", ["stripe_payments"], $lifetime = 6 * 60 * 60);
+                unset($confirmParams['payment_method_options']['card']['moto']);
+                $result = $this->config->getStripeClient()->paymentIntents->confirm($paymentIntent->id, $confirmParams);
+                $this->stripePaymentIntent->fromObject($result);
             }
 
-            if ($this->requiresAction())
-                $piSecrets[] = $this->getClientSecret();
+            if ($this->requiresAction($result))
+                throw new SCANeededException("Authentication Required: " . $paymentIntent->client_secret);
 
-            if (count($piSecrets) > 0 && $this->helper->isMultiShipping())
-            {
-                $order->setCanSendNewEmailFlag(false);
-                return $this->redirectToMultiShippingAuthorizationPage($payment, $this->paymentIntent->id);
-            }
+            return $this->paymentIntent = $result;
         }
-
-        $this->triggerAuthentication($piSecrets);
-
-        // If this method is called, we should also clear the PI from cache because it cannot be reused
-        $object = clone $this->paymentIntent;
-        $this->destroy($quote->getId());
-
-        $this->processAuthenticatedOrder($order, $object);
-
-        return $object;
-    }
-
-    public function prepareRollback($paymentIntent = null)
-    {
-        if (empty($paymentIntent))
-            $paymentIntent = $this->paymentIntent;
-
-        if (empty($paymentIntent->charges->data))
-            return;
-
-        foreach ($paymentIntent->charges->data as $charge)
+        catch (SCANeededException $e)
         {
-            if ($charge->captured)
-            {
-                $this->rollback->addCharge($charge->id);
-            }
-            else
-            {
-                $this->rollback->addAuthorization($paymentIntent->id);
-                break;
-            }
+            if ($this->helper->isAdmin())
+                $this->helper->throwError(__("This payment method cannot be used because it requires a customer authentication. To avoid authentication in the admin area, please contact Stripe support to request access to the MOTO gate for your Stripe account."));
+
+            if ($this->helper->isMultiShipping())
+                throw $e;
+
+            // Front-end case (Express Checkout API, REST API, GraphQL API), this will trigger the 3DS modal.
+            $this->helper->throwError($e->getMessage());
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->throwError($e->getMessage(), $e);
         }
     }
 
-    public function setTransactionDetails($order, $paymentIntent)
+    public function setTransactionDetails(\Magento\Payment\Model\InfoInterface $payment, $intent)
     {
-        $payment = $order->getPayment();
-        $payment->setTransactionId($paymentIntent->id);
-        $payment->setLastTransId($paymentIntent->id);
+        $payment->setTransactionId($intent->id);
+        $payment->setLastTransId($intent->id);
         $payment->setIsTransactionClosed(0);
         $payment->setIsFraudDetected(false);
 
-        if (!empty($paymentIntent->charges->data[0]))
+        if (!empty($intent->charges->data[0]))
         {
-            $charge = $paymentIntent->charges->data[0];
+            $charge = $intent->charges->data[0];
 
             if ($this->config->isStripeRadarEnabled() &&
                 isset($charge->outcome->type) &&
@@ -1028,110 +715,93 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
             {
                 $payment->setAdditionalInformation("stripe_outcome_type", $charge->outcome->type);
             }
-        }
 
-        // Let's save the Stripe customer ID on the order's payment in case the customer registers after placing the order
-        if (!empty($paymentIntent->customer))
-            $payment->setAdditionalInformation("customer_stripe_id", $paymentIntent->customer);
-    }
+            $payment->setIsTransactionPending(false);
+            $payment->setAdditionalInformation("is_transaction_pending", false); // this is persisted
 
-    public function processAuthenticatedOrder($order, $paymentIntent)
-    {
-        $this->setTransactionDetails($order, $paymentIntent);
-
-        if (!empty($paymentIntent->charges->data[0]))
-        {
-            $order->getPayment()->setIsTransactionPending(false);
-
-            if ($paymentIntent->charges->data[0]->captured == false)
-                $order->getPayment()->setIsTransactionClosed(false);
+            if ($intent->charges->data[0]->captured == false)
+                $payment->setIsTransactionClosed(false);
             else
-                $order->getPayment()->setIsTransactionClosed(true);
+                $payment->setIsTransactionClosed(true);
         }
         else
         {
-            $order->getPayment()->setIsTransactionPending(true);
+            $payment->setIsTransactionPending(true);
+            $payment->setAdditionalInformation("is_transaction_pending", true); // this is persisted
         }
 
-        $shouldCreateInvoice = $this->config->isAuthorizeOnly() && $this->config->isAutomaticInvoicingEnabled();
+        // Let's save the Stripe customer ID on the order's payment in case the customer registers after placing the order
+        if (!empty($intent->customer))
+            $payment->setAdditionalInformation("customer_stripe_id", $intent->customer);
+    }
+
+    public function processSuccessfulOrder($order, $intent)
+    {
+        $this->setTransactionDetails($order->getPayment(), $intent);
+
+        $shouldCreateInvoice = $order->canInvoice() && $this->config->isAuthorizeOnly() && $this->config->isAutomaticInvoicingEnabled();
 
         if ($shouldCreateInvoice)
         {
             $invoice = $order->prepareInvoice();
-            $invoice->setTransactionId($paymentIntent->id);
+            $invoice->setTransactionId($intent->id);
             $invoice->register();
             $order->addRelatedObject($invoice);
         }
+    }
 
-        if (!empty($paymentIntent->payment_method_options->card->installments->plan->count))
+    public function processPendingOrder($order, $intent)
+    {
+        $payment = $order->getPayment();
+
+        if (!empty($intent->customer))
+            $payment->setAdditionalInformation("customer_stripe_id", $intent->customer);
+
+        $payment->setIsTransactionClosed(0);
+        $payment->setIsFraudDetected(false);
+        $payment->setIsTransactionPending(true); // not authorized yet
+        $payment->setAdditionalInformation("is_transaction_pending", true); // this is persisted
+        $order->setCanSendNewEmailFlag(false);
+
+        if (strpos($intent->id, "seti_") === 0 && in_array($intent->status, ['processing', 'succeeded']))
         {
-            $plan = $paymentIntent->payment_method_options->card->installments->plan;
-            $comment = __("The balance for this order will be paid over a %1 %2 period.", $plan->count, $plan->interval);
-            $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
+            $payment->setTransactionId("cannot_capture_subscriptions");
+        }
+        else if (strpos($intent->id, "pi_") === 0)
+        {
+            $payment->setTransactionId($intent->id);
         }
     }
 
-    protected function createSubscriptionsFor($order, &$params)
+    public function processTrialSubscriptionOrder($order, $subscription)
     {
-        if (!$this->helper->hasSubscriptionsIn($order->getAllItems()))
-            return [];
-
-        if ($this->quote)
-            $quote = $this->quote; // Used when migrating subscriptions from the CLI
-        else
-            $quote = $this->quoteRepository->get($order->getQuoteId());
-
-        $trialEnd = $order->getPayment()->getAdditionalInformation("subscription_start");
-        $this->subscriptionData = $data = $this->subscriptionsHelper->createSubscriptions($order, false, $trialEnd);
-
-        $piSecrets = $data['piSecrets'];
-        $createdSubscriptions = $data['createdSubscriptions'];
-        $params["customer"] = $data['stripeCustomerId'];
-
-        if (empty($createdSubscriptions))
-            return [];
-
-        // The following is needed for the Multishipping page, in theory there should be only a single piSecret because multiple subscriptions are disallowed
-        foreach ($piSecrets as $paymentIntentId => $clientSecret)
-        {
-            $order->getPayment()
-                ->setAdditionalInformation("payment_intent_id", $paymentIntentId)
-                ->setAdditionalInformation("payment_intent_client_secret", $clientSecret);
-        }
-
-        return $piSecrets;
+        $payment = $order->getPayment();
+        $payment->setAdditionalInformation("customer_stripe_id", $subscription->customer);
+        $payment->setAdditionalInformation("is_trial_subscription_setup", true);
+        $payment->setTransactionId(null);
+        $payment->setIsTransactionPending(false);
+        $payment->setAdditionalInformation("is_transaction_pending", false); // this is persisted
+        $payment->setIsTransactionClosed(true);
+        $payment->setIsFraudDetected(false);
     }
 
-    protected function setOrderState($order, $state)
+    public function processFutureSubscriptionOrder($order, $customerId, $subscriptionId = null)
     {
-        $status = $order->getConfig()->getStateDefaultStatus($state);
-        $order->setState($state)->setStatus($status);
-    }
-
-    public function getDescription()
-    {
-        if (empty($this->paymentIntent->description))
-            return null;
-
-        return $this->paymentIntent->description;
-    }
-
-    protected function deleteSavedCard($paymentMethodId)
-    {
-        // If the card is already saved, delete the old one so that the customer's saved cards are not duplicated
-        // This also ensures that billing address updates are reflected in the payment
-        $card = $this->customer->findCardByPaymentMethodId($paymentMethodId);
-        if ($card && $paymentMethodId != $card->id && strpos($card->id, "pm_") === 0)
-        {
-            $paymentMethod = \Stripe\PaymentMethod::retrieve($card->id);
-            if (!empty($paymentMethod->customer))
-                $paymentMethod->detach();
-        }
+        $payment = $order->getPayment();
+        $payment->setAdditionalInformation("customer_stripe_id", $customerId);
+        $payment->setAdditionalInformation("is_future_subscription_setup", true);
+        if ($subscriptionId)
+            $payment->setAdditionalInformation("subscription_id", $subscriptionId);
+        $payment->setTransactionId(null);
+        $payment->setIsTransactionPending(true);
+        $payment->setAdditionalInformation("is_transaction_pending", true); // this is persisted
+        $payment->setIsTransactionClosed(false);
+        $payment->setIsFraudDetected(false);
     }
 
     public function updateData($paymentIntentId, $order)
     {
-        $this->load($paymentIntentId, 'pi_id');
+        $this->resourceModel->load($this, $paymentIntentId, 'pi_id');
 
         $this->setPiId($paymentIntentId);
         $this->setQuoteId($order->getQuoteId());
@@ -1140,6 +810,6 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
         if (!empty($customerId))
             $this->setCustomerId($customerId);
         $this->setPmId($order->getPayment()->getAdditionalInformation("token"));
-        $this->save();
+        $this->resourceModel->save($this);
     }
 }

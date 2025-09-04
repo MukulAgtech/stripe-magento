@@ -2,44 +2,60 @@
 
 namespace StripeIntegration\Payments\Block\PaymentInfo;
 
-use Magento\Framework\Phrase;
-use StripeIntegration\Payments\Gateway\Response\FraudHandler;
-use StripeIntegration\Payments\Helper\Logger;
-
 class Checkout extends \Magento\Payment\Block\ConfigurableInfo
 {
-    protected $_template = 'paymentInfo/checkout.phtml';
-
     public $charges = null;
     public $totalCharges = 0;
     public $charge = null;
-    public $cards = array();
+    public $cards = [];
     public $subscription = null;
     public $checkoutSession = null;
+    private $helper;
+    private $paymentsConfig;
+
+    private $subscriptions;
+    private $paymentMethodHelper;
+    private $api;
+    private $stripePaymentMethodFactory;
+    private $setupIntent;
+    private $paymentIntent;
+    private $paymentMethod;
+    private $tokenHelper;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
         \Magento\Payment\Gateway\ConfigInterface $config,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSessionHelper,
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptions,
-        \StripeIntegration\Payments\Model\Config $paymentsConfig,
         \StripeIntegration\Payments\Helper\Api $api,
-        \Magento\Directory\Model\Country $country,
-        \Magento\Payment\Model\Info $info,
-        \Magento\Framework\Registry $registry,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Model\Config $paymentsConfig,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodFactory,
         array $data = []
     ) {
         parent::__construct($context, $config, $data);
 
         $this->helper = $helper;
         $this->subscriptions = $subscriptions;
-        $this->paymentsConfig = $paymentsConfig;
         $this->api = $api;
-        $this->country = $country;
-        $this->info = $info;
-        $this->registry = $registry;
-        $this->checkoutSessionHelper = $checkoutSessionHelper;
+        $this->paymentsConfig = $paymentsConfig;
+        $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
+        $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->tokenHelper = $tokenHelper;
+    }
+
+    public function getTemplate()
+    {
+        $info = $this->getInfo();
+
+        if (!$this->paymentsConfig->getStripeClient())
+            return null;
+
+        if ($info && $info->getAdditionalInformation("is_subscription_update"))
+            return 'paymentInfo/subscription_update.phtml';
+
+        return 'paymentInfo/checkout.phtml';
     }
 
     public function getFormattedAmount()
@@ -54,28 +70,42 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
 
     public function getFormattedSubscriptionAmount()
     {
-        $checkoutSession = $this->getCheckoutSession();
+        $subscription = $this->getSubscription();
 
-        if (empty($checkoutSession->subscription->plan))
+        if (empty($subscription->plan))
             return '';
 
         return $this->subscriptions->formatInterval(
-            $checkoutSession->subscription->plan->amount,
-            $checkoutSession->subscription->plan->currency,
-            $checkoutSession->subscription->plan->interval_count,
-            $checkoutSession->subscription->plan->interval
+            $subscription->plan->amount,
+            $subscription->plan->currency,
+            $subscription->plan->interval_count,
+            $subscription->plan->interval
         );
     }
 
     public function getPaymentMethod()
     {
+        if (!empty($this->paymentMethod))
+            return $this->paymentMethod;
+
         $checkoutSession = $this->getCheckoutSession();
         $paymentIntent = $this->getPaymentIntent();
+        $setupIntent = $this->getSetupIntent();
 
-        if (!empty($paymentIntent->payment_method->type))
-            return $paymentIntent->payment_method;
-        else if (!empty($checkoutSession->subscription->default_payment_method->type))
-            return $checkoutSession->subscription->default_payment_method;
+        $paymentMethod = $paymentIntent->payment_method ??
+            $setupIntent->payment_method ??
+            $checkoutSession->subscription->default_payment_method ??
+            null;
+
+        if (isset($paymentMethod->id))
+        {
+            return $this->paymentMethod = $paymentMethod;
+        }
+        else if ($this->tokenHelper->isPaymentMethodToken($paymentMethod))
+        {
+            $paymentMethod = $this->stripePaymentMethodFactory->create()->fromPaymentMethodId($paymentMethod);
+            return $this->paymentMethod = $paymentMethod->getStripeObject();
+        }
 
         return null;
     }
@@ -97,121 +127,129 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         switch ($paymentMethodCode)
         {
             case "card":
-                if ($hideLast4)
-                    return $this->getCardBrandName();
-                else
-                {
-                    $last4 = $this->getCardLast4();
-                    return __("•••• %1", $last4);
-                }
+                $method = $this->getPaymentMethod();
+                return $this->paymentMethodHelper->getCardLabel($method->card, $hideLast4);
             default:
-                return $this->checkoutSessionHelper->getPaymentMethodName($paymentMethodCode);
+                return $this->paymentMethodHelper->getPaymentMethodName($paymentMethodCode);
         }
     }
 
-    public function getPaymentMethodIconUrl()
+    public function getPaymentMethodIconUrl($format = null)
     {
-        $paymentMethodCode = $this->getPaymentMethodCode();
+        $method = $this->getPaymentMethod();
 
-        if (!$paymentMethodCode)
+        if (!$method)
             return null;
 
-        switch ($paymentMethodCode)
-        {
-            case "card":
-                $brand = $this->getCardBrandCode();
-                return $this->getCardIconURL($brand);
-            default:
-                try
-                {
-                    return $this->getViewFileUrl("StripeIntegration_Payments/img/methods/$paymentMethodCode.svg");
-                }
-                catch (\Exception $e)
-                {
-                    return $this->getViewFileUrl("StripeIntegration_Payments/img/methods/bank.svg");
-                }
-        }
+        return $this->paymentMethodHelper->getIcon($method, $format);
     }
 
-    public function getCardIconURL($brand)
+    public function getWalletIconUrl()
     {
-        try
-        {
-            return $this->getViewFileUrl("StripeIntegration_Payments/img/cards/$brand.svg");
-        }
-        catch (\Exception $e)
-        {
-            return $this->getViewFileUrl("StripeIntegration_Payments/img/cards/generic.svg");
-        }
+        $method = $this->getPaymentMethod();
+
+        if (!$method)
+            return null;
+
+        $type = $method->type;
+        if ($type == 'link' || !isset($method->$type->wallet->type))
+            return null;
+
+        return $this->paymentMethodHelper->getPaymentMethodIcon($method->$type->wallet->type);
     }
 
-    public function getCardBrandCode()
-    {
-        $card = $this->getCard();
-
-        if (!empty($card->brand))
-            return $card->brand;
-
-        return null;
-    }
-
-    public function getCardBrandName()
-    {
-        $brand = $this->getCardBrandCode();
-        return $this->helper->cardType($brand);
-    }
-
-    public function getCardLast4()
-    {
-        $card = $this->getCard();
-
-        if (!empty($card->last4))
-            return $card->last4;
-
-        return null;
-    }
-
-    public function getCheckoutSession()
+    public function getCheckoutSession(): ?\Stripe\Checkout\Session
     {
         if ($this->checkoutSession)
             return $this->checkoutSession;
 
-        $sessionId = $this->getInfo()->getAdditionalInformation("checkout_session_id");
-        $checkoutSession = $this->paymentsConfig->getStripeClient()->checkout->sessions->retrieve($sessionId, [
-            'expand' => [
-                'payment_intent',
-                'payment_intent.payment_method',
-                'subscription',
-                'subscription.default_payment_method',
-                'subscription.latest_invoice.payment_intent'
-            ]
-        ]);
+        try
+        {
+            $sessionId = $this->getInfo()->getAdditionalInformation("checkout_session_id");
+            $checkoutSession = $this->paymentsConfig->getStripeClient()->checkout->sessions->retrieve($sessionId, [
+                'expand' => [
+                    'payment_intent',
+                    'payment_intent.payment_method',
+                    'setup_intent',
+                    'setup_intent.payment_method',
+                    'subscription',
+                    'subscription.default_payment_method',
+                    'subscription.latest_invoice.payment_intent'
+                ]
+            ]);
 
-        return $this->checkoutSession = $checkoutSession;
+            return $this->checkoutSession = $checkoutSession;
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->logInfo("Could not retrieve checkout session: " . $e->getMessage());
+            return null;
+        }
     }
 
     public function getPaymentIntent()
     {
+        if (!empty($this->paymentIntent))
+            return $this->paymentIntent;
+
+        $transactionId = $this->getTransactionId();
+        if ($transactionId && strpos($transactionId, "pi_") === 0)
+        {
+            return $this->paymentIntent = $this->hydratePaymentIntent($transactionId);
+        }
+
         $checkoutSession = $this->getCheckoutSession();
 
         if (!empty($checkoutSession->payment_intent))
-            return $checkoutSession->payment_intent;
+            return $this->paymentIntent = $this->hydratePaymentIntent($checkoutSession->payment_intent);
 
         if (!empty($checkoutSession->subscription->latest_invoice->payment_intent))
-            return $checkoutSession->subscription->latest_invoice->payment_intent;
+            return $this->paymentIntent = $this->hydratePaymentIntent($checkoutSession->subscription->latest_invoice->payment_intent);
 
         return null;
     }
 
+    public function getSetupIntent()
+    {
+        if (!empty($this->setupIntent))
+            return $this->setupIntent;
+
+        $checkoutSession = $this->getCheckoutSession();
+
+        if (!empty($checkoutSession->setup_intent))
+        {
+            return $this->setupIntent = $checkoutSession->setup_intent;
+        }
+
+        return null;
+    }
+
+    protected function hydratePaymentIntent($paymentIntent)
+    {
+        if (is_string($paymentIntent))
+        {
+            try
+            {
+                return $this->paymentsConfig->getStripeClient()->paymentIntents->retrieve($paymentIntent, ['expand' => ['payment_method']]);
+            }
+            catch (\Exception $e)
+            {
+                $this->helper->logInfo("Could not retrieve payment intent: " . $e->getMessage());
+                return null;
+            }
+        }
+
+        return $paymentIntent;
+    }
     public function getPaymentStatus()
     {
         $checkoutSession = $this->getCheckoutSession();
         $paymentIntent = $this->getPaymentIntent();
 
-        if (empty($paymentIntent) && empty($checkoutSession->subscription))
-            return "pending";
+        if (!empty($paymentIntent))
+            return $this->getPaymentIntentStatus($paymentIntent);
 
-        return $this->getPaymentIntentStatus($paymentIntent);
+        return "pending";
     }
 
     public function getPaymentStatusName()
@@ -222,28 +260,28 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
 
     public function getSubscriptionStatus()
     {
-        $checkoutSession = $this->getCheckoutSession();
+        $subscription = $this->getSubscription();
 
-        if (empty($checkoutSession->subscription))
+        if (empty($subscription))
             return null;
 
-        return $checkoutSession->subscription->status;
+        return $subscription->status;
     }
 
     public function getSubscriptionStatusName()
     {
-        $checkoutSession = $this->getCheckoutSession();
+        $subscription = $this->getSubscription();
 
-        if (empty($checkoutSession->subscription))
+        if (empty($subscription))
             return null;
 
-        if ($checkoutSession->subscription->status == "trialing")
-            return __("Trial ends %1", date("j M", $checkoutSession->subscription->trial_end));
+        if ($subscription->status == "trialing")
+            return __("Trial ends %1", date("j M", $subscription->trial_end));
 
-        return ucfirst($checkoutSession->subscription->status);
+        return ucfirst($subscription->status);
     }
 
-    public function getPaymentIntentStatus($paymentIntent)
+    public function getPaymentIntentStatus(?\Stripe\PaymentIntent $paymentIntent)
     {
         if (empty($paymentIntent->status))
             return null;
@@ -258,19 +296,23 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
             case "requires_capture":
                 return "uncaptured";
             case "canceled":
-                if (!empty($paymentIntent->charges->data[0]->failure_code))
+                if (empty($paymentIntent->charges->data[0]))
+                    return 'canceled';
+                /** @var \Stripe\Charge $charge */
+                $charge = $paymentIntent->charges->data[0];
+                if (!empty($charge->failure_code))
                     return "failed";
                 else
                     return "canceled";
             case "succeeded":
-                if ($paymentIntent->charges->data[0]->refunded)
+                if (!empty($paymentIntent->charges->data[0]->refunded))
                     return "refunded";
-                else if ($paymentIntent->charges->data[0]->amount_refunded > 0)
+                else if (!empty($paymentIntent->charges->data[0]->amount_refunded))
                     return "partial_refund";
                 else
                     return "succeeded";
             default:
-                return null;
+                return $paymentIntent->status;
         }
     }
 
@@ -320,16 +362,6 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         return ucfirst(str_replace("_", " ", $risk));
     }
 
-    public function getChargeOutcome()
-    {
-        $charge = $this->getCharge();
-
-        if (isset($charge->outcome->type))
-            return $charge->outcome->type;
-
-        return 'None';
-    }
-
     public function isStripeMethod()
     {
         $method = $this->getMethod()->getMethod();
@@ -354,13 +386,13 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
     {
         try
         {
-            $token = $this->helper->cleanToken($chargeId);
+            $token = $this->tokenHelper->cleanToken($chargeId);
 
             return $this->api->retrieveCharge($token);
         }
         catch (\Exception $e)
         {
-            return false;
+            return null;
         }
     }
 
@@ -384,11 +416,17 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         return null;
     }
 
+    public function getTransactionId()
+    {
+        $transactionId = $this->getInfo()->getLastTransId();
+        return $this->tokenHelper->cleanToken($transactionId);
+    }
+
     public function getMode()
     {
         $checkoutSession = $this->getCheckoutSession();
 
-        if ($checkoutSession->livemode)
+        if ($checkoutSession && $checkoutSession->livemode)
             return "";
 
         return "test/";
@@ -397,6 +435,45 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
     public function getTitle()
     {
         $info = $this->getInfo();
-        return $info->getAdditionalInformation("method_title");
+
+        // Payment info block in admin area
+        if ($info->getAdditionalInformation('payment_location'))
+            return __($info->getAdditionalInformation('payment_location'));
+
+        return $this->getMethod()->getTitle();
+    }
+
+    public function getOXXOVoucherLink()
+    {
+        return null;
+    }
+
+    public function getPaymentMethodVerificationUrl()
+    {
+        /** @var ?\Stripe\SetupIntent $setupIntent */
+        $setupIntent = $this->getSetupIntent();
+
+        if (!empty($setupIntent->next_action->type) && $setupIntent->next_action->type == "verify_with_microdeposits")
+            return $setupIntent->next_action->verify_with_microdeposits->hosted_verification_url;
+
+        return null;
+    }
+
+    public function isSetupIntent()
+    {
+        $transactionId = $this->getTransactionId();
+        if (!empty($transactionId) && strpos($transactionId, "seti_") === 0)
+            return true;
+
+        return false;
+    }
+
+    public function isLegacyPaymentMethod()
+    {
+        $transactionId = $this->getTransactionId();
+        if (!empty($transactionId) && (strpos($transactionId, "src_") !== false || strpos($transactionId, "ch_") !== false))
+            return true;
+
+        return false;
     }
 }

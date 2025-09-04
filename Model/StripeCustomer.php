@@ -2,20 +2,26 @@
 
 namespace StripeIntegration\Payments\Model;
 
-use StripeIntegration\Payments\Helper\Logger;
-use StripeIntegration\Payments\Exception;
+use StripeIntegration\Payments\Exception\GenericException;
 
 class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 {
-    // This is the Customer object, retrieved through the Stripe API
-    var $_stripeCustomer = null;
-    var $_defaultPaymentMethod = null;
-
-    // The loaded Magento customer object
-    var $_magentoCustomer = null;
+    private $_stripeCustomer = null;
+    private $_defaultPaymentMethod = null;
 
     public $customerCard = null;
     public $paymentMethodsCache = [];
+
+    private $sessionManager;
+    private $paymentMethodHelper;
+    private $localeHelper;
+    private $addressHelper;
+    private $config;
+    private $helper;
+    private $customerSession;
+    private $paymentMethodFactory;
+    private $resourceModel;
+    private $quoteHelper;
 
     /**
      * @param \Magento\Framework\Model\Context $context
@@ -27,9 +33,14 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
     public function __construct(
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Address $addressHelper,
+        \StripeIntegration\Payments\Helper\Locale $localeHelper,
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory,
         \Magento\Customer\Model\Session $customerSession,
         \Magento\Framework\Session\SessionManagerInterface $sessionManager,
+        \StripeIntegration\Payments\Model\ResourceModel\StripeCustomer $resourceModel,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
         \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
@@ -39,22 +50,13 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $this->config = $config;
         $this->helper = $helper;
         $this->addressHelper = $addressHelper;
-        $this->_customerSession = $customerSession;
-        $this->_sessionManager = $sessionManager;
-        $this->_registry = $registry;
-        $this->_appState = $context->getAppState();
-        $this->_eventManager = $context->getEventDispatcher();
-        $this->_cacheManager = $context->getCacheManager();
-        $this->_resource = $resource;
-        $this->_resourceCollection = $resourceCollection;
-        $this->_logger = $context->getLogger();
-        $this->_actionValidator = $context->getActionValidator();
-
-        if (method_exists($this->_resource, 'getIdFieldName')
-            || $this->_resource instanceof \Magento\Framework\DataObject
-        ) {
-            $this->_idFieldName = $this->_getResource()->getIdFieldName();
-        }
+        $this->localeHelper = $localeHelper;
+        $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->paymentMethodFactory = $paymentMethodFactory;
+        $this->sessionManager = $sessionManager;
+        $this->customerSession = $customerSession;
+        $this->resourceModel = $resourceModel;
+        $this->quoteHelper = $quoteHelper;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data); // This will also call _construct after DI logic
     }
@@ -65,24 +67,22 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $this->_init('StripeIntegration\Payments\Model\ResourceModel\StripeCustomer');
     }
 
-    public function loadFromData($customerStripeId, $customerObject)
+    public function fromStripeCustomerId($stripeCustomerId)
     {
-        if (empty($customerObject))
+        if (empty($stripeCustomerId))
             return null;
 
-        if (empty($customerStripeId))
-            return null;
-
-        $this->load($customerStripeId, 'stripe_id');
+        $this->resourceModel->load($this, $stripeCustomerId, 'stripe_id');
 
         // For older orders placed by customers that are out of sync
         if (empty($this->getStripeId()))
         {
-            $this->setStripeId($customerStripeId);
+            $this->setStripeId($stripeCustomerId);
             $this->setLastRetrieved(time());
         }
 
-        $this->_stripeCustomer = $customerObject;
+        $this->_stripeCustomer = null;
+        $this->retrieveByStripeID($stripeCustomerId, false);
 
         return $this;
     }
@@ -92,43 +92,66 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         if (!$this->getStripeId()) return;
         if ($this->helper->isAdmin()) return;
 
-        $sessionId = $this->_customerSession->getSessionId();
+        $sessionId = $this->customerSession->getSessionId();
         if ($sessionId != $this->getSessionId())
         {
             $this->setSessionId($sessionId);
-            $this->save();
+            $this->resourceModel->save($this);
         }
     }
 
     // Loads the customer from the Stripe API
-    public function createStripeCustomerIfNotExists($noCache = false, $order = null)
+    public function createStripeCustomerIfNotExists($skipCache = false, $order = null)
     {
         // If the payment method has not yet been selected, skip this step
         // $quote = $this->helper->checkoutSession;
         // $paymentMethod = $quote->getPayment()->getMethod();
         // if (empty($paymentMethod) || $paymentMethod != "stripe_payments") return;
 
-        $retrievedSecondsAgo = (time() - $this->getLastRetrieved());
-
-        if (!$this->getStripeId())
+        if (!$this->existsInStripe($skipCache))
         {
             $this->createStripeCustomer($order);
         }
-        // if the customer was retrieved from Stripe in the last 10 minutes, we're good to go
-        // otherwise retrieve them now to make sure they were not deleted from Stripe somehow
-        else if ($retrievedSecondsAgo > (60 * 10) || $noCache)
-        {
-            if (!$this->retrieveByStripeID($this->getStripeId()))
-            {
-                $this->createStripeCustomer($order);
-            }
-        }
 
-        return $this->_stripeCustomer;
+        return $this->retrieveByStripeID();
     }
 
-    public function createStripeCustomer($order = null, $params = null)
+    public function existsInStripe($skipCache = false)
     {
+        if (!$this->getStripeId())
+            return false;
+
+        $retrievedSecondsAgo = (time() - $this->getLastRetrieved());
+
+        // if the customer was retrieved from Stripe in the last 10 minutes, we're good to go
+        // otherwise retrieve them now to make sure they were not deleted from Stripe somehow
+        if (!$skipCache && $retrievedSecondsAgo < (60 * 10))
+            return true;
+
+        if (!$this->retrieveByStripeID($this->getStripeId()))
+            return false;
+
+        return true;
+    }
+
+    public function createStripeCustomer($order = null, $extraParams = null)
+    {
+        $params = $this->getParams($order);
+
+        if (!empty($extraParams['id']))
+            $params['id'] = $extraParams['id'];
+
+        return $this->createNewStripeCustomer($params);
+    }
+
+    public function getParams($order = null)
+    {
+        // Defaults
+        $customerFirstname = "";
+        $customerLastname = "";
+        $customerEmail = "";
+        $customerId = 0;
+
         $customer = $this->helper->getMagentoCustomer();
 
         if ($customer)
@@ -148,78 +171,88 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
             $customerEmail = $address->getEmail();
             $customerId = 0;
         }
-        else if ($this->helper->isAdmin())
-        {
-            // New customer order placed from the admin area
-            $quote = $this->helper->getBackendSessionQuote();
-            $quoteModel = $this->helper->loadQuoteById($quote->getQuoteId());
-            $address = $quoteModel->getBillingAddress();
-            $customerFirstname = $address->getFirstname();
-            $customerLastname = $address->getLastname();
-            $customerEmail = $quoteModel->getCustomerEmail();
-            $customerId = 0;
-        }
         else
         {
-            // Guest customer at checkout, with Always Save Cards enabled, or with subscriptions in the cart
-            $quote = $this->helper->getQuote();
+            if ($order && $order->getQuoteId())
+                $quote = $this->quoteHelper->getQuote($order->getQuoteId());
+            else
+                $quote = $this->quoteHelper->getQuote();
 
             if ($quote)
             {
+                // Guest customer at checkout, with Always Save Cards enabled, or with subscriptions in the cart
                 $address = $quote->getBillingAddress();
                 $customerFirstname = $address->getFirstname();
                 $customerLastname = $address->getLastname();
                 $customerEmail = $address->getEmail();
                 $customerId = 0;
-
             }
         }
 
-        // This may happen if we are creating an order from the back office
-        if (empty($customerId) && empty($customerEmail))
-            return;
+        $params = [
+            'magento_customer_id' => $customerId
+        ];
 
-        // When we are in guest or new customer checkout, we may have already created this customer
-        // if ($this->getCustomerStripeIdByEmail() !== false)
-        //     return;
+        if (empty($customerFirstname) && empty($customerLastname))
+            $params["name"] = "Guest";
+        else
+            $params["name"] = "$customerFirstname $customerLastname";
 
-        // This is the case for new customer registrations and guest checkouts
-        // if (empty($customerId))
-        //     $customerId = -1;
+        if ($customerEmail)
+            $params["email"] = $customerEmail;
 
-        return $this->createNewStripeCustomer($customerFirstname, $customerLastname, $customerEmail, $customerId, $params);
+        if ($this->getStripeId())
+            $params["id"] = $this->getStripeId();
+
+        return $params;
     }
 
-    public function createNewStripeCustomer($customerFirstname, $customerLastname, $customerEmail, $customerId, $params = null)
+    public function createNewStripeCustomer($params)
     {
         try
         {
             if (empty($params))
-                $params = [];
+                return;
 
-            $params["name"] = "$customerFirstname $customerLastname";
-            $params["email"] = $customerEmail;
+            $magentoCustomerId = $params['magento_customer_id'];
+            unset($params['magento_customer_id']);
 
             if (!empty($params["id"]))
             {
-                $customerId = $params["id"];
+                $stripeCustomerId = $params["id"];
                 unset($params["id"]);
-                $this->_stripeCustomer = $this->config->getStripeClient()->customers->update($customerId, $params);
+                try
+                {
+                    $this->_stripeCustomer = $this->config->getStripeClient()->customers->update($stripeCustomerId, $params);
+                }
+                catch (\Stripe\Exception\ApiErrorException $e)
+                {
+                    if ($e->getError()->code == "resource_missing")
+                        $this->_stripeCustomer = \Stripe\Customer::create($params);
+                }
             }
             else
             {
                 $this->_stripeCustomer = \Stripe\Customer::create($params);
-                $this->_sessionManager->setStripeCustomerId($this->_stripeCustomer->id);
             }
 
+            if (!$this->_stripeCustomer)
+                return null;
+
+            $this->sessionManager->setStripeCustomerId($this->_stripeCustomer->id);
+
             $this->setStripeId($this->_stripeCustomer->id);
-            $this->setCustomerId($customerId);
+            $this->setCustomerId($magentoCustomerId);
+
             $this->setLastRetrieved(time());
-            $this->setCustomerEmail($customerEmail);
+
+            if (!empty($params['email']))
+                $this->setCustomerEmail($params['email']);
+
             $this->setPk($this->config->getPublishableKey());
             $this->updateSessionId();
 
-            $this->save();
+            $this->resourceModel->save($this);
 
             return $this->_stripeCustomer;
         }
@@ -231,7 +264,7 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
                 throw new \StripeIntegration\Payments\Exception\SilentException(__($e->getMessage()));
             }
             $msg = __('Could not set up customer profile: %1', $e->getMessage());
-            $this->helper->dieWithError($msg, $e);
+            $this->helper->throwError($msg, $e);
         }
     }
 
@@ -242,12 +275,12 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 
         $customer = $this->retrieveByStripeID();
 
-        if (empty($customer->default_payment_method))
+        if (empty($customer->invoice_settings->default_payment_method))
             return null;
 
         try
         {
-            return $this->_defaultPaymentMethod = \Stripe\PaymentMethod::retrieve($customer->default_payment_method);
+            return $this->_defaultPaymentMethod = \Stripe\PaymentMethod::retrieve($customer->invoice_settings->default_payment_method);
         }
         catch (\Exception $e)
         {
@@ -255,7 +288,7 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         }
     }
 
-    public function retrieveByStripeID($id = null)
+    public function retrieveByStripeID($id = null, $createIfNotExists = true)
     {
         if (isset($this->_stripeCustomer))
             return $this->_stripeCustomer;
@@ -264,139 +297,119 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
             $id = $this->getStripeId();
 
         if (empty($id))
-            return false;
+            return null;
 
         try
         {
-            $this->_stripeCustomer = \Stripe\Customer::retrieve($id);
+            $customerObject = $this->config->getStripeClient()->customers->retrieve($id, []);
             $this->setLastRetrieved(time());
-            $this->save();
 
-            if (!$this->_stripeCustomer || ($this->_stripeCustomer && isset($this->_stripeCustomer->deleted) && $this->_stripeCustomer->deleted))
-                return false;
+            if (!$customerObject || ($customerObject && isset($customerObject->deleted) && $customerObject->deleted))
+                return null;
 
-            return $this->_stripeCustomer;
+            $this->resourceModel->save($this);
+            return $this->_stripeCustomer = $customerObject;
         }
         catch (\Exception $e)
         {
-            if (strpos($e->getMessage(), "No such customer") === 0)
+            if (strpos($e->getMessage(), "No such customer") === 0 && $createIfNotExists)
             {
                 return $this->createStripeCustomer();
             }
             else
             {
                 $this->helper->addError('Could not retrieve customer profile: '.$e->getMessage());
-                return false;
+                return null;
             }
         }
     }
 
-    public function setCustomerCard($card)
-    {
-        if (is_object($card) && get_class($card) == 'Stripe\Card')
-        {
-            $this->customerCard = array(
-                "last4" => $card->last4,
-                "brand" => $card->brand
-            );
-        }
-    }
-
-    public function addCard($source)
+    public function deletePaymentMethod($token, $fingerprint = null)
     {
         if (!$this->_stripeCustomer)
             $this->_stripeCustomer = $this->retrieveByStripeID($this->getStripeId());
 
         if (!$this->_stripeCustomer)
-            throw new \Exception("Customer with ID " . $this->getStripeId() . " could not be retrieved from Stripe.");
-
-        return $this->helper->addSavedCard($this->_stripeCustomer, $source);
-    }
-
-    public function deleteCard($token)
-    {
-        if (!$this->_stripeCustomer)
-            $this->_stripeCustomer = $this->retrieveByStripeID($this->getStripeId());
-
-        if (!$this->_stripeCustomer)
-            throw new \Exception("Customer with ID " . $this->getStripeId() . " could not be retrieved from Stripe.");
+            throw new GenericException("Customer with ID " . $this->getStripeId() . " could not be retrieved from Stripe.");
 
         // Deleting a payment method
         if (strpos($token, "pm_") === 0)
         {
-            $pm = \Stripe\PaymentMethod::retrieve($token);
-            $pm->detach();
-            return $pm;
+            if ($fingerprint)
+            {
+                $allMethods = $this->getSavedPaymentMethods(null, false);
+                $newestMethod = null;
+                foreach ($allMethods as $type => $methodList)
+                {
+                    foreach ($methodList as $method)
+                    {
+                        $type = $method->type;
+                        if ($method->{$type}->fingerprint != $fingerprint)
+                            continue;
+
+                        if (!$newestMethod || $method->created > $newestMethod->created)
+                        {
+                            $newestMethod = $this->config->getStripeClient()->paymentMethods->detach($method->id, []);
+                        }
+                        else
+                        {
+                            $this->config->getStripeClient()->paymentMethods->detach($method->id, []);
+                        }
+                    }
+                }
+
+                return $newestMethod;
+            }
+            else
+            {
+                return $this->config->getStripeClient()->paymentMethods->detach($token, []);
+            }
         }
-        else if (strpos($token, "src_") === 0)
+        else if (strpos($token, "src_") === 0 || strpos($token, "card_") === 0)
         {
             return $this->config->getStripeClient()->customers->deleteSource($this->getStripeId(), $token);
         }
 
         // If we have received a src_ token from an older version of the module
-        throw new \Exception("This payment method could not be deleted.");
+        throw new GenericException("This payment method could not be deleted.");
     }
 
-    public function listCards($params = array())
+    public function getSavedPaymentMethods($types = null, $formatted = false)
     {
-        try
+        if (!$types)
         {
-            return $this->helper->listCards($this->_stripeCustomer, $params);
+            $types = \StripeIntegration\Payments\Helper\PaymentMethod::CAN_BE_SAVED_ON_SESSION;
         }
-        catch (\Exception $e)
+
+        if (!$this->getStripeId())
+            return [];
+
+        $methods = [];
+
+        foreach ($types as $type)
         {
-            return null;
+            try
+            {
+                $result = $this->config->getStripeClient()->customers->allPaymentMethods($this->getStripeId(), ['type' => $type, 'limit' => 30]);
+                if (!empty($result->data))
+                {
+                    $methods[$type] = $result->data;
+                }
+            }
+            catch (\Exception $e)
+            {
+                $this->helper->logError("Cannot retrieve saved payment methods for customer {$this->getStripeId()}: " . $e->getMessage());
+            }
         }
-    }
 
-    // Used in the html templates to generate the customer's saved cards options
-    public function getCustomerCards($customerId = null)
-    {
-        $isAdmin = $this->helper->isAdmin();
-
-        if (!$this->config->getSaveCards() && !$isAdmin)
-            return [];
-
-        if (!$isAdmin && $this->helper->isGuest())
-            return [];
-
-        if (!$customerId)
-            $customerId = $this->getCustomerId();
-
-        if (!$this->getStripeId())
-            return [];
-
-        if (!$this->_stripeCustomer)
-            $this->_stripeCustomer = $this->retrieveByStripeID($this->getStripeId());
-
-        if (!$this->_stripeCustomer)
-            return null;
-
-        return $this->listCards();
-    }
-
-    public function getOpenInvoices($params = null)
-    {
-        if (!$this->getStripeId())
-            return [];
-
-        $params['customer'] = $this->getStripeId();
-        $params['expand'] = ['data.subscription', 'data.subscription.default_payment_method'];
-        $params['status'] = 'open';
-        $params['limit'] =  100;
-
-        return $this->config->getStripeClient()->invoices->all($params);
-    }
-
-    public function getUpcomingInvoices($params = null)
-    {
-        if (!$this->getStripeId())
-            return [];
-
-        $params['customer'] = $this->getStripeId();
-        $params['expand'] = ['subscription', 'subscription.default_payment_method', 'lines.data.price.product'];
-
-        return $this->config->getStripeClient()->invoices->upcoming($params);
+        if ($formatted)
+        {
+            return $this->paymentMethodHelper->formatPaymentMethods($methods);
+        }
+        else
+        {
+            return $methods;
+        }
     }
 
     public function getSubscriptionItems($subscriptionId)
@@ -412,8 +425,10 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 
     public function getSubscriptions($params = null)
     {
+        $subscriptions = [];
+
         if (!$this->getStripeId())
-            return [];
+            return $subscriptions;
 
         $params['customer'] = $this->getStripeId();
         $params['limit'] = 100;
@@ -421,49 +436,50 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 
         $collection = \Stripe\Subscription::all($params);
 
-        if (!isset($this->_subscriptions))
-            $this->_subscriptions = [];
-
         foreach ($collection->data as $subscription)
         {
-            $this->_subscriptions[$subscription->id] = $subscription;
+            if (in_array($subscription->status, ['canceled', 'incomplete', 'incomplete_expired']))
+                continue;
+
+            $subscriptions[$subscription->id] = $subscription;
         }
 
-        return $this->_subscriptions;
+        return $subscriptions;
     }
 
-    public function getSubscription($id)
+    public function getAllSubscriptions()
     {
-        if (isset($this->_subscriptions) && !empty($this->_subscriptions[$id]))
-            return $this->_subscriptions[$id];
+        $subscriptions = [];
 
-        return \Stripe\Subscription::retrieve($id);
+        if (!$this->getStripeId())
+            return $subscriptions;
+
+        $params['customer'] = $this->getStripeId();
+        $params['status'] = 'all';
+        $params['limit'] = 100;
+        $params['expand'] = ['data.default_payment_method', 'data.items.data.price', 'data.plan.product'];
+
+        $collection = \Stripe\Subscription::all($params);
+
+        foreach ($collection->autoPagingIterator() as $subscription)
+        {
+            $subscriptions[$subscription->id] = $subscription;
+        }
+
+        return $subscriptions;
     }
 
-    public function findCardByPaymentMethodId($paymentMethodId)
-    {
-        $customer = $this->retrieveByStripeID();
-
-        if (!$customer)
-            return null;
-
-        if (isset($this->paymentMethodsCache[$paymentMethodId]))
-            $pm = $this->paymentMethodsCache[$paymentMethodId];
-        else
-            $pm = $this->paymentMethodsCache[$paymentMethodId] = \Stripe\PaymentMethod::retrieve($paymentMethodId);
-
-        if (!isset($pm->card->fingerprint))
-            return null;
-
-        return $this->helper->findCardByFingerprint($customer, $pm->card->fingerprint);
-    }
-
+    // Creates a customer if they don't exist
+    // Updates a customer if they exist
     public function updateFromOrder($order)
     {
         if (!$this->getStripeId())
             return;
 
+        $customer = $this->retrieveByStripeID();
+
         $data = $this->addressHelper->getStripeAddressFromMagentoAddress($order->getBillingAddress());
+        $data['preferred_locales'] = [ $this->localeHelper->getCustomerPreferredLocale() ];
 
         if (!$order->getIsVirtual())
         {
@@ -481,5 +497,85 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
             return;
 
         $this->_stripeCustomer = $this->config->getStripeClient()->customers->update($this->getStripeId(), $data);
+    }
+
+    public function attachPaymentMethod($paymentMethodId)
+    {
+        if (empty($paymentMethodId))
+        {
+            throw new GenericException("Invalid payment method ID");
+        }
+
+        $stripeCustomerId = $this->getStripeId();
+        if (empty($stripeCustomerId))
+        {
+            throw new GenericException("Could not load customer object");
+        }
+
+        try
+        {
+            $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+        }
+        catch (\Exception $e)
+        {
+            return $this->helper->throwError("Could not load payment method: " . $e->getMessage(), $e);
+        }
+
+        if (empty($paymentMethod->customer))
+        {
+            return $this->config->getStripeClient()->paymentMethods->attach($paymentMethodId, ['customer' => $this->getStripeId()]);
+        }
+        else if ($paymentMethod->customer != $this->getStripeId())
+        {
+            $this->helper->logError("Payment method $paymentMethodId belongs to {$paymentMethod->customer} but was used with customer " . $this->getStripeId());
+            return $this->helper->throwError("Could not load payment method.");
+        }
+
+        return $paymentMethod;
+    }
+
+    // True if the customer is logged into their Magento account
+    public function isLoggedIn()
+    {
+        return $this->customerSession->isLoggedIn();
+    }
+
+    public function fromStripeId($customerStripeId)
+    {
+        $this->resourceModel->load($this, $customerStripeId, 'stripe_id');
+
+        if (!$this->getId())
+        {
+            $this->syncWithStripe($customerStripeId);
+        }
+
+        $this->sessionManager->setStripeCustomerId($customerStripeId);
+
+        return $this;
+    }
+
+    public function syncWithStripe($customerStripeId)
+    {
+        $this->_stripeCustomer = null;
+
+        $this->setStripeId($customerStripeId);
+
+        $customer = $this->helper->getMagentoCustomer();
+        if ($customer)
+        {
+            $this->setCustomerId($customer->getEntityId());
+        }
+
+        $customerEmail = $this->helper->getCustomerEmail();
+        if ($customerEmail)
+        {
+            $this->setCustomerEmail($customerEmail);
+        }
+
+        $this->setLastRetrieved(time());
+        $this->setPk($this->config->getPublishableKey());
+        $this->updateSessionId();
+        $this->retrieveByStripeID($customerStripeId);
+        $this->resourceModel->save($this);
     }
 }

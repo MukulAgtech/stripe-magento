@@ -3,42 +3,19 @@
 namespace StripeIntegration\Payments\Api;
 
 use StripeIntegration\Payments\Api\ServiceInterface;
+use StripeIntegration\Payments\Exception\SCANeededException;
 use StripeIntegration\Payments\Exception\InvalidAddressException;
-use Magento\Framework\App\Config\ScopeConfigInterface;
+use StripeIntegration\Payments\Exception\GenericException;
 use Magento\Store\Model\StoreManagerInterface;
-use Magento\Framework\Webapi\ServiceInputProcessor;
-use Magento\Checkout\Api\Data\ShippingInformationInterfaceFactory;
 use Magento\Quote\Api\CartManagementInterface;
 use Magento\Catalog\Api\ProductRepositoryInterface;
-use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\CouldNotSaveException;
-use Magento\Framework\Registry;
-use Magento\Framework\Pricing\PriceCurrencyInterface;
+use Magento\Framework\Serialize\SerializerInterface;
+use Magento\Framework\Filter\LocalizedToNormalized;
 
 class Service implements ServiceInterface
 {
-
-    /**
-     * @var \Psr\Log\LoggerInterface
-     */
-    private $logger;
-
-    /**
-     * @var ScopeConfigInterface
-     */
-    private $scopeConfig;
-
-    /**
-     * @var Registry
-     */
-    protected $registry;
-
-    /**
-     * @var PriceCurrencyInterface
-     */
-    protected $priceCurrency;
-
     /**
      * @var StoreManagerInterface
      */
@@ -53,11 +30,6 @@ class Service implements ServiceInterface
      * @var \Magento\Framework\Event\ManagerInterface
      */
     private $eventManager;
-
-    /**
-     * @var \Magento\Checkout\Model\Cart
-     */
-    private $cart;
 
     /**
      * @var \Magento\Checkout\Helper\Data
@@ -75,11 +47,6 @@ class Service implements ServiceInterface
     private $checkoutSession;
 
     /**
-     * @var \StripeIntegration\Payments\Helper\ExpressHelper
-     */
-    private $expressHelper;
-
-    /**
      * @var \StripeIntegration\Payments\Helper\Generic
      */
     private $paymentsHelper;
@@ -90,49 +57,9 @@ class Service implements ServiceInterface
     private $config;
 
     /**
-     * @var \StripeIntegration\Payments\Model\StripeCustomer
-     */
-    private $stripeCustomer;
-
-    /**
-     * @var ServiceInputProcessor
-     */
-    private $inputProcessor;
-
-    /**
-     * @var \Magento\Quote\Api\Data\AddressInterface
-     */
-    private $estimatedAddressFactory;
-
-    /**
-     * @var \Magento\Quote\Api\ShippingMethodManagementInterface
-     */
-    private $shippingMethodManager;
-
-    /**
-     * @var \Magento\Checkout\Api\ShippingInformationManagementInterface
-     */
-    private $shippingInformationManagement;
-
-    /**
-     * @var ShippingInformationInterfaceFactory
-     */
-    private $shippingInformationFactory;
-
-    /**
-     * @var \Magento\Quote\Api\CartRepositoryInterface
-     */
-    private $quoteRepository;
-
-    /**
      * @var CartManagementInterface
      */
     private $quoteManagement;
-
-    /**
-     * @var OrderSender
-     */
-    private $orderSender;
 
     /**
      * @var ProductRepositoryInterface
@@ -140,125 +67,133 @@ class Service implements ServiceInterface
     private $productRepository;
 
     /**
+     * @var SerializerInterface
+     */
+    private $serializer;
+
+    /**
+     * @var LocalizedToNormalized
+     */
+    private $localizedToNormalized;
+    private $localeHelper;
+    private $addressHelper;
+    private $checkoutSessionHelper;
+    private $compare;
+    private $paymentElement;
+    private $paymentIntentHelper;
+    private $initParams;
+    private $multishippingHelper;
+    private $paymentIntent;
+    private $subscriptionsHelper;
+    private $paymentMethodHelper;
+    private $checkoutSessionFactory;
+    private $stripePaymentIntentFactory;
+    private $eceResponseFactory;
+    private $quoteRepository;
+    private $stripeCustomer;
+    private $quoteHelper;
+    private $nameParserFactory;
+    private $tokenHelper;
+    private $checkoutFlow;
+    private $orderHelper;
+    private $setupIntentHelper;
+    private $paymentMethodFactory;
+
+    /**
      * Service constructor.
      *
-     * @param \Psr\Log\LoggerInterface                                     $logger
-     * @param ScopeConfigInterface                                         $scopeConfig
      * @param StoreManagerInterface                                        $storeManager
      * @param \Magento\Framework\UrlInterface                              $urlBuilder
      * @param \Magento\Framework\Event\ManagerInterface                    $eventManager
-     * @param \Magento\Checkout\Model\Cart                                 $cart
      * @param \Magento\Checkout\Helper\Data                                $checkoutHelper
      * @param \Magento\Customer\Model\Session                              $customerSession
      * @param \Magento\Checkout\Model\Session                              $checkoutSession
-     * @param \StripeIntegration\Payments\Helper\ExpressHelper             $expressHelper
      * @param \StripeIntegration\Payments\Helper\Generic                     $paymentsHelper
      * @param \StripeIntegration\Payments\Model\Config                       $config
-     * @param ServiceInputProcessor                                        $inputProcessor
-     * @param \Magento\Quote\Api\Data\AddressInterfaceFactory              $estimatedAddressFactory
-     * @param \Magento\Quote\Api\ShippingMethodManagementInterface         $shippingMethodManager
-     * @param \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement
-     * @param ShippingInformationInterfaceFactory                          $shippingInformationFactory
      * @param \Magento\Quote\Api\CartRepositoryInterface                   $quoteRepository
      * @param CartManagementInterface                                      $quoteManagement
-     * @param OrderSender                                                  $orderSender
      * @param ProductRepositoryInterface                                   $productRepository
      */
     public function __construct(
-        \Psr\Log\LoggerInterface $logger,
-        ScopeConfigInterface $scopeConfig,
         StoreManagerInterface $storeManager,
         \Magento\Framework\UrlInterface $urlBuilder,
         \Magento\Framework\Event\ManagerInterface $eventManager,
-        \Magento\Checkout\Model\Cart $cart,
         \Magento\Checkout\Helper\Data $checkoutHelper,
         \Magento\Customer\Model\Session $customerSession,
         \Magento\Checkout\Model\Session $checkoutSession,
-        \Magento\Framework\Session\SessionManagerInterface $sessionManager,
-        \StripeIntegration\Payments\Helper\ExpressHelper $expressHelper,
+        \Magento\Framework\Serialize\SerializerInterface $serializer,
+        \Magento\Framework\Filter\LocalizedToNormalized $localizedToNormalized,
         \StripeIntegration\Payments\Helper\Generic $paymentsHelper,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Model\Config $config,
-        ServiceInputProcessor $inputProcessor,
-        \Magento\Quote\Api\Data\AddressInterfaceFactory $estimatedAddressFactory,
-        \Magento\Quote\Api\ShippingMethodManagementInterface $shippingMethodManager,
-        \Magento\Quote\Api\ShipmentEstimationInterface $shipmentEstimation,
-        \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement,
-        ShippingInformationInterfaceFactory $shippingInformationFactory,
+        \StripeIntegration\Payments\Model\PaymentElement $paymentElement,
+        \StripeIntegration\Payments\Model\CheckoutSessionFactory $checkoutSessionFactory,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
+        \StripeIntegration\Payments\Model\Stripe\PaymentIntentFactory $stripePaymentIntentFactory,
         \Magento\Quote\Api\CartRepositoryInterface $quoteRepository,
         CartManagementInterface $quoteManagement,
-        OrderSender $orderSender,
         ProductRepositoryInterface $productRepository,
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
-        \Magento\Framework\DataObjectFactory $dataObjectFactory,
-        \StripeIntegration\Payments\Model\MobileDetect $detect,
-        Registry $registry,
-        PriceCurrencyInterface $priceCurrency,
-        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
-        \StripeIntegration\Payments\Helper\SetupIntent $setupIntent,
-        \StripeIntegration\Payments\Helper\Klarna $klarnaHelper,
         \StripeIntegration\Payments\Helper\Address $addressHelper,
         \StripeIntegration\Payments\Helper\Locale $localeHelper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
-        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSessionHelper
+        \StripeIntegration\Payments\Helper\Stripe\CheckoutSession $checkoutSessionHelper,
+        \StripeIntegration\Payments\Helper\Compare $compare,
+        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
+        \StripeIntegration\Payments\Helper\InitParams $initParams,
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\SetupIntent $setupIntentHelper,
+        \StripeIntegration\Payments\Api\Response\ECEResponseFactory $eceResponseFactory,
+        \StripeIntegration\Payments\Model\Customer\NameParserFactory $nameParserFactory,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory
     ) {
-        $this->logger = $logger;
-        $this->scopeConfig = $scopeConfig;
         $this->storeManager = $storeManager;
         $this->urlBuilder = $urlBuilder;
         $this->eventManager = $eventManager;
-        $this->cart = $cart;
         $this->checkoutHelper = $checkoutHelper;
         $this->customerSession = $customerSession;
         $this->checkoutSession = $checkoutSession;
-        $this->sessionManager = $sessionManager;
-        $this->expressHelper = $expressHelper;
+        $this->serializer = $serializer;
+        $this->localizedToNormalized = $localizedToNormalized;
         $this->paymentsHelper = $paymentsHelper;
         $this->config = $config;
+        $this->paymentElement = $paymentElement;
+        $this->checkoutSessionFactory = $checkoutSessionFactory;
+        $this->checkoutFlow = $checkoutFlow;
         $this->stripeCustomer = $paymentsHelper->getCustomerModel();
-        $this->inputProcessor = $inputProcessor;
-        $this->estimatedAddressFactory = $estimatedAddressFactory;
-        $this->shippingMethodManager = $shippingMethodManager;
-        $this->shipmentEstimation = $shipmentEstimation;
-        $this->shippingInformationManagement = $shippingInformationManagement;
-        $this->shippingInformationFactory = $shippingInformationFactory;
         $this->quoteRepository = $quoteRepository;
         $this->quoteManagement = $quoteManagement;
-        $this->orderSender = $orderSender;
         $this->productRepository = $productRepository;
         $this->paymentIntent = $paymentIntent;
-        $this->dataObjectFactory = $dataObjectFactory;
-        $this->detect = $detect;
-        $this->registry = $registry;
-        $this->priceCurrency = $priceCurrency;
-        $this->multishippingHelper = $multishippingHelper;
-        $this->setupIntent = $setupIntent;
-        $this->klarnaHelper = $klarnaHelper;
         $this->addressHelper = $addressHelper;
         $this->localeHelper = $localeHelper;
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->checkoutSessionHelper = $checkoutSessionHelper;
-    }
-
-    public function chooseRedirectUrlBetween($externalUrl, $localUrl, $paymentMethod = null)
-    {
-        if ($paymentMethod == "stripe_payments_wechat" && !$this->detect->isMobile())
-            return $localUrl;
-
-        if (!empty($externalUrl))
-            return $externalUrl;
-
-        return $localUrl;
+        $this->compare = $compare;
+        $this->multishippingHelper = $multishippingHelper;
+        $this->initParams = $initParams;
+        $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->paymentIntentHelper = $paymentIntentHelper;
+        $this->stripePaymentIntentFactory = $stripePaymentIntentFactory;
+        $this->quoteHelper = $quoteHelper;
+        $this->eceResponseFactory = $eceResponseFactory;
+        $this->nameParserFactory = $nameParserFactory;
+        $this->tokenHelper = $tokenHelper;
+        $this->orderHelper = $orderHelper;
+        $this->setupIntentHelper = $setupIntentHelper;
+        $this->paymentMethodFactory = $paymentMethodFactory;
     }
 
     /**
-     * Return URL
+     * Returns the Stripe Checkout redirect URL
      * @return string
      */
     public function redirect_url()
     {
         $checkout = $this->checkoutHelper->getCheckout();
-        $redirectUrl = $this->checkoutHelper->getCheckout()->getStripePaymentsRedirectUrl();
-        $successUrl = $this->storeManager->getStore()->getUrl('checkout/onepage/success/');
 
         // The order was not placed / not saved because some of some exception
         $lastRealOrderId = $checkout->getLastRealOrderId();
@@ -266,74 +201,26 @@ class Service implements ServiceInterface
             throw new LocalizedException(__("Your checkout session has expired. Please refresh the checkout page and try again."));
 
         // The order was placed, but could not be loaded
-        $order = $this->paymentsHelper->loadOrderByIncrementId($lastRealOrderId);
+        $order = $this->orderHelper->loadOrderByIncrementId($lastRealOrderId);
         if (empty($order) || empty($order->getPayment()))
             throw new LocalizedException(__("Sorry, the order could not be placed. Please contact us for more help."));
 
         // The order was loaded
-        switch ($order->getPayment()->getMethod()) {
-            case 'stripe_payments_checkout':
-                if (empty($checkout->getStripePaymentsCheckoutSessionId()))
-                    throw new LocalizedException(__("Sorry, the order could not be placed. Please contact us for more help."));
+        if (empty($checkout->getStripePaymentsCheckoutSessionURL()))
+            throw new LocalizedException(__("Sorry, the order could not be placed. Please contact us for more help."));
 
-                $sessionId = $checkout->getStripePaymentsCheckoutSessionId();
-                $this->checkoutHelper->getCheckout()->restoreQuote();
-                $this->checkoutHelper->getCheckout()->setLastRealOrderId($lastRealOrderId);
-                return $sessionId;
-
-            default:
-                return $this->chooseRedirectUrlBetween($redirectUrl, $successUrl, $order->getPayment()->getMethod());
-        }
+        $sessionURL = $checkout->getStripePaymentsCheckoutSessionURL();
+        $this->checkoutHelper->getCheckout()->restoreQuote();
+        $this->checkoutHelper->getCheckout()->setLastRealOrderId($lastRealOrderId);
+        return $sessionURL;
     }
 
-    /**
-     * Return URL
-     * @param mixed $address
-     * @return string
-     */
-    public function estimate_cart($address)
+    public function ece_shipping_address_changed($newAddress, $location)
     {
         try
         {
-            $quote = $this->cart->getQuote();
-            $rates = [];
-
-            if (!$quote->isVirtual()) {
-                // Set Shipping Address
-                $shippingAddress = $this->addressHelper->getMagentoAddressFromPRAPIResult($address, __("shipping"));
-                $quote->getShippingAddress()
-                      ->addData($shippingAddress)
-                      ->save();
-
-                // $quote->getShippingAddress()
-                //     ->setCollectShippingRates(true);
-
-                $this->quoteRepository->save($quote);
-
-                $rates = $this->shipmentEstimation->estimateByExtendedAddress($quote->getId(), $quote->getShippingAddress());
-
-                $this->cart->save();
-            }
-
-            $shouldInclTax = $this->expressHelper->shouldCartPriceInclTax($quote->getStore());
-            $currency = $quote->getQuoteCurrencyCode();
-            $result = [];
-            foreach ($rates as $rate) {
-                if ($rate->getErrorMessage()) {
-                    continue;
-                }
-
-                $result[] = [
-                    'id' => $rate->getCarrierCode() . '_' . $rate->getMethodCode(),
-                    'label' => implode(' - ', [$rate->getCarrierTitle(), $rate->getMethodTitle()]),
-                    //'detail' => $rate->getMethodTitle(),
-                    'amount' => $this->paymentsHelper->convertMagentoAmountToStripeAmount($shouldInclTax ? $rate->getPriceInclTax() : $rate->getPriceExclTax(), $currency)
-                ];
-            }
-
-            return \Zend_Json::encode([
-                "results" => $result
-            ]);
+            $response = $this->eceResponseFactory->create(['location' => $location])->fromNewShippingAddress($newAddress);
+            return $response->serialize();
         }
         catch (\Exception $e)
         {
@@ -351,59 +238,11 @@ class Service implements ServiceInterface
      * @throws CouldNotSaveException
      * @throws \Magento\Framework\Exception\NoSuchEntityException
      */
-    public function apply_shipping($address, $shipping_id = null)
+    public function ece_shipping_rate_changed($address, $shipping_id = null)
     {
-        if (count($address) === 0) {
-            $address = $this->expressHelper->getDefaultShippingAddress();
-        }
-
-        $quote = $this->cart->getQuote();
-
         try {
-            if (!$quote->isVirtual()) {
-                // Set Shipping Address
-                $shippingAddress = $this->addressHelper->getMagentoAddressFromPRAPIResult($address, __("shipping"));
-                $shipping = $quote->getShippingAddress()
-                      ->addData($shippingAddress);
-
-                if ($shipping_id) {
-                    // Set Shipping Method
-                    $shipping->setShippingMethod($shipping_id)
-                             ->setCollectShippingRates(true)
-                             ->collectShippingRates();
-
-                    $parts = explode('_', $shipping_id);
-                    $carrierCode = array_shift($parts);
-                    $methodCode = implode("_", $parts);
-
-                    /** @var \Magento\Quote\Api\Data\AddressInterface $ba */
-                    $shippingAddress = $this->inputProcessor->convertValue($shippingAddress, 'Magento\Quote\Api\Data\AddressInterface');
-
-                    /** @var \Magento\Checkout\Api\Data\ShippingInformationInterface $shippingInformation */
-                    $shippingInformation = $this->shippingInformationFactory->create();
-                    $shippingInformation
-                        // ->setBillingAddress($shippingAddress)
-                        ->setShippingAddress($shippingAddress)
-                        ->setShippingCarrierCode($carrierCode)
-                        ->setShippingMethodCode($methodCode);
-
-                    $this->shippingInformationManagement->saveAddressInformation($quote->getId(), $shippingInformation);
-
-                    // Update totals
-                    $quote->setTotalsCollectedFlag(false);
-                    $quote->collectTotals();
-
-                    $this->quoteRepository->save($quote);
-                }
-            }
-
-            $this->cart->save();
-
-            $result = $this->expressHelper->getCartItems($quote);
-            unset($result["currency"]);
-            return \Zend_Json::encode([
-                "results" => $result
-            ]);
+            $response = $this->eceResponseFactory->create()->fromNewShippingRate($address, $shipping_id);
+            return $response->serialize();
         } catch (\Exception $e) {
             throw new CouldNotSaveException(__($e->getMessage()), $e);
         }
@@ -412,24 +251,25 @@ class Service implements ServiceInterface
     public function set_billing_address($data)
     {
         try {
-            $quote = $this->cart->getQuote();
+            $quote = $this->quoteHelper->getQuote();
 
             // Place Order
-            $billingAddress = $this->expressHelper->getBillingAddress($data);
+            $billingAddress = $this->addressHelper->getMagentoAddressFromECEAddress($data);
 
             // Set Billing Address
             $quote->getBillingAddress()
                   ->addData($billingAddress);
 
             $quote->setTotalsCollectedFlag(false);
-            $quote->save();
+
+            $this->quoteHelper->saveQuote($quote);
         }
         catch (\Exception $e)
         {
             throw new CouldNotSaveException(__($e->getMessage()), $e);
         }
 
-        return \Zend_Json::encode([
+        return $this->serializer->serialize([
             "results" => null
         ]);
     }
@@ -444,17 +284,34 @@ class Service implements ServiceInterface
      */
     public function place_order($result, $location)
     {
-        $paymentMethod = $result['paymentMethod'];
-        $paymentMethodId = $paymentMethod['id'];
-
-        $quote = $this->cart->getQuote();
+        $quote = $this->quoteHelper->getQuote();
+        $this->checkoutFlow->isExpressCheckout = true;
 
         try {
             // Create an Order ID for the customer's quote
-            $quote->reserveOrderId()->save(); // Warning: The may cause order ID skipping if the customer abandons the checkout
+            $quote->reserveOrderId();
+
+            // Determine the customer name
+            if (!empty($result['billingDetails']['name']))
+            {
+                $payerName = $result['billingDetails']['name'];
+            }
+            else if (!empty($result['shippingAddress']['name']))
+            {
+                $payerName = $result['shippingAddress']['name'];
+            }
+            else
+            {
+                $payerName = null;
+            }
+
+            $payerName = $this->nameParserFactory->create()->fromString($payerName);
+            $quote->setCustomerFirstname($payerName->getFirstName());
+            $quote->setCustomerMiddlename($payerName->getMiddleName());
+            $quote->setCustomerLastname($payerName->getLastName());
 
             // Set Billing Address
-            $billingAddress = $this->expressHelper->getBillingAddress($paymentMethod['billing_details']);
+            $billingAddress = $this->addressHelper->getMagentoAddressFromECEAddress($result['billingDetails']);
             $quote->getBillingAddress()
                   ->addData($billingAddress);
 
@@ -463,20 +320,22 @@ class Service implements ServiceInterface
                 // Set Shipping Address
                 try
                 {
-                    $shippingAddress = $this->expressHelper->getShippingAddressFromResult($result);
+                    // The shipping address is specified from the product page, minicart or cart page
+                    $shippingAddress = $this->addressHelper->getMagentoShippingAddressFromECEResult($result);
                 }
                 catch (InvalidAddressException $e)
                 {
-                    $shippingAddress = $quote->getShippingAddress();
+                    // The shipping address is specified at the checkout page
+                    $data = $quote->getShippingAddress()->getData();
+                    $shippingAddress = $this->addressHelper->filterAddressData($data);
                 }
 
-                if ($this->addressHelper->isRegionRequired($result["shippingAddress"]["country"]))
+                if ($this->addressHelper->isRegionRequired($shippingAddress["country_id"]))
                 {
-                    if (empty($result["shippingAddress"]["region"]))
+                    if (empty($shippingAddress["region"]) && empty($shippingAddress["region_id"]))
+                    {
                         throw new LocalizedException(__("Please specify a shipping address region/state."));
-
-                    if (empty($shippingAddress["region_id"]))
-                        throw new LocalizedException(__("Error: Could not find region %1 for country %2.", $result["shippingAddress"]["region"], $result["shippingAddress"]["country"]));
+                    }
                 }
 
                 if (empty($shippingAddress["telephone"]) && !empty($billingAddress["telephone"]))
@@ -486,8 +345,11 @@ class Service implements ServiceInterface
                                   ->addData($shippingAddress);
 
                 // Set Shipping Method
-                $shipping->setShippingMethod($result['shippingOption']['id'])
+                if (!empty($result['shippingRate']['id']))
+                    $shipping->setShippingMethod($result['shippingRate']['id'])
                          ->setCollectShippingRates(true);
+                else if (empty($shipping->getShippingMethod()))
+                    throw new LocalizedException(__("Could not place order: Please specify a shipping method."));
             }
 
             // Update totals
@@ -499,41 +361,29 @@ class Service implements ServiceInterface
             $this->config->initStripe();
 
             // Set Checkout Method
-            if (!$this->customerSession->isLoggedIn()) {
+            if (!$this->customerSession->isLoggedIn())
+            {
                 // Use Guest Checkout
                 $quote->setCheckoutMethod(\Magento\Checkout\Model\Type\Onepage::METHOD_GUEST)
                       ->setCustomerId(null)
                       ->setCustomerEmail($quote->getBillingAddress()->getEmail())
                       ->setCustomerIsGuest(true)
                       ->setCustomerGroupId(\Magento\Customer\Api\Data\GroupInterface::NOT_LOGGED_IN_ID);
-            } else {
-                $quote
-                    ->setCheckoutMethod(\Magento\Checkout\Model\Type\Onepage::METHOD_CUSTOMER);
             }
-
-            $quote->getPayment()->setAdditionalInformation('token', $paymentMethodId);
-            $quote->getPayment()->setAdditionalInformation('source_id', $paymentMethodId);
-            $quote->getPayment()->setAdditionalInformation('is_prapi', true);
-            $quote->getPayment()->setAdditionalInformation('prapi_location', $location);
-
-            $paymentMethodType = $this->paymentsHelper->getPRAPIMethodType();
-            if ($paymentMethodType)
-                $quote->getPayment()->setAdditionalInformation('prapi_title', $paymentMethodType);
-
-            if ($this->stripeCustomer->getStripeId())
+            else
             {
-                $quote->getPayment()->setAdditionalInformation('customer_stripe_id', $this->stripeCustomer->getStripeId());
-                $quote->getPayment()->setAdditionalInformation('customer_email', $this->stripeCustomer->getCustomerEmail());
+                $quote->setCheckoutMethod(\Magento\Checkout\Model\Type\Onepage::METHOD_CUSTOMER);
+                $quote->setCustomerId($this->customerSession->getCustomerId());
             }
 
-            $quote->getPayment()->importData(['method' => 'stripe_payments_express', 'additional_data' => ['cc_stripejs_token' => $paymentMethodId]]);
-
-            // Save Quote
-            $quote->save();
+            $quote->getPayment()->unsPaymentId(); // Causes the Helper/Generic.php::resetPaymentData() method to reset any previous values
+            $this->checkoutFlow->isExpressCheckout = true;
+            $quote->getPayment()->importData(['method' => 'stripe_payments_express', 'additional_data' => [
+                'confirmation_token' => $result['confirmationToken']['id'],
+                'payment_location' => $location
+            ]]);
 
             // Place Order
-            $this->paymentIntent->quote = $quote;
-
             /** @var \Magento\Sales\Model\Order $order */
             $order = $this->quoteManagement->submit($quote);
             if ($order)
@@ -542,14 +392,6 @@ class Service implements ServiceInterface
                     'checkout_type_onepage_save_order_after',
                     ['order' => $order, 'quote' => $quote]
                 );
-
-                // if ($order->getCanSendNewEmailFlag()) {
-                //     try {
-                //         $this->orderSender->send($order);
-                //     } catch (\Exception $e) {
-                //         $this->logger->critical($e);
-                //     }
-                // }
 
                 $this->checkoutSession
                     ->setLastQuoteId($quote->getId())
@@ -567,42 +409,50 @@ class Service implements ServiceInterface
                 ]
             );
 
-            return \Zend_Json::encode([
+            return $this->serializer->serialize([
                 'redirect' => $this->urlBuilder->getUrl('checkout/onepage/success', ['_secure' => $this->paymentsHelper->isSecure()])
             ]);
         }
         catch (\Exception $e)
         {
-            $this->paymentsHelper->dieWithError($e->getMessage(), $e);
+            return $this->paymentsHelper->throwError($e->getMessage(), $e);
+        }
+    }
+
+    private function adjustNestedFields(&$params)
+    {
+        foreach ($params as $key => $value)
+        {
+            // Convert keys of the format "super_attribute[123] => 345" to "super_attribute => [ 123 => 345 ]"
+            if (preg_match('/^(.*)\[(.*)\]$/', $key, $matches))
+            {
+                $params[$matches[1]][$matches[2]] = $value;
+                unset($params[$key]);
+            }
         }
     }
 
     /**
      * Add to Cart
      *
-     * @param string $request
+     * @param mixed $params
      * @param string|null $shipping_id
      *
      * @return string
      * @throws CouldNotSaveException
      */
-    public function addtocart($request, $shipping_id = null)
+    public function addtocart($params, $shipping_id = null)
     {
-        $params = [];
-        parse_str($request, $params);
-
+        $this->adjustNestedFields($params);
         $productId = $params['product'];
         $related = $params['related_product'];
 
         if (isset($params['qty'])) {
-            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-            $filter = new \Zend_Filter_LocalizedToNormalized(
-                ['locale' => $this->localeHelper->getLocale()]
-            );
-            $params['qty'] = $filter->filter($params['qty']);
+            $this->localizedToNormalized->setOptions(['locale' => $this->localeHelper->getLocale()]);
+            $params['qty'] = $this->localizedToNormalized->filter((string)$params['qty']);
         }
 
-        $quote = $this->cart->getQuote();
+        $quote = $this->quoteHelper->getQuote();
 
         try {
             // Get Product
@@ -611,36 +461,32 @@ class Service implements ServiceInterface
 
             $this->eventManager->dispatch(
                 'stripe_payments_express_before_add_to_cart',
-                ['product' => $product, 'request' => $request]
+                ['product' => $product, 'request' => $params]
             );
 
-            // Check is update required
-            $isUpdated = false;
-            foreach ($quote->getAllItems() as $item) {
-                if ($item->getProductId() == $productId) {
-                    $item = $this->cart->updateItem($item->getId(), $params);
-                    if ($item->getHasError()) {
-                        throw new LocalizedException(__($item->getMessage()));
-                    }
+            $groupedProductIds = [];
+            if (!empty($params['super_group']) && is_array($params['super_group']))
+            {
+                $groupedProductSelections = $params['super_group'];
+                $groupedProductIds = array_keys($groupedProductSelections);
+            }
 
-                    $isUpdated = true;
-                    break;
+            // Check is update required
+            foreach ($quote->getAllItems() as $item) {
+                if ($item->getProductId() == $productId || in_array($item->getProductId(), $groupedProductIds)) {
+                    $item = $this->quoteHelper->removeItem($item->getId());
                 }
             }
 
             // Add Product to Cart
-            if (!$isUpdated) {
-                $item = $this->cart->addProduct($product, $params);
-                if ($item->getHasError()) {
-                    throw new LocalizedException(__($item->getMessage()));
-                }
+            $item = $this->quoteHelper->addProduct($product->getId(), $params);
 
-                if (!empty($related)) {
-                    $this->cart->addProductsByIds(explode(',', $related));
-                }
+            if (!empty($related)) {
+                $productIds = explode(',', $related);
+                $this->quoteHelper->addProductsByIds($productIds);
             }
 
-            $this->cart->save();
+            $quote = $this->quoteHelper->saveQuote();
 
             if ($shipping_id) {
                 // Set Shipping Method
@@ -655,278 +501,43 @@ class Service implements ServiceInterface
             // Update totals
             $quote->setTotalsCollectedFlag(false);
             $quote->collectTotals();
-            $quote->save();
+            $this->quoteHelper->saveQuote($quote);
 
-            $result = $this->expressHelper->getCartItems($quote);
-            return \Zend_Json::encode([
-                "results" => $result
-            ]);
-        } catch (\Exception $e) {
+            return $this->serializer->serialize([]);
+        }
+        catch (\Exception $e)
+        {
             throw new CouldNotSaveException(__($e->getMessage()), $e);
         }
     }
 
-    /**
-     * Get Cart Contents
-     *
-     * @return string
-     * @throws CouldNotSaveException
-     */
-    public function get_cart()
+    public function ece_params($location, $productId = null, $attribute = null)
     {
-        $quote = $this->cart->getQuote();
-
-        try {
-            $result = $this->expressHelper->getCartItems($quote);
-            return \Zend_Json::encode($result);
-        } catch (\Exception $e) {
-            throw new CouldNotSaveException(__($e->getMessage()), $e);
-        }
+        $response = $this->eceResponseFactory->create()->fromClickAt($location, $productId, $attribute);
+        return $response->serialize();
     }
 
-    /**
-    * Creates a fresh SetupIntent and returns the client secret
-    *
-    * @api
-    * @param mixed customerData
-    *
-    * @return string|null $setupIntentClientSecret
-    */
-    public function get_setup_intent($customerData)
+    public function get_trialing_subscriptions($billingAddress = null, $shippingAddress = null, $shippingMethod = null, $couponCode = null)
     {
-        $this->setupIntent->destroy();
-        return $this->setupIntent->create($customerData);
-    }
-
-    public function get_prapi_params($type)
-    {
-        switch ($type)
-        {
-            case 'checkout':
-            case 'cart':
-            case 'minicart':
-                return \Zend_Json::encode($this->getApplePayParams($type));
-            default: // Product
-                $parts = explode(":", $type);
-
-                if ($parts[0] == "product" && is_numeric($parts[1]))
-                {
-                    $attribute = null;
-                    if (!empty($parts[2]))
-                        $attribute = $parts[2];
-
-                    return \Zend_Json::encode($this->getProductApplePayParams($parts[1], $attribute));
-                }
-                else
-                    throw new CouldNotSaveException(__("Invalid type specified for Wallet Button params"));
-        }
-    }
-
-    /**
-    * Creates a Klarna Source object through the Stripe API
-    *
-    * @api
-    * @param mixed $shippingAddress
-    * @param string|null $shippingMethod
-    * @param string $guestEmail
-    * @param string $clientToken
-    *
-    * @return mixed Json object with data necessary to render the payment form.
-    */
-    public function get_klarna_payment_options($shippingAddress = null, $shippingMethod = null, $guestEmail = null, $sourceId = null)
-    {
-        try
-        {
-            $paymentOptions = $this->sessionManager->getKlarnaAvailablePaymentOptions();
-            return \Zend_Json::encode($paymentOptions);
-        }
-        catch (\Exception $e)
-        {
-            throw new \Magento\Framework\Webapi\Exception(__($e->getMessage()));
-        }
-    }
-
-    /**
-     * Get Payment Request Params
-     * @return array
-     */
-    public function getApplePayParams($location = null)
-    {
-        $requestShipping = !$this->getQuote()->isVirtual();
-
-        if ($location == "checkout" && $requestShipping)
-        {
-            $shippingAddress = $this->getQuote()->getShippingAddress();
-            $address = $this->addressHelper->getStripeAddressFromMagentoAddress($shippingAddress);
-            if (!empty($address["address"]["line1"])
-                && !empty($address["address"]["city"])
-                && !empty($address["address"]["country"])
-                && !empty($address["address"]["postal_code"])
-                && !empty($address["name"])
-                && !empty($address["email"])
-            )
-                $requestShipping = false;
-        }
-
-        return array_merge(
-            [
-                'country' => $this->getCountry(),
-                'requestPayerName' => true,
-                'requestPayerEmail' => true,
-                'requestPayerPhone' => true,
-                'requestShipping' => $requestShipping,
-            ],
-            $this->expressHelper->getCartItems($this->getQuote())
-        );
-    }
-
-    /**
-     * Get Payment Request Params for Single Product
-     * @return array
-     * @throws \Magento\Framework\Exception\LocalizedException
-     * @throws \Magento\Framework\Exception\NoSuchEntityException
-     */
-    public function getProductApplePayParams($productId, $attribute)
-    {
-        /** @var \Magento\Catalog\Model\Product $product */
-        $product = $this->paymentsHelper->loadProductById($productId);
-
-        if (!$product || !$product->getId())
-            return [];
-
-        $quote = $this->getQuote();
-
-        $currency = $quote->getQuoteCurrencyCode();
-        if (empty($currency)) {
-            $currency = $quote->getStore()->getCurrentCurrency()->getCode();
-        }
-
-        // Get Current Items in Cart
-        $params = $this->expressHelper->getCartItems($quote);
-        $amount = $params['total']['amount'];
-        $items = $params['displayItems'];
-
-        $shouldInclTax = $this->expressHelper->shouldCartPriceInclTax($quote->getStore());
-        if ($this->expressHelper->getStoreConfig('payment/stripe_payments/use_store_currency')) {
-            $convertedFinalPrice = $this->priceCurrency->convertAndRound(
-                $product->getFinalPrice(),
-                null,
-                $currency
-            );
-
-            $price = $this->expressHelper->getProductDataPrice(
-                $product,
-                $convertedFinalPrice,
-                $shouldInclTax,
-                $quote->getCustomerId(),
-                $quote->getStore()->getStoreId()
-            );
-        } else {
-            $price = $this->expressHelper->getProductDataPrice(
-                $product,
-                $product->getFinalPrice(),
-                $shouldInclTax,
-                $quote->getCustomerId(),
-                $quote->getStore()->getStoreId()
-            );
-        }
-
-        // Append Current Product
-        $productTotal = $this->paymentsHelper->convertMagentoAmountToStripeAmount($price, $currency);
-        $amount += $productTotal;
-
-        $items[] = [
-            'label' => $product->getName(),
-            'amount' => $productTotal,
-            'pending' => false
-        ];
-
-        return [
-            'country' => $this->getCountry(),
-            'currency' => strtolower($currency),
-            'total' => [
-                'label' => $this->getLabel(),
-                'amount' => $amount,
-                'pending' => true
-            ],
-            'displayItems' => $items,
-            'requestPayerName' => true,
-            'requestPayerEmail' => true,
-            'requestPayerPhone' => true,
-            'requestShipping' => $this->expressHelper->shouldRequestShipping($quote, $product, $attribute),
-        ];
-    }
-
-    /**
-     * Get Quote
-     * @return \Magento\Quote\Model\Quote
-     */
-    public function getQuote()
-    {
-        $quote = $this->checkoutHelper->getCheckout()->getQuote();
-        if (!$quote->getId()) {
-            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-            $quote = $objectManager->create('Magento\Checkout\Model\Session')->getQuote();
-        }
-
-        return $quote;
-    }
-
-    /**
-     * Get Country Code
-     * @return string
-     */
-    public function getCountry()
-    {
-        $countryCode = $this->getQuote()->getBillingAddress()->getCountryId();
-        if (empty($countryCode)) {
-            $countryCode = $this->expressHelper->getDefaultCountry();
-        }
-        return $countryCode;
-    }
-
-    /**
-     * Get Label
-     * @return string
-     */
-    public function getLabel()
-    {
-        return $this->expressHelper->getLabel($this->getQuote());
-    }
-
-    public function get_installment_plans($paymentMethodId)
-    {
-        $parts = explode(":", $paymentMethodId);
-        $paymentMethodId = $parts[0];
-        $quote = $this->getQuote();
-        $params = $this->paymentIntent->getParamsFrom($quote, null, $paymentMethodId);
-        if ($params["amount"] == 0)
-            return "[]";
-
-        try
-        {
-            $paymentIntent = $this->paymentIntent->create($params, $quote);
-        }
-        catch (\Exception $e)
-        {
-            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
-        }
-
-        if (empty($paymentIntent->payment_method_options->card->installments->available_plans))
-            return "[]";
-
-        return \Zend_Json::encode($paymentIntent->payment_method_options->card->installments->available_plans);
-    }
-
-    public function get_trialing_subscriptions($billingAddress, $shippingAddress = null, $shippingMethod = null, $couponCode = null)
-    {
-        $quote = $this->paymentsHelper->getQuote();
+        $quote = $this->quoteHelper->getQuote();
 
         if (!empty($billingAddress))
             $quote->getBillingAddress()->addData($this->toSnakeCase($billingAddress));
 
         if (!empty($shippingAddress))
+        {
             $quote->getShippingAddress()->addData($this->toSnakeCase($shippingAddress));
+
+            if (!empty($shippingMethod['carrier_code']) && !empty($shippingMethod['method_code']))
+            {
+                $code = $shippingMethod['carrier_code'] . "_" . $shippingMethod['method_code'];
+
+                $quote->getShippingAddress()
+                        ->setCollectShippingRates(true)
+                        ->collectShippingRates()
+                        ->setShippingMethod($code);
+            }
+        }
 
         if (!empty($couponCode))
             $quote->setCouponCode($couponCode);
@@ -935,17 +546,23 @@ class Service implements ServiceInterface
 
         $quote->setTotalsCollectedFlag(false);
         $quote->collectTotals();
-        $this->quoteRepository->save($quote);
+
+        if (!empty($billingAddress))
+        {
+            // The billing address may be empty at the shopping cart case, in which case the save would fail and reset the data
+            // we just set to the old values. On the checkout page, the save is necessary.
+            $this->quoteRepository->save($quote);
+        }
 
         $subscriptions = $this->subscriptionsHelper->getTrialingSubscriptionsAmounts($quote);
-        return \Zend_Json::encode($subscriptions);
+        return $this->serializer->serialize($subscriptions);
     }
 
     public function get_checkout_payment_methods($billingAddress, $shippingAddress = null, $shippingMethod = null, $couponCode = null)
     {
-        try
-        {
-            $quote = $this->paymentsHelper->getQuote();
+        // try
+        // {
+            $quote = $this->quoteHelper->getQuote();
 
             if (!empty($billingAddress))
                 $quote->getBillingAddress()->addData($this->toSnakeCase($billingAddress));
@@ -963,19 +580,26 @@ class Service implements ServiceInterface
             $this->quoteRepository->save($quote);
 
             $currentCheckoutSessionId = $this->checkoutSessionHelper->getCheckoutSessionIdFromQuote($quote);
-            $methods = $this->checkoutSessionHelper->getAvailablePaymentMethods();
+            $checkoutSessionModel = $this->checkoutSessionFactory->create()->fromQuote($quote);
+            $methods = $checkoutSessionModel->getAvailablePaymentMethods($quote);
             $newCheckoutSessionId = $this->checkoutSessionHelper->getCheckoutSessionIdFromQuote($quote);
-        }
-        catch (\Exception $e)
-        {
-            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
+        // }
+        // catch (\Stripe\Exception\InvalidRequestException $e)
+        // {
+        //     return $this->serializer->serialize([
+        //         "error" => __($e->getMessage())
+        //     ]);
+        // }
+        // catch (\Exception $e)
+        // {
+        //     $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
 
-            return \Zend_Json::encode([
-                "error" => "An error has occurred."
-            ]);
-        }
+        //     return $this->serializer->serialize([
+        //         "error" => __("Sorry, the selected payment method is not available. Please use a different payment method.")
+        //     ]);
+        // }
 
-        if ($this->checkoutSessionHelper->getOrderForQuote($quote) && $currentCheckoutSessionId == $newCheckoutSessionId)
+        if ($checkoutSessionModel->getOrder() && $currentCheckoutSessionId == $newCheckoutSessionId)
         {
             $response = [
                 "methods" => $methods,
@@ -992,13 +616,16 @@ class Service implements ServiceInterface
             ];
         }
 
-        return \Zend_Json::encode($response);
+        return $this->serializer->serialize($response);
     }
 
     // Get Stripe Checkout session ID, only if it is still valid/open/non-expired AND an order for it exists
     public function get_checkout_session_id()
     {
-        $session = $this->checkoutSessionHelper->load();
+        $checkoutSessionModel = $this->checkoutSessionFactory->create();
+        $quote = $this->quoteHelper->getQuote();
+        /** @var \Stripe\Checkout\Session $session */
+        $session = $checkoutSessionModel->fromQuote($quote)->getStripeObject();
 
         if (empty($session->id))
             return null;
@@ -1008,7 +635,410 @@ class Service implements ServiceInterface
         if (!$model || !$model->getOrderIncrementId())
             return null;
 
-        return $session->id;
+        return $session->url;
+    }
+
+    /**
+     * Restores the quote of the last placed order
+     *
+     * @api
+     *
+     * @return mixed
+     */
+    public function restore_quote()
+    {
+        try
+        {
+            $this->restoreQuote();
+            return $this->serializer->serialize([]);
+        }
+        catch (\Exception $e)
+        {
+            return $this->serializer->serialize([
+                "error" => $e->getMessage()
+            ]);
+        }
+    }
+
+    private function restoreQuote()
+    {
+        $checkout = $this->checkoutHelper->getCheckout();
+
+        /** @var \Magento\Sales\Model\Order $order */
+        $order = $checkout->getLastRealOrder();
+        if ($order->getId())
+        {
+            try
+            {
+                $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
+                $quote->setIsActive(1)->setReservedOrderId(null);
+                $this->quoteHelper->saveQuote($quote);
+                $this->checkoutSession->replaceQuote($quote)->setLastRealOrderId($order->getIncrementId());
+                return true;
+            }
+            catch (\Magento\Framework\Exception\NoSuchEntityException $e)
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * After a payment failure, and before placing the order for a 2nd time, we call the update_cart method to check if anything
+     * changed between the quote and the previously placed order. If it has, we cancel the old order and place a new one.
+     *
+     * @api
+     *
+     * @return mixed
+     */
+    public function update_cart($quoteId = null, $data = null)
+    {
+        try
+        {
+            $quote = $this->quoteHelper->getQuote($quoteId);
+            if (!$quote || !$quote->getId())
+            {
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => "The quote could not be loaded."
+                ]);
+
+                // $this->paymentsHelper->addError(__("Your checkout session has expired. Please try to place the order again."));
+
+                // return $this->serializer->serialize([
+                //     "redirect" => $this->paymentsHelper->getUrl("checkout/cart")
+                // ]);
+            }
+
+            $this->paymentElement->load($quote->getId(), 'quote_id');
+            if ($this->paymentElement->getOrderIncrementId())
+            {
+                $orderIncrementId = $this->paymentElement->getOrderIncrementId();
+            }
+            else if ($quote->getReservedOrderId())
+            {
+                $orderIncrementId = $quote->getReservedOrderId();
+            }
+            else
+            {
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => "The quote does not have an order increment ID."
+                ]);
+            }
+
+            $order = $this->orderHelper->loadOrderByIncrementId($orderIncrementId);
+            if (!$order || !$order->getId())
+            {
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => "Order #$orderIncrementId could not be loaded."
+                ]);
+            }
+
+            if (in_array($order->getState(), ['canceled', 'complete', 'closed']))
+            {
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => "Order #$orderIncrementId is in an invalid state."
+                ]);
+            }
+
+            if ($order->getIsMultiShipping())
+            {
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => "This method cannot be used in multi-shipping mode."
+                ]);
+            }
+
+
+            if ($this->compare->isDifferent($quote->getData(), [
+                "is_virtual" => $order->getIsVirtual(),
+                "base_currency_code" => $order->getBaseCurrencyCode(),
+                "store_currency_code" => $order->getStoreCurrencyCode(),
+                "quote_currency_code" => $order->getOrderCurrencyCode(),
+                "global_currency_code" => $order->getGlobalCurrencyCode(),
+                "customer_email" => $order->getCustomerEmail(),
+                "customer_is_guest" => $order->getCustomerIsGuest(),
+                "base_subtotal" => $order->getBaseSubtotal(),
+                "subtotal" => $order->getSubtotal(),
+                "base_grand_total" => $order->getBaseGrandTotal(),
+                "grand_total" => $order->getGrandTotal(),
+            ]))
+            {
+                $msg = __("The order details have changed (%1).", $this->compare->lastReason);
+                $this->orderHelper->addOrderComment($msg, $order);
+                $this->orderHelper->saveOrder($order);
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => $msg
+                ]);
+            }
+
+            $quoteItems = [];
+            $orderItems = [];
+
+            foreach ($quote->getAllItems() as $item)
+            {
+                $quoteItems[$item->getItemId()] = [
+                    "sku" => $item->getSku(),
+                    "qty" => $item->getQty(),
+                    "row_total" => $item->getRowTotal(),
+                    "base_row_total" => $item->getBaseRowTotal()
+                ];
+            }
+
+            foreach ($order->getAllItems() as $item)
+            {
+                $orderItems[$item->getQuoteItemId()] = [
+                    "sku" => $item->getSku(),
+                    "qty" => $item->getQtyOrdered(),
+                    "row_total" => $item->getRowTotal(),
+                    "base_row_total" => $item->getBaseRowTotal()
+                ];
+            }
+
+            if ($this->compare->isDifferent($quoteItems, $orderItems))
+            {
+                $msg = __("The order items have changed (%1).", $this->compare->lastReason);
+                $this->orderHelper->addOrderComment($msg, $order);
+                $this->orderHelper->saveOrder($order);
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => $msg
+                ]);
+            }
+
+            if (!$quote->getIsVirtual())
+            {
+                $expectedData = $this->getAddressComparisonData($order->getShippingAddress()->getData());
+
+                if ($this->compare->isDifferent($quote->getShippingAddress()->getData(), $expectedData))
+                {
+                    $msg = __("The order shipping address has changed (%1).", $this->compare->lastReason);
+                    $this->orderHelper->addOrderComment($msg, $order);
+                    $this->orderHelper->saveOrder($order);
+                    return $this->serializer->serialize([
+                        "placeNewOrder" => true,
+                        "reason" => $msg
+                    ]);
+                }
+            }
+
+            if (!$quote->getIsVirtual() && $this->compare->isDifferent($quote->getShippingAddress()->getData(), [
+                "shipping_method" => $order->getShippingMethod(),
+                "shipping_description" => $order->getShippingDescription(),
+                "shipping_amount" => $order->getShippingAmount(),
+                "base_shipping_amount" => $order->getBaseShippingAmount()
+            ]))
+            {
+                $msg = __("The order shipping method has changed (%1).", $this->compare->lastReason);
+                $this->orderHelper->addOrderComment($msg, $order);
+                $this->orderHelper->saveOrder($order);
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => $msg
+                ]);
+            }
+
+            $expectedData = $this->getAddressComparisonData($order->getBillingAddress()->getData());
+
+            if ($this->compare->isDifferent($quote->getBillingAddress()->getData(), $expectedData))
+            {
+                $msg = __("The order billing address has changed (%1).", $this->compare->lastReason);
+                $this->orderHelper->addOrderComment($msg, $order);
+                $this->orderHelper->saveOrder($order);
+                return $this->serializer->serialize([
+                    "placeNewOrder" => true,
+                    "reason" => $msg
+                ]);
+            }
+
+            // Invalidate the payment intent.
+            try
+            {
+                if (!empty($data['additional_data']))
+                {
+                    $payment = $order->getPayment();
+                    $this->paymentsHelper->assignPaymentData($payment, $data['additional_data']);
+                    $payment->save();
+                }
+
+                $this->paymentElement->updateFromOrder($order);
+
+                if ($this->paymentElement->requiresConfirmation())
+                {
+                    $this->paymentElement->confirm($order);
+                }
+            }
+            catch (\Exception $e)
+            {
+                return $this->serializer->serialize([
+                    "error" => $e->getMessage()
+                ]);
+            }
+
+            return $this->serializer->serialize([
+                "placeNewOrder" => false
+            ]);
+        }
+        catch (\Exception $e)
+        {
+            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
+
+            return $this->serializer->serialize([
+                "placeNewOrder" => true,
+                "reason" => "An error has occurred: " . $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * If the last payment requires further action, this returns the client secret of the object that requires action
+     *
+     * @api
+     *
+     * @return mixed|null
+     */
+    public function get_requires_action()
+    {
+        $orderId = $this->checkoutSession->getLastRealOrderId();
+        if (empty($orderId))
+        {
+            return null;
+        }
+
+        $order = $this->orderHelper->loadOrderByIncrementId($orderId);
+        if (!$order || !$order->getId())
+        {
+            return null;
+        }
+
+        $intent = $this->getPaymentIntentFromOrder($order); // Works for bank transfers and most APMs after v3.4.x
+
+        if (!$intent)
+        {
+            $this->paymentElement->fromQuoteId($order->getQuoteId());
+            $intent = $this->paymentElement->getPaymentIntent();
+
+            if (!$intent)
+                $intent = $this->paymentElement->getSetupIntent();
+        }
+
+        if ($intent && $intent->status == "requires_action")
+        {
+            if (!$this->paymentIntentHelper->requiresOfflineAction($intent))
+            {
+                // Non-card based confirms may redirect the customer externally. We restore the quote just before it in case the
+                // customer clicks the back button on the browser before authenticating the payment.
+                $this->restoreQuote();
+            }
+
+            return $intent->client_secret;
+        }
+
+        return null;
+    }
+
+    protected function getPaymentIntentFromOrder($order)
+    {
+        if (!$order || !$order->getPayment())
+        {
+            return null;
+        }
+
+        $payment = $order->getPayment();
+
+        $transactionId = $this->tokenHelper->cleanToken($payment->getLastTransId());
+
+        if (empty($transactionId) || strpos($transactionId, "pi_") !== 0)
+        {
+            return null;
+        }
+
+        $paymentIntent = $this->stripePaymentIntentFactory->create()->fromPaymentIntentId($transactionId);
+
+        return $paymentIntent->getStripeObject();
+    }
+
+    /**
+     * Places a multishipping order
+     *
+     * @api
+     * @param int|null $quoteId
+     *
+     * @return mixed|null $result
+     */
+    public function place_multishipping_order($quoteId = null)
+    {
+        if (empty($quoteId))
+        {
+            $quote = $this->quoteHelper->getQuote();
+            $quoteId = $quote->getId();
+        }
+
+        try
+        {
+            $redirectUrl = $this->multishippingHelper->placeOrder($quoteId);
+            return $this->serializer->serialize(["redirect" => $redirectUrl]);
+        }
+        catch (SCANeededException $e)
+        {
+            return $this->serializer->serialize(["authenticate" => $e->getMessage()]);
+        }
+        catch (\Exception $e)
+        {
+            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
+            return $this->serializer->serialize(["error" => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Finalizes a multishipping order after a card is declined or customer authentication fails and redirects the customer to the results or success page
+     *
+     * @api
+     * @param string|null $error
+     *
+     * @return mixed|null $result
+     */
+    public function finalize_multishipping_order($quoteId = null, $error = null)
+    {
+        if (empty($quoteId))
+        {
+            $quote = $this->quoteHelper->getQuote();
+            $quoteId = $quote->getId();
+        }
+
+        try
+        {
+            $redirectUrl = $this->multishippingHelper->finalizeOrder($quoteId, $error);
+            return $this->serializer->serialize(["redirect" => $redirectUrl]);
+        }
+        catch (\Exception $e)
+        {
+            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
+            return $this->serializer->serialize(["error" => $e->getMessage()]);
+        }
+    }
+
+    private function getAddressComparisonData($addressData)
+    {
+        $comparisonFields = ["region_id", "region", "postcode", "lastname", "street", "city", "email", "telephone", "country_id", "firstname", "address_type", "company", "vat_id"];
+
+        $params = [];
+
+        foreach ($comparisonFields as $field)
+        {
+            if (!empty($addressData[$field]))
+                $params[$field] = $addressData[$field];
+            else
+                $params[$field] = "unset";
+        }
+
+        return $params;
     }
 
     private function toSnakeCase($array)
@@ -1021,5 +1051,177 @@ class Service implements ServiceInterface
         }
 
         return $result;
+    }
+
+    private function cancelOrder($order, $comment)
+    {
+        $this->paymentsHelper->removeTransactions($order);
+        $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
+        $this->paymentsHelper->cancelOrCloseOrder($order);
+
+        if ($this->paymentIntent->getOrderIncrementId())
+        {
+            $this->paymentIntent->setOrderIncrementId(null);
+            $this->paymentIntent->setOrderId(null);
+            $this->paymentIntent->save();
+        }
+    }
+
+    public function get_upcoming_invoice()
+    {
+        try
+        {
+            $data = $this->subscriptionsHelper->getUpcomingInvoice(time());
+            return $this->serializer->serialize(["upcomingInvoice" => $data]);
+        }
+        catch (\Stripe\Exception\InvalidRequestException $e)
+        {
+            if (strpos($e->getMessage(), "The price specified supports currencies of") !== false)
+                return $this->serializer->serialize(["error" => __("Cannot update subscription because the original was purchased in a different currency.")]);
+
+            return $this->serializer->serialize(["error" => $e->getMessage()]);
+        }
+        catch (\Exception $e)
+        {
+            $this->paymentsHelper->logError($e->getMessage(), $e->getTraceAsString());
+            return $this->serializer->serialize(["error" => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Add a new saved payment method by ID
+     *
+     * @api
+     * @param string $paymentMethodId
+     *
+     * @return mixed $paymentMethod
+     */
+    public function add_payment_method($paymentMethodId)
+    {
+        if (!$this->stripeCustomer->isLoggedIn())
+            throw new GenericException((string)__("The customer is not logged in."));
+
+        if (empty($paymentMethodId))
+            throw new GenericException((string)__("Please specify a payment method ID."));
+
+        try
+        {
+            $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+            $setupIntentCreateParams = $this->setupIntentHelper->getSavePaymentMethodParams($paymentMethod);
+            $setupIntent = $this->config->getStripeClient()->setupIntents->create($setupIntentCreateParams);
+
+            $methods = $this->paymentMethodHelper->formatPaymentMethods([
+                $paymentMethod->type => [
+                    $paymentMethod
+                ]
+            ]);
+
+            $method = array_pop($methods);
+
+            if ($this->setupIntentHelper->requiresOnlineAction($setupIntent))
+            {
+                $method['client_secret'] = $setupIntent->client_secret;
+            }
+
+            return $this->serializer->serialize($method);
+        }
+        catch (\Exception $e)
+        {
+            throw new GenericException((string)__("Could not add payment method: %1.", $e->getMessage()));
+        }
+    }
+
+    /**
+     * Delete a saved payment method by ID
+     *
+     * @api
+     * @param string $paymentMethodId
+     * @param string $fingerprint
+     *
+     * @return mixed $result
+     */
+    public function delete_payment_method($paymentMethodId, $fingerprint = null)
+    {
+        if (!$this->stripeCustomer->isLoggedIn())
+            throw new GenericException((string)__("The customer is not logged in."));
+
+        if (empty($paymentMethodId))
+            throw new GenericException((string)__("Please specify a payment method ID."));
+
+        if (!$this->stripeCustomer->getStripeId())
+            throw new GenericException((string)__("The payment method does not exist."));
+
+        try
+        {
+            $paymentMethod = $this->stripeCustomer->deletePaymentMethod($paymentMethodId, $fingerprint);
+
+            if (!empty($paymentMethod->card->last4))
+                return $this->serializer->serialize(__("Card •••• %1 has been deleted.", $paymentMethod->card->last4));
+
+            return $this->serializer->serialize(__("The payment method has been deleted."));
+        }
+        catch (\Exception $e)
+        {
+            throw new GenericException((string)__("Could not delete payment method: %1.", $e->getMessage()));
+        }
+    }
+
+    /**
+     * List a customer's saved payment methods
+     *
+     * @api
+     * @return mixed $result
+     */
+    public function list_payment_methods()
+    {
+        if (!$this->stripeCustomer->isLoggedIn())
+            throw new GenericException((string)__("The customer is not logged in."));
+
+        return $this->serializer->serialize($this->stripeCustomer->getSavedPaymentMethods(null, true));
+    }
+
+    /**
+     * Cancels the last order placed by the customer, if it's quote ID matches the currently active quote
+     *
+     * @api
+     * @param string $errorMessage
+     *
+     * @return mixed $result
+     */
+    public function cancel_last_order($errorMessage)
+    {
+        try
+        {
+            $quote = $this->quoteHelper->getQuote();
+            $orderId = $this->checkoutSession->getLastRealOrderId();
+
+            if (empty($orderId))
+                throw new GenericException((string)__("The customer does not have an order."));
+
+            $order = $this->orderHelper->loadOrderByIncrementId($orderId);
+
+            if (!$order || !$order->getId())
+                throw new GenericException((string)__("The order could not be loaded."));
+
+            if ($order->getQuoteId() != $quote->getId())
+                throw new GenericException((string)__("The order does not match the current quote."));
+
+            $this->cancelOrder($order, $errorMessage);
+        }
+        catch (\Exception $e)
+        {
+
+        }
+
+        return $this->serializer->serialize([]);
+    }
+
+    /**
+     * Get Module Configuration for Stripe initialization
+     * @return mixed
+     */
+    public function getStripeConfiguration()
+    {
+        return $this->initParams->getAPIModuleConfiguration();
     }
 }

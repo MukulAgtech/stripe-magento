@@ -2,19 +2,23 @@
 
 namespace StripeIntegration\Payments\Model\Method;
 
-use Magento\Framework\DataObject;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Payment\Model\InfoInterface;
-use StripeIntegration\Payments\Helper;
-use StripeIntegration\Payments\Helper\Logger;
+use StripeIntegration\Payments\Exception\GenericException;
 
 class Invoice extends \Magento\Payment\Model\Method\Adapter
 {
-    const METHOD_CODE = 'stripe_payments_invoice';
-    protected $_code = self::METHOD_CODE;
-    protected $type = 'invoice';
-    protected $_formBlockType = 'StripeIntegration\Payments\Block\Method\Invoice';
-    protected $_infoBlockType = 'StripeIntegration\Payments\Block\PaymentInfo\Invoice';
+    public const METHOD_CODE = 'stripe_payments_invoice';
+
+    private $customer;
+    private $invoiceItemFactory;
+    private $invoiceFactory;
+    private $orderInvoiceFactory;
+    private $cache;
+    private $config;
+    private $helper;
+    private $tokenHelper;
+    private $convert;
 
     public function __construct(
         \Magento\Framework\Event\ManagerInterface $eventManager,
@@ -25,9 +29,8 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         $infoBlockType,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\Stripe\ProductFactory $productFactory,
-        \StripeIntegration\Payments\Model\Stripe\PriceFactory $priceFactory,
-        \StripeIntegration\Payments\Model\Stripe\CouponFactory $couponFactory,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\Convert $convert,
         \StripeIntegration\Payments\Model\Stripe\InvoiceItemFactory $invoiceItemFactory,
         \StripeIntegration\Payments\Model\Stripe\InvoiceFactory $invoiceFactory,
         \StripeIntegration\Payments\Model\InvoiceFactory $orderInvoiceFactory,
@@ -37,22 +40,21 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
     ) {
         $this->config = $config;
         $this->helper = $helper;
+        $this->convert = $convert;
         $this->customer = $helper->getCustomerModel();
-        $this->productFactory = $productFactory;
-        $this->priceFactory = $priceFactory;
-        $this->couponFactory = $couponFactory;
         $this->invoiceItemFactory = $invoiceItemFactory;
         $this->invoiceFactory = $invoiceFactory;
         $this->orderInvoiceFactory = $orderInvoiceFactory;
         $this->cache = $cache;
+        $this->tokenHelper = $tokenHelper;
 
         parent::__construct(
             $eventManager,
             $valueHandlerPool,
             $paymentDataObjectFactory,
             $code,
-            $formBlockType,
-            $infoBlockType,
+            $formBlockType = 'StripeIntegration\Payments\Block\Method\Invoice',
+            $infoBlockType = 'StripeIntegration\Payments\Block\PaymentInfo\Invoice',
             $commandPool,
             $validatorPool
         );
@@ -60,7 +62,7 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
 
     public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
-        if (!$this->config->isEnabled() && !$this->config->isEnabled("checkout"))
+        if (!$this->config->isEnabled())
             return false;
 
         return parent::isAvailable($quote);
@@ -75,7 +77,9 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         $info->setAdditionalInformation('days_due', $daysDue);
 
         if ($this->config->getIsStripeAPIKeyError())
-            $this->helper->dieWithError("Invalid API key provided");
+            $this->helper->throwError("Invalid API key provided");
+
+        $info->setAdditionalInformation("payment_location", "Invoice from admin area");
 
         return $this;
     }
@@ -89,10 +93,8 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
 
             $info = $this->getInfoInstance();
             $order = $info->getOrder();
-            $this->customer->createStripeCustomerIfNotExists(false, $order);
-            $customerId = $this->customer->getStripeId();
-
             $this->customer->updateFromOrder($order);
+            $customerId = $this->customer->getStripeId();
             $invoice = $this->createInvoice($order, $customerId)->finalize();
             $payment->setAdditionalInformation('invoice_id', $invoice->getId());
             $payment->setLastTransId($invoice->getStripeObject()->payment_intent);
@@ -111,7 +113,7 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         $items = $order->getAllItems();
 
         if (empty($items))
-            throw new \Exception("Could not create Stripe invoice because the order contains no items.");
+            throw new GenericException("Could not create Stripe invoice because the order contains no items.");
 
         $this->invoiceItemFactory->create()->fromOrderGrandTotal($order, $customerId);
         $invoice = $this->invoiceFactory->create()->fromOrder($order, $customerId);
@@ -134,7 +136,7 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
             $rate = $creditmemo->getBaseToOrderRate();
             if (!empty($rate) && is_numeric($rate) && $rate > 0)
             {
-                $amount = round($amount * $rate, 2);
+                $amount = round(floatval($amount * $rate), 2);
                 $diff = $amount - $payment->getAmountPaid();
                 if ($diff > 0 && $diff <= 1) // Solves a currency conversion rounding issue (Magento rounds .5 down)
                     $amount = $payment->getAmountPaid();
@@ -143,22 +145,18 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
 
         $currency = $payment->getOrder()->getOrderCurrencyCode();
 
-        $transactionId = $payment->getLastTransId();
+        $transactionId = $this->tokenHelper->cleanToken($payment->getLastTransId());
 
         // Case where an invoice is in Pending status, with no transaction ID, receiving a source.failed event which cancels the invoice.
         if (empty($transactionId))
             return $this;
 
-        $transactionId = preg_replace('/-.*$/', '', $transactionId);
+        try
+        {
+            $params = [];
 
-        try {
-            $cents = 100;
-            if ($this->helper->isZeroDecimal($currency))
-                $cents = 1;
-
-            $params = array();
             if ($amount > 0)
-                $params["amount"] = round($amount * $cents);
+                $params["amount"] = $this->convert->magentoAmountToStripeAmount($amount, $currency);
 
             $pi = \Stripe\PaymentIntent::retrieve($transactionId);
             $charge = $pi->charges->data[0];
@@ -166,24 +164,22 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
             $params["charge"] = $charge->id;
 
             // This is true when an authorization has expired or when there was a refund through the Stripe account
-            if (!$charge->refunded)
-            {
-                $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
-                $refund = $this->config->getStripeClient()->refunds->create(['charge' => $charge->id]);
-            }
-            else
-            {
-                $comment = __('An attempt to manually refund the order was made, however this order was already refunded in Stripe. Creating an offline refund instead.');
-                $payment->getOrder()->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
-            }
+            $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
+            $refund = $this->config->getStripeClient()->refunds->create($params);
         }
         catch (\Exception $e)
         {
-            $this->helper->dieWithError('Could not refund payment: '.$e->getMessage());
-            throw new \Exception(__($e->getMessage()));
+            $this->helper->addError($e->getMessage());
+            $this->helper->throwError('Could not refund payment: '.$e->getMessage());
+            throw new GenericException(__($e->getMessage()));
         }
 
         return $this;
+    }
+
+    public function getTitle()
+    {
+        return __("Send invoice by email (Stripe Billing)");
     }
 
     // Disables the Capture button on the invoice page

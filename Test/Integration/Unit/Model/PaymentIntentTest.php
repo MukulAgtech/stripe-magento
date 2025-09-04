@@ -2,49 +2,62 @@
 
 namespace StripeIntegration\Payments\Test\Integration\Unit\Model;
 
-use PHPUnit\Framework\Constraint\StringContains;
-
+/**
+ * Magento 2.3.7-p3 does not enable these at class level
+ * @magentoAppIsolation enabled
+ * @magentoDbIsolation enabled
+ */
 class PaymentIntentTest extends \PHPUnit\Framework\TestCase
 {
+    private $objectManager;
+    private $paymentIntentModel;
+    private $quote;
+    private $tests;
+
     public function setUp(): void
     {
         $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
         $this->paymentIntentModel = $this->objectManager->get(\StripeIntegration\Payments\Model\PaymentIntent::class);
-        $this->stripeConfig = $this->objectManager->get(\StripeIntegration\Payments\Model\Config::class);
+        $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
     }
 
-    /**
-     * @magentoConfigFixture current_store payment/stripe_payments/active 1
-     * @magentoConfigFixture current_store payment/stripe_payments_basic/stripe_mode test
-     * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 0
-     *
-     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeys.php
-     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Taxes.php
-     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Addresses.php
-     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Products.php
-     */
-    public function testPreloadFromCache()
+    // It should be possible to get subscription params without a quote
+    public function testGetParamsFrom()
     {
         $this->quote->create()
             ->setCustomer('Guest')
-            ->setCart("Normal")
+            ->setCart("SubscriptionInitialFee")
             ->setShippingAddress("California")
             ->setShippingMethod("FlatRate")
             ->setBillingAddress("California")
-            ->setPaymentMethod("InsufficientFundsCard");
+            ->setPaymentMethod("SuccessCard");
 
-        // Expected: Your card has insufficient funds.
-        $this->markTestIncomplete("You cannot confirm this PaymentIntent because it's missing a payment method. You can either update the PaymentIntent with a payment method and then confirm it again, or confirm it again directly with a payment method.");
+        $order = $this->quote->placeOrder();
 
-        $order = $this->quote->mockOrder();
-        $exceptionMsg = $this->paymentIntentModel->confirmAndAssociateWithOrder($order, $order->getPayment());
-        $this->assertEquals('Your card has insufficient funds.', $exceptionMsg);
+        $params = $this->paymentIntentModel->getParamsFrom(null, $order, null);
 
-        $exceptionMsg = $this->paymentIntentModel->confirmAndAssociateWithOrder($order, $order->getPayment());
-        $this->assertEquals('Your card has insufficient funds.', $exceptionMsg);
+        $this->assertNotEmpty($params["customer"]);
+        $this->assertNotEmpty($params["payment_method"]);
 
-        $exceptionMsg = $this->paymentIntentModel->confirmAndAssociateWithOrder($order, $order->getPayment());
-        $this->assertEquals('Your card has insufficient funds.', $exceptionMsg);
+        $this->tests->compare($params, [
+            "amount" => 325, // Initial fee + tax
+            "currency" => "usd",
+            "description" => "Subscription order #{$order->getIncrementId()} by Joyce Strother",
+            "metadata" => [
+                "Order #" => $order->getIncrementId()
+            ],
+            "shipping" => [
+                "address" => [
+                    "line1" => "2974 Providence Lane",
+                    "city" => "Mira Loma",
+                    "country" => "US",
+                    "postal_code" => "91752",
+                    "state" => "California"
+                ],
+                "name" => "Joyce Strother",
+                "phone" => "626-945-7637"
+            ]
+        ]);
     }
 }

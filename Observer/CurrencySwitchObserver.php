@@ -3,28 +3,28 @@
 namespace StripeIntegration\Payments\Observer;
 
 use Magento\Framework\Event\ObserverInterface;
-use StripeIntegration\Payments\Helper\Logger;
-use StripeIntegration\Payments\Exception\WebhookException;
 
 class CurrencySwitchObserver implements ObserverInterface
 {
+    private $config;
+    private $helper;
+    private $paymentsHelper;
+    private $serializer;
+
     public function __construct(
         \StripeIntegration\Payments\Helper\InitialFee $helper,
         \StripeIntegration\Payments\Helper\Generic $paymentsHelper,
         \StripeIntegration\Payments\Model\Config $config,
-        \Magento\Framework\Event\ManagerInterface $eventManager,
-        \StripeIntegration\Payments\Helper\Serializer $serializer
+        \Magento\Framework\Serialize\SerializerInterface $serializer
     )
     {
         $this->helper = $helper;
         $this->paymentsHelper = $paymentsHelper;
         $this->config = $config;
-        $this->_eventManager = $eventManager;
         $this->serializer = $serializer;
     }
 
     /**
-     * @param Observer $observer
      * @return void
      */
     public function execute(\Magento\Framework\Event\Observer $observer)
@@ -41,19 +41,22 @@ class CurrencySwitchObserver implements ObserverInterface
             if (!empty($item->getQtyOptions()))
                 $additionalOptions = $this->helper->getAdditionalOptionsForChildrenOf($item);
             else
-                $additionalOptions = $this->helper->getAdditionalOptionsForProductId($item->getProductId(), $item->getQty());
+                $additionalOptions = $this->helper->getAdditionalOptionsForProductId($item->getProductId(), $item);
 
-            $data = $this->serializer->serialize($additionalOptions);
-
-            if ($data)
+            if (!empty($additionalOptions))
             {
-                $item->addOption(array(
-                    'product_id' => $item->getProductId(),
-                    'code' => 'additional_options',
-                    'value' => $data
-                ));
+                $data = $this->serializer->serialize($additionalOptions);
 
-                $item->save();
+                if ($data)
+                {
+                    $item->addOption([
+                        'product_id' => $item->getProductId(),
+                        'code' => 'additional_options',
+                        'value' => $data
+                    ]);
+
+                    $item->save();
+                }
             }
         }
     }

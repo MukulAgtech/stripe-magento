@@ -8,6 +8,7 @@
                 <value id="klarna-sub" type="host">*.klarna.com</value>
                 <value id="klarna-cdn" type="host">*.klarnacdn.net</value>
                 <value id="klarna-evt" type="host">*.klarnaevt.com</value>
+                <value id="link" type="host">*.link.com</value>
             </values>
         </policy>
         <policy id="connect-src">
@@ -17,6 +18,14 @@
                 <value id="klarna-sub" type="host">*.klarna.com</value>
                 <value id="klarna-cdn" type="host">*.klarnacdn.net</value>
                 <value id="klarna-evt" type="host">*.klarnaevt.com</value>
+                <value id="link" type="host">*.link.com</value>
+            </values>
+        </policy>
+        <policy id="frame-ancestors">
+            <values>
+                <value id="stripe-sub" type="host">*.stripe.com</value>
+                <value id="stripe-com" type="host">stripe.com</value>
+                <value id="link" type="host">*.link.com</value>
             </values>
         </policy>
         <policy id="frame-src">
@@ -26,6 +35,7 @@
                 <value id="klarna-sub" type="host">*.klarna.com</value>
                 <value id="klarna-cdn" type="host">*.klarnacdn.net</value>
                 <value id="klarna-evt" type="host">*.klarnaevt.com</value>
+                <value id="link" type="host">*.link.com</value>
             </values>
         </policy>
         <policy id="font-src">
@@ -35,6 +45,7 @@
                 <value id="klarna-sub" type="host">*.klarna.com</value>
                 <value id="klarna-cdn" type="host">*.klarnacdn.net</value>
                 <value id="klarna-evt" type="host">*.klarnaevt.com</value>
+                <value id="link" type="host">*.link.com</value>
             </values>
         </policy>
     </policies>

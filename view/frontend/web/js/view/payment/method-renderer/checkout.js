@@ -9,11 +9,13 @@ define(
         'Magento_Checkout/js/action/place-order',
         'Magento_Checkout/js/model/full-screen-loader',
         'Magento_Ui/js/model/messageList',
+        'Magento_Customer/js/customer-data',
+        'StripeIntegration_Payments/js/stripe',
         'StripeIntegration_Payments/js/view/checkout/trialing_subscriptions',
         'StripeIntegration_Payments/js/action/get-checkout-methods',
         'StripeIntegration_Payments/js/action/get-checkout-session-id',
         'StripeIntegration_Payments/js/action/get-payment-url',
-        'StripeIntegration_Payments/js/view/payment/method-renderer/method',
+        'Magento_Checkout/js/view/payment/default',
         'mage/translate',
         'stripejs',
         'domReady!'
@@ -26,6 +28,8 @@ define(
         placeOrderAction,
         fullScreenLoader,
         globalMessageList,
+        customerData,
+        stripe,
         trialingSubscriptions,
         getCheckoutMethods,
         getCheckoutSessionId,
@@ -43,24 +47,28 @@ define(
                 customRedirect: true,
                 shouldPlaceOrder: true,
                 checkoutSessionId: null,
+                guestEmail: null,
                 methodIcons: ko.observableArray([])
             },
             redirectAfterPlaceOrder: false,
 
             initObservable: function()
             {
-                this._super().observe(['methodIcons']);
+                this._super().observe([
+                    'methodIcons',
+                    'permanentError'
+                ]);
 
-                var params = window.checkoutConfig.payment["stripe_payments"].initParams;
+                var params = window.checkoutConfig.payment.stripe_payments.initParams;
 
-                initStripe(params);
+                stripe.initStripe(params);
 
                 var self = this;
                 var currentTotals = quote.totals();
                 var currentBillingAddress = quote.billingAddress();
                 var currentShippingAddress = quote.shippingAddress();
+                this.guestEmail = quote.guestEmail;
 
-                trialingSubscriptions().refresh(quote);
                 getCheckoutMethods(quote, self.setPaymentMethods.bind(self));
 
                 quote.billingAddress.subscribe(function(address)
@@ -74,8 +82,7 @@ define(
                     currentBillingAddress = address;
 
                     getCheckoutMethods(quote, self.setPaymentMethods.bind(self));
-                }
-                , this);
+                }, this);
 
                 quote.shippingAddress.subscribe(function(address)
                 {
@@ -88,8 +95,7 @@ define(
                     currentShippingAddress = address;
 
                     getCheckoutMethods(quote, self.setPaymentMethods.bind(self));
-                }
-                , this);
+                }, this);
 
                 quote.totals.subscribe(function (totals)
                 {
@@ -98,11 +104,8 @@ define(
 
                     currentTotals = totals;
 
-                    trialingSubscriptions().refresh(quote);
-
                     getCheckoutMethods(quote, self.setPaymentMethods.bind(self));
-                }
-                , this);
+                }, this);
 
                 return this;
             },
@@ -128,7 +131,7 @@ define(
                 });
             },
 
-            setPaymentMethods(response)
+            setPaymentMethods: function(response)
             {
                 var methods = [];
                 this.shouldPlaceOrder = true;
@@ -136,6 +139,11 @@ define(
 
                 if (typeof response == "string")
                     response = JSON.parse(response);
+
+                if (typeof response.error != "undefined")
+                {
+                    this.permanentError(response.error);
+                }
 
                 if (typeof response.methods != "undefined" && response.methods.length > 0)
                     methods = response.methods;
@@ -146,7 +154,7 @@ define(
                 if (typeof response.checkout_session_id != "undefined")
                     this.checkoutSessionId = response.checkout_session_id;
 
-                var icons = window.checkoutConfig.payment["stripe_payments"].icons;
+                var icons = window.checkoutConfig.payment.stripe_payments.icons;
                 var self = this;
 
                 methods.forEach(function(method)
@@ -154,19 +162,19 @@ define(
                     if (self.hasPaymentMethod(icons, method))
                         return;
 
-                    if (typeof window.checkoutConfig.payment["stripe_payments"].apmIcons[method] != "undefined")
+                    if (typeof window.checkoutConfig.payment.stripe_payments.pmIcons[method] != "undefined")
                     {
                         icons.push({
                             "code": method,
-                            "path": window.checkoutConfig.payment["stripe_payments"].apmIcons[method],
-                            "name": self.methodName(method)
+                            "path": window.checkoutConfig.payment.stripe_payments.pmIcons[method].icon,
+                            "name": window.checkoutConfig.payment.stripe_payments.pmIcons[method].name
                         });
                     }
                     else if (method != "card")
                     {
                         icons.push({
                             "code": method,
-                            "path": window.checkoutConfig.payment["stripe_payments"].apmIcons["bank"],
+                            "path": window.checkoutConfig.payment.stripe_payments.pmIcons.bank.icon,
                             "name": self.methodName(method)
                         });
                     }
@@ -192,17 +200,24 @@ define(
                 if (additionalValidators.validate())
                 {
                     fullScreenLoader.startLoader();
-                    getCheckoutSessionId().done(function (response)
+                    getCheckoutSessionId().then(function (response)
                     {
-                        if (response && response.length && response.indexOf("cs_") === 0)
-                            self.redirect(response);
+                        if (response && response.length && response.indexOf("http") === 0 && !self.hasGuestEmailChanged())
+                            self.redirectToURL(response);
                         else
                             self.placeOrder();
-                    })
-                    .error(self.placeOrder.bind(self));
+                    }, self.placeOrder.bind(self));
                 }
 
                 return false;
+            },
+
+            hasGuestEmailChanged: function()
+            {
+                if (!this.guestEmail || this.guestEmail.length == 0)
+                    return false;
+
+                return (this.guestEmail != quote.guestEmail);
             },
 
             placeOrder: function()
@@ -210,18 +225,18 @@ define(
                 var self = this;
 
                 placeOrderAction(self.getData(), self.messageContainer)
-                .done(function () {
+                .then(function () {
                     getPaymentUrlAction(self.messageContainer).always(function () {
                         fullScreenLoader.stopLoader();
-                    }).done(function (response) {
+                    }).then(function (response) {
                         fullScreenLoader.startLoader();
-                        self.redirect(response);
-                    }).error(function () {
+                        self.redirectToURL(response);
+                    }, function () {
                         globalMessageList.addErrorMessage({
                             message: $t('An error occurred on the server. Please try to place the order again.')
                         });
                     });
-                }).error(function (e) {
+                }, function (e) {
                     globalMessageList.addErrorMessage({
                         message: $t(e.responseJSON.message)
                     });
@@ -232,10 +247,24 @@ define(
                 return false;
             },
 
+            redirectToURL: function(url)
+            {
+                try
+                {
+                    customerData.invalidate(['cart']);
+                    $.mage.redirect(url);
+                }
+                catch (e)
+                {
+                    console.error(e);
+                }
+            },
+
             redirect: function(sessionId)
             {
                 try
                 {
+                    customerData.invalidate(['cart']);
                     stripe.stripeJs.redirectToCheckout({ sessionId: sessionId }, self.onRedirectFailure);
                 }
                 catch (e)
@@ -257,41 +286,7 @@ define(
                 if (typeof code == 'undefined')
                     return '';
 
-                switch (code)
-                {
-                    case 'visa': return "Visa";
-                    case 'amex': return "American Express";
-                    case 'mastercard': return "MasterCard";
-                    case 'discover': return "Discover";
-                    case 'diners': return "Diners Club";
-                    case 'jcb': return "JCB";
-                    case 'unionpay': return "UnionPay";
-                    case 'cartes_bancaires': return "Cartes Bancaires";
-                    case 'bacs_debit': return "BACS Direct Debit";
-                    case 'au_becs_debit': return "BECS Direct Debit";
-                    case 'boleto': return "Boleto";
-                    case 'acss_debit': return "ACSS Direct Debit / Canadian PADs";
-                    case 'ach_debit': return "ACH Direct Debit";
-                    case 'oxxo': return "OXXO";
-                    case 'klarna': return "Klarna";
-                    case 'sepa': return "SEPA Direct Debit";
-                    case 'sepa_debit': return "SEPA Direct Debit";
-                    case 'sepa_credit': return "SEPA Credit Transfer";
-                    case 'sofort': return "SOFORT";
-                    case 'ideal': return "iDEAL";
-                    case 'paypal': return "PayPal";
-                    case 'wechat': return "WeChat Pay";
-                    case 'alipay': return "Alipay";
-                    case 'grabpay': return "GrabPay";
-                    case 'afterpay_clearpay': return "Afterpay / Clearpay";
-                    case 'multibanco': return "Multibanco";
-                    case 'p24': return "P24";
-                    case 'giropay': return "Giropay";
-                    case 'eps': return "EPS";
-                    case 'bancontact': return "Bancontact";
-                    default:
-                        return code.charAt(0).toUpperCase() + Array.from(code).splice(1).join('')
-                }
+                return code.charAt(0).toUpperCase() + Array.from(code).splice(1).join('');
             },
 
             showError: function(message)

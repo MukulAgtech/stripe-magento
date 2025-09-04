@@ -7,19 +7,14 @@ use Magento\Customer\Api\Data\GroupInterface;
 class QuoteManagement extends \Magento\Quote\Model\QuoteManagement
 {
     private $submitQuoteValidator;
-    private $quoteIdMaskFactory;
-    private $addressRepository;
-    private $addressesToSync = [];
     private $request;
     private $remoteAddress;
-    private $saleOperation;
 
     private function _init()
     {
         $objectManager = \Magento\TestFramework\Helper\Bootstrap::getObjectManager();
         $this->submitQuoteValidator = $objectManager->get(\Magento\Quote\Model\SubmitQuoteValidator::class);
         $this->remoteAddress = $objectManager->get(\Magento\Framework\HTTP\PhpEnvironment\RemoteAddress::class);
-        $this->saleOperation = $objectManager->get(\Magento\Sales\Model\Order\Payment\Operations\SaleOperation::class);
     }
 
     public function mockOrder($quote, $paymentMethod = null, $orderData = [])

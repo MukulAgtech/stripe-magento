@@ -1,38 +1,9 @@
-.stripe-payments-saved-card {
-    margin-bottom: 0.7em;
-}
-.stripe-payments-saved-card span.type {
-    font-weight: bold;
-}
-.stripe-payments-saved-card span.exp {
-    float: right;
-}
-.stripe-payments-saved-card span.stripe-payments-fade {
-    color: #999;
-    font-weight: normal;
-}
-.stripe-payments-saved-card label {
-    display: inline;
-}
-
 /* Admin and multishipping form styling */
 #payment_form_stripe_payments.standard-form .payment-method.stripe-payments {
     margin-top: 20px;
 }
-#payment_form_stripe_payments.standard-form .payment-method .stripe-payments-saved-cards-section {
-    margin-bottom: 20px;
-}
 #payment_form_stripe_payments.standard-form .payment-method.stripe-payments label {
     padding-left: 5px;
-}
-.sales-order_create-index #payment_form_stripe_payments.standard-form:not(.stripe-new) > .field {
-    display: none;
-}
-#payment_form_stripe_payments.standard-form #payment_form_stripe_payments_payment:not(.stripe-new) .stripe-new {
-    display: none;
-}
-#payment_form_stripe_payments.standard-form .payment-method #stripe_payments_cc_save {
-    margin-right: 5px;
 }
 #payment_form_stripe_payments.stripe-payments.indent,
 .stripe-payments.indent,
@@ -63,22 +34,22 @@ fieldset.payment-method.stripe-payments { border: 0; }
 
 /* Card Icons */
 .stripe-payments span.type.Visa,
-.stripe-payments span.type.visa { background: url(../img/visa.png) no-repeat; }
+.stripe-payments span.type.visa { background: url(../img/cards/visa.svg) no-repeat; }
 
 .stripe-payments span.type.American.Express,
-.stripe-payments span.type.amex { background: url(../img/amex.png) no-repeat; }
+.stripe-payments span.type.amex { background: url(../img/cards/amex.svg) no-repeat; }
 
 .stripe-payments span.type.MasterCard,
-.stripe-payments span.type.mastercard { background: url(../img/mastercard.png) no-repeat; }
+.stripe-payments span.type.mastercard { background: url(../img/cards/mastercard.svg) no-repeat; }
 
 .stripe-payments span.type.Discover,
-.stripe-payments span.type.discover { background: url(../img/discover.png) no-repeat; }
+.stripe-payments span.type.discover { background: url(../img/cards/discover.svg) no-repeat; }
 
 .stripe-payments span.type.Diners,
-.stripe-payments span.type.diners { background: url(../img/diners.png) no-repeat; }
+.stripe-payments span.type.diners { background: url(../img/cards/diners.svg) no-repeat; }
 
 .stripe-payments span.type.JCB,
-.stripe-payments span.type.jcb { background: url(../img/jcb.png) no-repeat; }
+.stripe-payments span.type.jcb { background: url(../img/cards/jcb.svg) no-repeat; }
 
 .stripe-payments span.type.Cartes.Bancaires,
 .stripe-payments span.type.cartes_bancaires { background: url(../img/svg/cartes_bancaires.svg) no-repeat; }

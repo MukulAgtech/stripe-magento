@@ -2,9 +2,6 @@
 
 namespace StripeIntegration\Payments\Helper;
 
-use Psr\Log\LoggerInterface;
-use StripeIntegration\Payments\Helper\Logger;
-
 class Migrate
 {
     public $areaCode = null;
@@ -12,45 +9,63 @@ class Migrate
     public $methods = [
         // Old Stripe official module
         "stripecreditcards" => "stripe_payments",
-        "stripesofort" => "stripe_payments_sofort",
-        "stripebancontact" => "stripe_payments_bancontact",
-        "stripealipay" => "stripe_payments_alipay",
-        "stripegiropay" => "stripe_payments_giropay",
-        "stripeideal" => "stripe_payments_ideal",
+        "stripesofort" => "stripe_payments",
+        "stripebancontact" => "stripe_payments",
+        "stripealipay" => "stripe_payments",
+        "stripegiropay" => "stripe_payments",
+        "stripeideal" => "stripe_payments",
         "stripeinstantcheckout" => "stripe_payments",
-        "stripeprzelewy" => "stripe_payments_p24",
-        "stripesepa" => "stripe_payments_sepa",
-        "stripesofort" => "stripe_payments_sofort",
+        "stripeprzelewy" => "stripe_payments",
+        "stripesepa" => "stripe_payments",
 
         // Cryozonic modules
         "cryozonic_stripe" => "stripe_payments",
-        "cryozonic_europayments_bancontact" => "stripe_payments_bancontact",
-        "cryozonic_europayments_giropay" => "stripe_payments_giropay",
-        "cryozonic_europayments_ideal" => "stripe_payments_ideal",
-        "cryozonic_europayments_multibanco" => "stripe_payments_multibanco",
-        "cryozonic_europayments_eps" => "stripe_payments_eps",
-        "cryozonic_europayments_p24" => "stripe_payments_p24",
-        "cryozonic_europayments_sepa" => "stripe_payments_sepa",
-        "cryozonic_europayments_sofort" => "stripe_payments_sofort",
-        "cryozonic_chinapayments_alipay" => "stripe_payments_alipay",
-        "cryozonic_chinapayments_wechat" => "stripe_payments_wechat",
+        "cryozonic_europayments_bancontact" => "stripe_payments",
+        "cryozonic_europayments_giropay" => "stripe_payments",
+        "cryozonic_europayments_ideal" => "stripe_payments",
+        "cryozonic_europayments_multibanco" => "stripe_payments",
+        "cryozonic_europayments_eps" => "stripe_payments",
+        "cryozonic_europayments_p24" => "stripe_payments",
+        "cryozonic_europayments_sepa" => "stripe_payments",
+        "cryozonic_europayments_sofort" => "stripe_payments",
+        "cryozonic_chinapayments_alipay" => "stripe_payments",
+        "cryozonic_chinapayments_wechat" => "stripe_payments",
 
-        // New Stripe Checkout
-        "stripe_payments_checkout_card" => "stripe_payments_checkout"
+        // Versions 1.0.0 - 2.8.3
+        "stripe_payments_ach" => "stripe_payments",
+        "stripe_payments_alipay" => "stripe_payments",
+        "stripe_payments_bancontact" => "stripe_payments",
+        "stripe_payments_eps" => "stripe_payments",
+        "stripe_payments_giropay" => "stripe_payments",
+        "stripe_payments_ideal" => "stripe_payments",
+        "stripe_payments_p24" => "stripe_payments",
+        "stripe_payments_sepa" => "stripe_payments",
+        "stripe_payments_sepa_credit" => "stripe_payments",
+        "stripe_payments_sofort" => "stripe_payments",
+        "stripe_payments_multibanco" => "stripe_payments",
+        "stripe_payments_wechat" => "stripe_payments",
+        "stripe_payments_fpx" => "stripe_payments",
+        "stripe_payments_klarna" => "stripe_payments",
+        "stripe_payments_paypal" => "stripe_payments",
+        "stripe_payments_oxxo" => "stripe_payments",
     ];
+
+    private $paymentsCollection;
+    private $productCollectionFactory;
+    private $productAction;
+    private $areaCodeFactory;
 
     public function __construct(
         \Magento\Sales\Model\ResourceModel\Order\Payment\Collection $paymentsCollection,
         \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory $productCollectionFactory,
-        \Magento\Catalog\Api\ProductRepositoryInterface $productRepository,
-        \Magento\Catalog\Model\Product\Action $productAction
+        \Magento\Catalog\Model\Product\Action $productAction,
+        \StripeIntegration\Payments\Helper\AreaCodeFactory $areaCodeFactory
     )
     {
         $this->paymentsCollection = $paymentsCollection;
         $this->productCollectionFactory = $productCollectionFactory;
-        $this->productRepository = $productRepository;
         $this->productAction = $productAction;
-        $this->objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+        $this->areaCodeFactory = $areaCodeFactory;
     }
 
     public function initAreaCode()
@@ -58,7 +73,7 @@ class Migrate
         if ($this->areaCode)
             return;
 
-        $this->areaCode = $this->objectManager->get('StripeIntegration\Payments\Helper\AreaCode');
+        $this->areaCode = $this->areaCodeFactory->create();
         $this->areaCode->setAreaCode();
     }
 
@@ -134,85 +149,6 @@ class Migrate
         catch (\Exception $e)
         {
             // The cryozonic_sub_enabled attribute does not exist
-        }
-    }
-
-    public function adminConfigElementsToCheckout($setup)
-    {
-        $coreConfigData = $setup->getTable('core_config_data');
-
-        $select = $setup->getConnection()->select()->from($coreConfigData)
-            ->where('path like ?', 'payment/stripe_payments/%');
-
-        $settings = $setup->getConnection()->fetchAll($select);
-        foreach ($settings as $setting)
-        {
-            switch ($setting['path'])
-            {
-                case 'payment/stripe_payments/checkout_mode':
-                    try
-                    {
-                        $setup->getConnection()->insert($coreConfigData,
-                            [
-                                'scope' => $setting['scope'],
-                                'scope_id' => $setting['scope_id'],
-                                'path' => 'payment/stripe_payments/payment_flow',
-                                'value' => $setting['value'],
-                            ]
-                        );
-                    }
-                    catch (\Exception $e)
-                    {
-
-                    }
-                    break;
-
-                case 'payment/stripe_payments/payment_action':
-                case 'payment/stripe_payments/expired_authorizations':
-                case 'payment/stripe_payments/automatic_invoicing':
-                case 'payment/stripe_payments/card_icons':
-                case 'payment/stripe_payments/card_icons_specific':
-                case 'payment/stripe_payments/allowspecific':
-                case 'payment/stripe_payments/specificcountry':
-                case 'payment/stripe_payments/sort_order':
-                    try
-                    {
-                        $newPath = str_replace("/stripe_payments/", "/stripe_payments_checkout/", $setting['path']);
-                        $setup->getConnection()->insert($coreConfigData,
-                            [
-                                'scope' => $setting['scope'],
-                                'scope_id' => $setting['scope_id'],
-                                'path' => $newPath,
-                                'value' => $setting['value'],
-                            ]
-                        );
-                    }
-                    catch (\Exception $e)
-                    {
-
-                    }
-                    break;
-
-                case 'payment/stripe_payments/ccsave':
-                    try
-                    {
-                        $newPath = "payment/stripe_payments_checkout/save_payment_method";
-                        $newValue = min(1, $setting['value']);
-                        $setup->getConnection()->insert($coreConfigData,
-                            [
-                                'scope' => $setting['scope'],
-                                'scope_id' => $setting['scope_id'],
-                                'path' => $newPath,
-                                'value' => $newValue,
-                            ]
-                        );
-                    }
-                    catch (\Exception $e)
-                    {
-
-                    }
-                    break;
-            }
         }
     }
 }

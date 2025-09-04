@@ -2,7 +2,7 @@
 <config>
     <group id="stripe_payments">
         <schedule_generate_every>1</schedule_generate_every>
-        <schedule_ahead_for>360</schedule_ahead_for>
+        <schedule_ahead_for>1440</schedule_ahead_for>
         <schedule_lifetime>70</schedule_lifetime>
         <history_cleanup_every>10</history_cleanup_every>
         <history_success_lifetime>60</history_success_lifetime>

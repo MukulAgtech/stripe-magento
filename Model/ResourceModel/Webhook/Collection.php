@@ -11,6 +11,49 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         $this->_init('StripeIntegration\Payments\Model\Webhook', 'StripeIntegration\Payments\Model\ResourceModel\Webhook');
     }
 
+    public function findFromRequest($content, $stripeSignature)
+    {
+        if (empty($stripeSignature))
+        {
+            return null;
+        }
+
+        $webhooks = $this->getAllWebhooks();
+
+        foreach ($webhooks as $webhook)
+        {
+            $signingSecret = $webhook->getSecret();
+            if (empty($signingSecret))
+                continue;
+
+            try
+            {
+                // throws SignatureVerificationException
+                $event = \Stripe\Webhook::constructEvent($content, $stripeSignature, $signingSecret);
+
+                // Success
+                return $webhook;
+            }
+            catch(\Exception $e)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    public function findStaleWebhooks()
+    {
+        $fourHoursAgo = time() - 4 * 60 * 60;
+
+        $collection = $this
+            ->addFieldToSelect('*')
+            ->addFieldToFilter('last_event', ['lt' => $fourHoursAgo]);
+
+        return $collection;
+    }
+
     public function getWebhooks($storeCode, $publishableKey)
     {
         $collection = $this
@@ -21,28 +64,15 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         return $collection;
     }
 
-    public function getAllWebhooks()
+    public function getAllWebhooks($current = false)
     {
         $collection = $this
             ->addFieldToSelect('*');
 
+        if ($current)
+            $collection->addFieldToFilter('config_version', ['eq' => \StripeIntegration\Payments\Helper\WebhooksSetup::VERSION]);
+
         return $collection;
-    }
-
-    public function updateMultipleWebhooks($webhookId, $newWebhookId, $apiVersion, $enabledEvents)
-    {
-        $collection = $this
-            ->addFieldToSelect('*')
-            ->addFieldToFilter('webhook_id', ['eq' => $webhookId]);
-
-        foreach ($collection as $webhook)
-        {
-            $webhook->setWebhookId($newWebhookId);
-            $webhook->setApiVersion($apiVersion);
-            $webhook->setEnabledEvents($enabledEvents);
-        }
-
-        $collection->save();
     }
 
     public function pong($publishableKey)
@@ -54,6 +84,8 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         foreach ($collection as $webhook)
         {
             $webhook->setLastEvent(time());
+            if (!$webhook->getActive())
+                $webhook->setActive(1);
         }
 
         $collection->save();

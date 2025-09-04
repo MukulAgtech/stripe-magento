@@ -1,13 +1,4 @@
-/*jshint browser:true jquery:true*/
 /*global define*/
-
-// Workaround: Uncaught TypeError: Cannot read property 'storeCode' of undefined
-if (typeof window.checkoutConfig === 'undefined') {
-    window.checkoutConfig = {
-        storeCode: 'default'
-    };
-}
-
 define(
     [
         'jquery',
@@ -15,7 +6,9 @@ define(
         'mage/storage',
         'Magento_Ui/js/modal/alert',
         'mage/translate',
-        'Magento_Customer/js/customer-data'
+        'Magento_Customer/js/customer-data',
+        'StripeIntegration_Payments/js/stripe',
+        'mage/loader'
     ],
     function (
         jQuery,
@@ -23,19 +16,31 @@ define(
         storage,
         alert,
         $t,
-        customerData
+        customerData,
+        stripe
     ) {
         'use strict';
 
         return {
             shippingAddress: [],
             shippingMethod: null,
-            onPaymentSupportedCallbacks: [],
+            elements: null,
+            expressCheckoutElement: null,
+            expressCheckoutOptions: null,
+            clickResolvePayload: null,
+            resolvePayload: null,
+            pendingActionsQueue: [],
+            isAddToCartPending: false,
+            waitingForNewTotals: false,
+            lastTotal: null,
+            mountElementId: null,
+            mode: null,
+            isLoading: false,
+            debug: false,
 
-            getApplePayParams: function(type, callback)
+            getExpressCheckoutElementParams: function(payload, callback)
             {
-                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/get_prapi_params', {}),
-                    payload = {type: type},
+                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/ece_params', {}),
                     self = this;
 
                 return storage.post(
@@ -45,16 +50,40 @@ define(
                 )
                 .fail(function (xhr, textStatus, errorThrown)
                 {
-                    console.error("Could not retrieve initialization params for Apple Pay");
+                    console.error("Could not retrieve initialization params for Express Checkout");
                 })
-                .done(function (response)
+                .done(function (response) {
+                    self.processResponseWithECEParams(response, callback);
+                });
+            },
+
+            processResponseWithECEParams: function(response, callback)
+            {
+                try
                 {
                     if (typeof response === 'string') {
                         response = JSON.parse(response);
                     }
 
-                    callback(response);
-                });
+                    if (response && response.resolvePayload)
+                    {
+                        if (response.resolvePayload.allowedShippingCountries)
+                        {
+                            // Convert to object map to array
+                            response.resolvePayload.allowedShippingCountries = Object.keys(response.resolvePayload.allowedShippingCountries).map(function (key) { return response.resolvePayload.allowedShippingCountries[key]; });
+                        }
+
+                        callback(null, response);
+                    }
+                    else
+                    {
+                        callback(null, response);
+                    }
+                }
+                catch (e)
+                {
+                    callback(e.message, response);
+                }
             },
 
             /**
@@ -65,51 +94,116 @@ define(
              * @param settings
              * @param callback
              */
-            initStripeExpress: function (elementId, stripeParams, paramsType, settings, callback)
+            initStripeExpress: function (elementId, stripeJsInitParams, locationDetails, expressCheckoutOptions, callback)
             {
-                var self = this;
-
-                this.getApplePayParams(paramsType, function(params)
+                // Only one express element is allowed per page
+                if (locationDetails.location == 'minicart')
                 {
-                    if (!params || params.length == 0)
+                    if (document.body.classList.contains('catalog-product-view') // We are on the product page
+                        && locationDetails.activeLocations.indexOf('product_page') >= 0) // ECE is enabled on the product page
                         return;
 
-                    if (params.total.amount == 0 && params.displayItems.length == 0)
+                    if (document.body.classList.contains('checkout-cart-index') // We are on the cart page
+                        && locationDetails.activeLocations.indexOf('shopping_cart_cart') >= 0) // ECE is enabled on the cart page
+                        return;
+                }
+
+                if (this.waitingForNewTotals)
+                {
+                    // This method can be called from cart.subscribe(). In that case, we do not want to re-initialize the widget
+                    // because we are waiting for the addToCart() to finish. We will update the amounts after the addToCart() is done.
+                    return;
+                }
+
+                var self = this;
+                this.mountElementId = elementId;
+                this.stripeJsInitParams = stripeJsInitParams;
+                this.locationDetails = locationDetails;
+                this.expressCheckoutOptions = expressCheckoutOptions;
+
+                this.getExpressCheckoutElementParams(locationDetails, function(err, result)
+                {
+                    if (err)
+                    {
+                        console.warn('Cannot initialize wallets: ' + err);
+                        return;
+                    }
+
+                    if (!result.elementOptions)
                         return;
 
-                    initStripe(stripeParams, function (err)
+                    if (result.elementOptions.mode != 'setup')
+                    {
+                        // if (!result.elementOptions.amount || result.elementOptions.amount == 0)
+                        //     return;
+                    }
+
+                    self.mode = result.elementOptions.mode;
+                    self.clickResolvePayload = result.resolvePayload;
+
+                    stripe.initStripe(stripeJsInitParams, function (err)
                     {
                         if (err)
                         {
-                            self.showError(stripe.maskError(err));
+                            self.showError(self.maskError(err));
                             return;
                         }
-                        self.initPaymentRequestButton(elementId, stripeParams.locale, params, settings, callback);
+
+                        self.initElements(result.elementOptions);
+                        self.initExpressCheckoutElement(elementId, expressCheckoutOptions, callback);
                     });
                 });
             },
 
-            initPaymentRequestButton: function(elementId, locale, params, settings, callback)
+            // Accepts unlimited parameters
+            log: function()
             {
-                // Init Payment Request
-                var paymentRequest,
-                    paymentRequestButton = jQuery(elementId),
+                if (!this.debug)
+                    return;
+
+                console.log(...arguments);
+            },
+
+            initElements: function(elementsOptions)
+            {
+                this.log('initElements', elementsOptions);
+                if (!this.elements)
+                {
+                    this.elements = stripe.stripeJs.elements(elementsOptions);
+                }
+                else
+                {
+                    this.elements.update(elementsOptions);
+                }
+            },
+
+            maskError: function(err)
+            {
+                var errLowercase = err.toLowerCase();
+                var pos1 = errLowercase.indexOf("Invalid API key provided".toLowerCase());
+                var pos2 = errLowercase.indexOf("No API key provided".toLowerCase());
+                if (pos1 === 0 || pos2 === 0)
+                    return 'Invalid Stripe API key provided.';
+
+                return err;
+            },
+
+            initExpressCheckoutElement: function(elementId, expressCheckoutOptions, callback)
+            {
+                if (this.expressCheckoutElement)
+                {
+                    // ECE was already initialized, no need to update it.
+                    return;
+                }
+
+                var DOMElement = jQuery(elementId),
                     self = this;
 
                 try {
-                    if (typeof settings === 'string')
-                        settings = JSON.parse(settings);
+                    if (typeof expressCheckoutOptions === 'string')
+                        expressCheckoutOptions = JSON.parse(expressCheckoutOptions);
 
-                    stripe.paymentRequest = paymentRequest = stripe.stripeJs.paymentRequest(params);
-                    var elements = stripe.stripeJs.elements({
-                        locale: locale
-                    });
-                    var prButton = elements.create('paymentRequestButton', {
-                        paymentRequest: paymentRequest,
-                        style: {
-                            paymentRequestButton: settings
-                        }
-                    });
+                    this.expressCheckoutElement = this.elements.create('expressCheckout', expressCheckoutOptions);
                 }
                 catch (e)
                 {
@@ -117,28 +211,36 @@ define(
                     return;
                 }
 
-                paymentRequest.canMakePayment().then(function(result)
+                if (document.getElementById(elementId.substr(1)))
+                    this.expressCheckoutElement.mount(elementId);
+
+                this.expressCheckoutElement.on('ready', function (result)
                 {
-                    stripe.canMakePaymentResult = result;
-                    if (result)
+                    self.log("on.ready");
+                    if (result.availablePaymentMethods)
                     {
-                        // The mini cart may be empty
-                        if (document.getElementById(elementId.substr(1)))
-                        {
-                            prButton.mount(elementId);
-
-                            for (var i = 0; i < self.onPaymentSupportedCallbacks.length; i++)
-                                self.onPaymentSupportedCallbacks[i]();
-                        }
+                        callback(self.expressCheckoutElement);
                     }
-                    else {
-                        paymentRequestButton.hide();
+                    else
+                    {
+                        DOMElement.hide();
                     }
                 });
+            },
 
-                prButton.on('ready', function () {
-                    callback(paymentRequestButton, paymentRequest, params, prButton);
-                });
+            getClientSecretFromResponse: function(response)
+            {
+                if (typeof response != "string")
+                {
+                    return null;
+                }
+
+                if (response.indexOf("Authentication Required: ") >= 0)
+                {
+                    return response.substring("Authentication Required: ".length);
+                }
+
+                return null;
             },
 
             /**
@@ -164,9 +266,11 @@ define(
                     {
                         var response = JSON.parse(xhr.responseText);
 
-                        if (stripe.isAuthenticationRequired(response.message))
+                        var clientSecret = self.getClientSecretFromResponse(response.message);
+
+                        if (clientSecret)
                         {
-                            return stripe.processNextAuthentication(function(err)
+                            return stripe.authenticateCustomer(clientSecret, function(err)
                             {
                                 if (err)
                                     return callback(err, { message: err }, result);
@@ -200,78 +304,69 @@ define(
 
             /**
              * Add Item to Cart
-             * @param request
+             * @param params
              * @param shipping_id
              * @param callback
              */
-            addToCart: function(request, shipping_id, callback)
-            {
-                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/addtocart', {}),
-                    payload = {request: request, shipping_id: shipping_id},
-                    self = this;
+            addToCart: function(params, shipping_id, callback) {
+                var self = this;
+                this.isAddToCartPending = this.waitingForNewTotals = true;
+                var addToCartPromise = new Promise(function(resolve, reject) {
+                    var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/addtocart', {}),
+                        payload = {params: params, shipping_id: shipping_id};
 
-                return storage.post(
-                    serviceUrl,
-                    JSON.stringify(payload),
-                    false
-                ).fail(function (xhr, textStatus, errorThrown)
-                {
-                    self.parseFailedResponse.apply(self, [ xhr.responseText, callback ]);
-                }
-                ).done(function (response) {
-                    customerData.invalidate(['cart']);
-                    customerData.reload(['cart'], true);
-                    self.processResponseWithPaymentIntent(response, callback);
+                    storage.post(
+                        serviceUrl,
+                        JSON.stringify(payload),
+                        false
+                    ).fail(function(xhr, textStatus, errorThrown) {
+                        self.parseFailedResponse.apply(self, [xhr.responseText, callback]);
+                        self.waitingForNewTotals = false;
+                        reject(); // Reject the promise
+                    }).done(function(response) {
+                        customerData.invalidate(['cart']);
+                        customerData.reload(['cart'], true);
+                        callback(null, response);
+                        resolve(); // Resolve the promise
+                    });
                 });
-            },
 
-            /**
-             * Get Cart Contents
-             * @param callback
-             * @returns {*}
-             */
-            getCart: function(callback) {
-                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/get_cart', {}),
-                    self = this;
+                addToCartPromise.then(function() {
+                    self.isAddToCartPending = false;
 
-                return storage.get(
-                    serviceUrl,
-                    null,
-                    false
-                ).fail(function (xhr, textStatus, errorThrown)
-                {
-                    self.parseFailedResponse.apply(self, [ xhr.responseText, callback ]);
-                }
-                ).done(function (response) {
-                    if (typeof response === 'string') {
-                        response = JSON.parse(response);
+                    // After the promise is resolved, run the functions in the queue
+                    while (self.pendingActionsQueue.length) {
+                        var fn = self.pendingActionsQueue.shift(); // Dequeue the first function
+                        fn(); // Execute the dequeued function
                     }
 
-                    callback(null, response);
+                    self.waitingForNewTotals = false;
+
+                    // Invalidate the minicart and display any errors or warnings. The wait is needed so that the server side finishes processing any cart updates
+                    setTimeout(function()
+                    {
+                        customerData.reload(['cart', 'messages'], true);
+                    }, 1000);
                 });
+
+                return addToCartPromise;
             },
 
-            getShippingAddressFrom: function(prapiShippingAddress)
+            getShippingAddressFrom: function(eceShippingAddress)
             {
-                if (!prapiShippingAddress)
+                if (!eceShippingAddress)
                     return null;
 
-                // For some countries like Japan, the PRAPI does not set the City, only the region
-                if (prapiShippingAddress.city.length == 0 && prapiShippingAddress.region.length > 0)
-                    prapiShippingAddress.city = prapiShippingAddress.region;
+                // For some countries like Japan, the ECE does not set the City, only the region
+                if (eceShippingAddress.city.length == 0 && eceShippingAddress.region.length > 0)
+                    eceShippingAddress.city = eceShippingAddress.region;
 
-                return prapiShippingAddress;
+                return eceShippingAddress;
             },
 
-            /**
-             * Estimate Shipping for Cart
-             * @param address
-             * @param callback
-             * @returns {*}
-             */
-            estimateShippingCart: function(address, callback) {
-                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/estimate_cart', {}),
-                    payload = {address: address},
+            getNewShippingRatesFor: function(address, callback) {
+                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/ece_shipping_address_changed', {}),
+                    payload = {newAddress: address, location: this.locationDetails.location},
                     self = this;
 
                 return storage.post(
@@ -283,7 +378,7 @@ define(
                     self.parseFailedResponse.apply(self, [ xhr.responseText, callback ]);
                 }
                 ).done(function (response) {
-                    self.processResponseWithPaymentIntent(response, callback);
+                    self.processResponseWithECEParams(response, callback);
                 });
             },
 
@@ -307,8 +402,8 @@ define(
              * @param callback
              * @returns {*}
              */
-            applyShipping: function(address, shipping_id, callback) {
-                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/apply_shipping', {}),
+            updateShippingRate: function(address, shipping_id, callback) {
+                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/ece_shipping_rate_changed', {}),
                     payload = {address: address, shipping_id: shipping_id},
                     self = this;
 
@@ -321,212 +416,308 @@ define(
                     self.parseFailedResponse.apply(self, [ xhr.responseText, callback ]);
                 }
                 ).done(function (response) {
-                    self.processResponseWithPaymentIntent(response, callback);
+                    self.processResponseWithECEParams(response, callback);
                 });
             },
 
-            processResponseWithPaymentIntent: function(response, callback)
+            onShippingAddressChange: function(event)
             {
-                try
-                {
-                    if (typeof response === 'string') {
-                        response = JSON.parse(response);
-                    }
+                this.log("onShippingAddressChange");
+                var executeMethod = this.onShippingAddressChangeAction.bind(this, event);
 
-                    callback(null, response.results);
-                }
-                catch (e)
-                {
-                    callback(e.message, response);
+                if (this.isAddToCartPending) {
+                    this.pendingActionsQueue.push(executeMethod);
+                } else {
+                    executeMethod();
                 }
             },
 
-            onShippingAddressChange: function(ev)
+            onShippingAddressChangeAction: function(event)
             {
                 var self = this;
-
-                this.shippingAddress = this.getShippingAddressFrom(ev.shippingAddress);
-                this.estimateShippingCart(this.shippingAddress, function (err, shippingOptions)
+                this.shippingAddress = this.getShippingAddressFrom(event.address);
+                this.waitingForNewTotals = true;
+                this.getNewShippingRatesFor(this.shippingAddress, function (err, eceResponseParams)
                 {
                     if (err)
+                    {
+                        event.reject();
+                        self.waitingForNewTotals = false;
                         return self.showError(err);
+                    }
 
-                    if (shippingOptions.length < 1) {
-                        ev.updateWith({status: 'invalid_shipping_address'});
+                    if (!eceResponseParams.resolvePayload.shippingRates)
+                    {
+                        event.reject();
+                        self.waitingForNewTotals = false;
                         return;
                     }
 
-                    self.shippingMethod = null;
-                    if (shippingOptions.length > 0) {
-                        // Apply first shipping method
-                        var shippingOption = shippingOptions[0];
-                        self.shippingMethod = shippingOption.hasOwnProperty('id') ? shippingOption.id : null;
-                    }
-
-                    self.applyShipping(self.shippingAddress, self.shippingMethod, function (err, response)
-                    {
-                        if (err)
-                            return self.showError(err);
-
-                        // Update order lines
-                        var result = Object.assign({status: 'success', shippingOptions: shippingOptions}, response);
-                        ev.updateWith(result);
-                    });
+                    self.resolveEvent(event, eceResponseParams.resolvePayload);
+                    self.waitingForNewTotals = false;
                 });
             },
 
-            onShippingOptionChange: function(ev)
+            resolveEvent: function(event, resolvePayload)
             {
-                var shippingMethod = ev.shippingOption.hasOwnProperty('id') ? ev.shippingOption.id : null;
-                this.applyShipping(this.shippingAddress, shippingMethod, function (err, response)
+                if (!event)
+                    return;
+
+                var self = this;
+                var total = this.getLineItemsTotal(resolvePayload.lineItems);
+
+                if (resolvePayload.lineItems && !event.isClick && this.mode != "setup")
+                {
+                    if (total > 0)
+                    {
+                        this.log('Updating total to ' + total + ' cents & resolving event with delay', resolvePayload, total);
+                        var promise = self.elements.update({amount: total});
+                    }
+                    else
+                    {
+                        this.log('Will not update total to 0 cents', resolvePayload, total);
+                        delete resolvePayload.lineItems;
+                    }
+
+                    // We need this until a promise is implemented by Stripe
+                    setTimeout(function() {
+                        event.resolve(resolvePayload);
+                    }, 1000);
+                }
+                else
+                {
+                    if (this.mode == "setup" && resolvePayload.lineItems)
+                    {
+                        delete resolvePayload.lineItems;
+                    }
+                    this.log('Resolving event with no delay ', resolvePayload, this.isAddToCartPending, total);
+                    event.resolve(resolvePayload);
+                }
+            },
+
+            getLineItemsTotal: function(lineItems)
+            {
+                var total = 0;
+
+                if (!lineItems || !lineItems.length)
+                    return total;
+
+                for (var i = 0; i < lineItems.length; i++) {
+                    total += lineItems[i].amount;
+                }
+
+                return total;
+            },
+
+            onShippingRateChange: function(event)
+            {
+                this.log("onShippingRateChange");
+                var executeMethod = this.onShippingRateChangeAction.bind(this, event);
+
+                if (this.isAddToCartPending) {
+                    this.pendingActionsQueue.push(executeMethod);
+                } else {
+                    executeMethod();
+                }
+            },
+
+            onShippingRateChangeAction: function(event)
+            {
+                var self = this;
+                var shippingMethod = event.shippingRate.hasOwnProperty('id') ? event.shippingRate.id : null;
+                this.waitingForNewTotals = true;
+                this.updateShippingRate(this.shippingAddress, shippingMethod, function (err, response)
                 {
                     if (err) {
-                        ev.updateWith({status: 'fail'});
-                        return;
+                        event.reject();
+                        self.waitingForNewTotals = false;
+                        return self.showError(err);
                     }
 
-                    // Update order lines
-                    var result = Object.assign({status: 'success'}, response);
-                    ev.updateWith(result);
+                    self.resolveEvent(event, response.resolvePayload);
+                    self.waitingForNewTotals = false;
                 });
             },
 
-            onPaymentMethod: function(paymentRequestButton, location, result)
+            startLoader: function()
             {
-                this.onPaymentRequestPaymentMethod.call(this, result, paymentRequestButton, location);
+                if (this.isLoading)
+                    return;
+
+                this.isLoading = true;
+                jQuery('body').trigger('processStart');
             },
 
-            initCheckoutWidget: function (paymentRequestButton, paymentRequest, prButton, onClick)
+            stopLoader: function()
             {
-                prButton.on('click', onClick);
-                paymentRequest.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
-                paymentRequest.on('shippingoptionchange', this.onShippingOptionChange.bind(this));
-                paymentRequest.on('paymentmethod', this.onPaymentMethod.bind(this, paymentRequestButton, 'checkout'));
+                if (!this.isLoading)
+                    return;
+
+                this.isLoading = false;
+                jQuery('body').trigger('processStop');
+            },
+
+            onConfirm: function(location, confirmResult)
+            {
+                this.startLoader();
+
+                var onPaymentMethodCreated = this.onPaymentMethodCreated.bind(this, confirmResult, location);
+                var showError = this.showError.bind(this);
+
+                var paymentMethodData = {
+                    elements: this.elements,
+                    params: {
+                        billing_details: confirmResult.billingDetails
+                    },
+                    shipping: confirmResult.shippingAddress
+                };
+
+                this.elements.submit().then(function()
+                {
+                    stripe.stripeJs.createConfirmationToken(paymentMethodData).then(function(createConfirmationTokenResult)
+                    {
+                        if (createConfirmationTokenResult.error)
+                        {
+                            return showError(createConfirmationTokenResult.error.message);
+                        }
+                        else if (createConfirmationTokenResult.confirmationToken)
+                        {
+                            confirmResult.confirmationToken = createConfirmationTokenResult.confirmationToken;
+                            return onPaymentMethodCreated();
+                        }
+                        else
+                        {
+                            this.stopLoader();
+                            throw new Error('Invalid response from Stripe');
+                        }
+                    }).catch(function(error) {
+                        return showError(error.message);
+                    });
+                }).catch(function(error) {
+                    return showError(error.message);
+                });;
+
+            },
+
+            onCancel: function()
+            {
+                this.log("onCancel");
+                this.stopLoader();
+            },
+
+            initCheckoutWidget: function (checkoutValidator)
+            {
+                var self = this;
+                this.expressCheckoutElement.on('click', function(event)
+                {
+                    if (!checkoutValidator())
+                    {
+                        event.preventDefault();
+                        return;
+                    }
+
+                    event.isClick = true;
+                    self.startLoader();
+                    self.resolveEvent(event, self.clickResolvePayload);
+                });
+                this.expressCheckoutElement.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
+                this.expressCheckoutElement.on('shippingratechange', this.onShippingRateChange.bind(this));
+                this.expressCheckoutElement.on('confirm', this.onConfirm.bind(this, 'checkout'));
+                this.expressCheckoutElement.on('cancel', this.onCancel.bind(this));
             },
 
             /**
              * Init Widget for Cart Page
-             * @param paymentRequestButton
-             * @param paymentRequest
-             * @param params
-             * @param prButton
              */
-            initCartWidget: function (paymentRequestButton, paymentRequest, params, prButton)
+            initCartWidget: function ()
             {
-                paymentRequest.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
-                paymentRequest.on('shippingoptionchange', this.onShippingOptionChange.bind(this));
-                paymentRequest.on('paymentmethod', this.onPaymentMethod.bind(this, paymentRequestButton, 'cart'));
+                var self = this;
+                this.expressCheckoutElement.on('click', function(event) {
+                    event.isClick = true;
+                    self.startLoader();
+                    self.resolveEvent(event, self.clickResolvePayload);
+                });
+                this.expressCheckoutElement.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
+                this.expressCheckoutElement.on('shippingratechange', this.onShippingRateChange.bind(this));
+                this.expressCheckoutElement.on('confirm', this.onConfirm.bind(this, 'cart'));
+                this.expressCheckoutElement.on('cancel', this.onCancel.bind(this));
             },
 
             /**
              * Init Widget for Mini cart
-             * @param paymentRequestButton
-             * @param paymentRequest
-             * @param params
-             * @param prButton
              */
-            initMiniCartWidget: function (paymentRequestButton, paymentRequest, params, prButton)
+            initMiniCartWidget: function ()
             {
                 var self = this;
-
-                prButton.on('click', function(ev) {
-                    // ev.preventDefault();
-
-                    paymentRequestButton.addClass('disabled');
-                    self.getCart(function (err, result)
-                    {
-                        paymentRequestButton.removeClass('disabled');
-                        if (err)
-                            return self.showError(err);
-
-                        // ev.updateWith(result);
-                    });
+                this.expressCheckoutElement.on('click', function(event) {
+                    event.isClick = true;
+                    self.startLoader();
+                    self.resolveEvent(event, self.clickResolvePayload);
                 });
-
-                paymentRequest.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
-                paymentRequest.on('shippingoptionchange', this.onShippingOptionChange.bind(this));
-                paymentRequest.on('paymentmethod', this.onPaymentMethod.bind(this, paymentRequestButton, 'minicart'));
-            },
-
-            // Requires Stripe.js v2
-            beginApplePay: function(params)
-            {
-                var session = Stripe.applePay.buildSession(params, function(result, completion)
-                {
-                    completion(ApplePaySession.STATUS_SUCCESS);
-                },
-                function(error)
-                {
-                    alert(error.message);
-                });
-
-                session.begin();
+                this.expressCheckoutElement.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
+                this.expressCheckoutElement.on('shippingratechange', this.onShippingRateChange.bind(this));
+                this.expressCheckoutElement.on('confirm', this.onConfirm.bind(this, 'minicart'));
+                this.expressCheckoutElement.on('cancel', this.onCancel.bind(this));
             },
 
             /**
              * Init Widget for Single Product Page
-             * @param paymentRequestButton
-             * @param paymentRequest
-             * @param params
-             * @param prButton
              */
-            initProductWidget: function (paymentRequestButton, paymentRequest, params, prButton) {
-                var self = this,
-                    form = jQuery('#product_addtocart_form'),
-                    request = [];
-
-                prButton.on('click', function(ev)
-                {
-                    var validator = form.validation({radioCheckboxClosest: '.nested'});
-
-                    if (!validator.valid())
-                    {
-                        ev.preventDefault();
-                        return;
-                    }
-
-                    // We don't want to preventDefault for applePay because we cannot use
-                    // paymentRequest.show() with applePay. Expecting Stripe to fix this.
-                    if (!stripe.canMakePaymentResult.applePay)
-                        ev.preventDefault();
-
-                    // Add to Cart
-                    request = form.serialize();
-                    paymentRequestButton.addClass('disabled');
-                    self.addToCart(request, self.shippingMethod, function (err, result) {
-                        paymentRequestButton.removeClass('disabled');
-                        if (err)
-                            return self.showError(err);
-
-                        try
-                        {
-                            paymentRequest.update(result);
-                            paymentRequest.show();
-                        }
-                        catch (e)
-                        {
-                            console.warn(e.message);
-                        }
-                    });
+            initProductWidget: function ()
+            {
+                var self = this;
+                this.expressCheckoutElement.on('click', function(event) {
+                    event.isClick = true;
+                    self.startLoader();
+                    self.onClickAtProductPage(event);
                 });
+                this.expressCheckoutElement.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
+                this.expressCheckoutElement.on('shippingratechange', this.onShippingRateChange.bind(this));
+                this.expressCheckoutElement.on('confirm', this.onConfirm.bind(this, 'product'));
+                this.expressCheckoutElement.on('cancel', this.onCancel.bind(this));
 
-                paymentRequest.on('shippingaddresschange', this.onShippingAddressChange.bind(this));
-                paymentRequest.on('shippingoptionchange', this.onShippingOptionChange.bind(this));
-                paymentRequest.on('paymentmethod', this.onPaymentMethod.bind(this, paymentRequestButton, 'product'));
+                this.bindConfigurableProductOptions();
             },
 
-            onPaymentRequestPaymentMethod: function(result, paymentRequestButton, location)
-            {
-                stripe.PRAPIEvent = result;
-                var success = this.onPaymentPlaced.bind(this, result, paymentRequestButton, location);
-                var error = this.showError.bind(this);
+            formToArrayObject: function(data) {
+                var obj = {};
+                for (var i = 0; i < data.length; i++) {
+                    obj[data[i].name] = data[i].value;
+                }
+                return obj;
+            },
 
-                return success();
+            onClickAtProductPage: function(event)
+            {
+                this.log("onClickAtProductPage");
+                var self = this,
+                    form = jQuery('#product_addtocart_form'),
+                    params = [];
+
+                var validator = form.validation({radioCheckboxClosest: '.nested'});
+
+                if (!validator.valid())
+                {
+                    this.stopLoader();
+                    return;
+                }
+
+                // Add to Cart
+                params = this.formToArrayObject(form.serializeArray());
+                this.addToCart(params, this.shippingMethod, function (err)
+                {
+                    if (err)
+                    {
+                        return self.showError(err);
+                    }
+                });
+
+                this.resolveEvent(event, this.clickResolvePayload);
             },
 
             showError: function(message)
             {
-                stripe.closePaysheet('success'); // Simply hide the modal
+                this.stopLoader();
 
                 alert({
                     title: $t('Error'),
@@ -537,16 +728,13 @@ define(
                 });
             },
 
-            onPaymentPlaced: function(result, paymentRequestButton, location)
+            onPaymentMethodCreated: function(result, location)
             {
                 var self = this;
-                paymentRequestButton.addClass('disabled');
-                result.shippingAddress = this.getShippingAddressFrom(result.shippingAddress);
                 this.placeOrder(result, location, function (err, response, result)
                 {
                     if (err)
                     {
-                        paymentRequestButton.removeClass('disabled');
                         self.showError(response.message);
                     }
                     else if (response.hasOwnProperty('redirect'))
@@ -554,38 +742,42 @@ define(
                         customerData.invalidate(['cart']);
                         window.location = response.redirect;
                     }
+                    else
+                    {
+                        self.stopLoader();
+                    }
                 });
             },
 
-            bindConfigurableProductOptions: function(elementId, stripeParams, productId, buttonConfig)
+            bindConfigurableProductOptions: function()
             {
                 var self = this;
                 var options = jQuery("#product-options-wrapper .configurable select.super-attribute-select");
-                var params = {
-                    elementId: elementId,
-                    stripeParams: stripeParams,
-                    buttonConfig: buttonConfig,
-                    productId: productId
-                };
 
                 options.each(function(index)
                 {
-                    var onConfigurableProductChanged = self.onConfigurableProductChanged.bind(self, this, params);
-                    jQuery(this).change(onConfigurableProductChanged);
+                    var onConfigurableProductChanged = self.onConfigurableProductChanged.bind(self, this);
+                    jQuery(this).on("change", onConfigurableProductChanged);
                 });
             },
 
-            onConfigurableProductChanged: function(element, params)
+            onConfigurableProductChanged: function(element)
             {
                 var self = this;
 
                 if (element.value)
                 {
-                    var apiParams = 'product:' + params.productId + ':' + element.value;
-                    this.initStripeExpress(params.elementId, params.stripeParams, apiParams, params.buttonConfig,
-                        function(paymentRequestButton, paymentRequest, params, prButton) {
-                            self.initProductWidget(paymentRequestButton, paymentRequest, params, prButton);
-                        }
+                    var locationDetails = {
+                        location: 'product',
+                        productId: this.locationDetails.productId,
+                        attribute: element.value
+                    };
+                    this.initStripeExpress(
+                        this.mountElementId,
+                        this.stripeJsInitParams,
+                        locationDetails,
+                        self.expressCheckoutOptions,
+                        self.initProductWidget.bind(self)
                     );
                 }
             }

@@ -4,10 +4,6 @@ namespace StripeIntegration\Payments\Model\Ui;
 
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Checkout\Model\ConfigProviderInterface;
-use StripeIntegration\Payments\Gateway\Http\Client\ClientMock;
-use Magento\Framework\Locale\Bundle\DataBundle;
-use StripeIntegration\Payments\Helper\Logger;
-use StripeIntegration\Payments\Model\PaymentMethod;
 use StripeIntegration\Payments\Model\Config;
 
 /**
@@ -15,36 +11,51 @@ use StripeIntegration\Payments\Model\Config;
  */
 class ConfigProvider implements ConfigProviderInterface
 {
-    const CODE = 'stripe_payments';
-    const YEARS_RANGE = 15;
+    private $assetRepo;
+    private $cardIcons;
+    private $config;
+    private $expressCheckoutConfig;
+    private $helper;
+    private $initParams;
+    private $logger;
+    private $paymentMethodHelper;
+    private $request;
+    private $serializer;
+    private $subscriptionsHelper;
+    private $urlBuilder;
+    private $response;
+    private $localeHelper;
+    private $quoteHelper;
 
     public function __construct(
-        \Magento\Framework\Locale\ResolverInterface $localeResolver,
-        \Magento\Framework\Stdlib\DateTime\DateTime $date,
         \Magento\Framework\App\RequestInterface $request,
         \Magento\Framework\View\Asset\Repository $assetRepo,
+        \Magento\Framework\Serialize\SerializerInterface $serializer,
+        \Magento\Framework\App\ResponseInterface $response,
         \StripeIntegration\Payments\Model\Config $config,
-        \Magento\Customer\Model\Session $session,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
+        \StripeIntegration\Payments\Model\ExpressCheckout\Config $expressCheckoutConfig,
         \StripeIntegration\Payments\Model\Adminhtml\Source\CardIconsSpecific $cardIcons,
-        \StripeIntegration\Payments\Helper\SetupIntent $setupIntent,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
+        \StripeIntegration\Payments\Helper\InitParams $initParams,
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Helper\Locale $localeHelper
     )
     {
-        $this->localeResolver = $localeResolver;
-        $this->_date = $date;
         $this->request = $request;
         $this->assetRepo = $assetRepo;
+        $this->serializer = $serializer;
+        $this->response = $response;
         $this->config = $config;
-        $this->session = $session;
         $this->helper = $helper;
-        $this->saveCards = $config->getSaveCards();
-        $this->customer = $helper->getCustomerModel();
-        $this->paymentIntent = $paymentIntent;
+        $this->expressCheckoutConfig = $expressCheckoutConfig;
         $this->cardIcons = $cardIcons;
-        $this->setupIntent = $setupIntent;
         $this->subscriptionsHelper = $subscriptionsHelper;
+        $this->initParams = $initParams;
+        $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->localeHelper = $localeHelper;
+        $this->quoteHelper = $quoteHelper;
     }
 
     /**
@@ -54,103 +65,112 @@ class ConfigProvider implements ConfigProviderInterface
      */
     public function getConfig()
     {
+        $data = [];
+        $checkoutInitParams = $this->serializer->unserialize($this->initParams->getCheckoutParams());
+
         $data = [
             'payment' => [
-                self::CODE => [
+                'stripe_payments' => [
                     'enabled' => $this->config->isEnabled(),
-                    'months' => $this->getMonths(),
-                    'years' => $this->getYears(),
-                    'cvvImageUrl' => $this->getCvvImageUrl(),
-                    'useStoreCurrency' => $this->config->useStoreCurrency(),
-                    'initParams' => \Zend_Json::decode($this->config->getStripeParams(), \Zend\Json\Json::TYPE_ARRAY),
-                    'showSaveCardOption' => $this->getShowSaveCardOption(),
-                    'alwaysSaveCard' => $this->getAlwaysSaveCard(),
-                    'isSaveCardCheckboxChecked' => $this->config->isSaveCardCheckboxChecked(),
-                    'savedCards' => $this->customer->getCustomerCards(),
-                    'isApplePayEnabled' => (bool)$this->config->isApplePayEnabled(),
-                    'isInstallmentPlansEnabled' => $this->config->isInstallmentPlansEnabled(),
-                    'applePayLocation' => $this->config->getApplePayLocation(),
+                    'initParams' => $checkoutInitParams,
                     'icons' => $this->getIcons(),
-                    'apmIcons' => $this->getApmIcons(),
-                    'iconsLocation' => $this->config->getConfigData("icons_location"),
+                    'pmIcons' => $this->paymentMethodHelper->getPaymentMethodDetails(),
+                    'elementOptions' => $this->config->getElementOptions(),
                     'hasTrialSubscriptions' => false,
-                    'trialingSubscriptions' => null,
-                    'prapi_description' => null,
-                    'prapiTitle' => $this->helper->getPRAPIMethodType(),
-                    'prapiButtonConfig' => $this->config->getPRAPIButtonSettings(),
-                    'module' => Config::module()
+                    'trialingSubscriptions' => null
                 ],
-                self::CODE . "_sepa_credit" => [
-                    'customer_bank_account' => $this->config->getConfigData("customer_bank_account", "sepa_credit")
+                'express_checkout' => [
+                    'enabled' => $this->expressCheckoutConfig->isEnabled('checkout_page'),
+                    'initParams' => $this->serializer->unserialize($this->initParams->getWalletParams()),
+                    'buttonConfig' => $this->expressCheckoutConfig->getButtonOptions()
+                ],
+                'stripe_payments_bank_transfers' => [
+                    'elementOptions' => $this->getBankTransfersElementOptions(),
+                    'initParams' => $checkoutInitParams
                 ]
             ]
         ];
 
-        if ($this->config->isEnabled() || $this->config->isEnabled("checkout"))
+        if ($this->config->isEnabled() && $this->config->isSubscriptionsEnabled())
         {
             // These are a bit more resource intensive, so we only want to run them if the module is enabled
-            $data['payment'][self::CODE]['hasTrialSubscriptions'] = $this->helper->hasTrialSubscriptions();
-            $data['payment'][self::CODE]['trialingSubscriptions'] = ($this->config->isSubscriptionsEnabled() ? $this->subscriptionsHelper->getTrialingSubscriptionsAmounts() : null);
-            $data['payment'][self::CODE]['prapi_description'] = $this->config->getPRAPIDescription();
+            $data['payment']['stripe_payments']['hasTrialSubscriptions'] = $this->subscriptionsHelper->hasTrialSubscriptions();
+            $data['payment']['stripe_payments']['trialingSubscriptions'] = $this->subscriptionsHelper->getTrialingSubscriptionsAmounts();
+
+            $subscriptionUpdateDetails = $this->getFrontendSubscriptionUpdateDetails();
+            if ($subscriptionUpdateDetails)
+            {
+                $data['payment']['stripe_payments']['subscriptionUpdateDetails'] = $subscriptionUpdateDetails;
+            }
         }
 
         return $data;
     }
 
-    public function getShowSaveCardOption()
+    protected function getBankTransfersElementOptions()
     {
-        return $this->config->getSaveCards() && $this->session->isLoggedIn();
+        $options = [
+            "mode" => "payment",
+            "locale" => $this->localeHelper->getStripeJsLocale(),
+            "paymentMethodCreation" => "manual",
+            "appearance" => [
+                "theme" => "stripe",
+                "variables" => [
+                    "colorText" => "#32325d",
+                    "fontFamily" => '"Open Sans","Helvetica Neue", Helvetica, Arial, sans-serif'
+                ],
+            ],
+            "payment_method_types" => ["customer_balance"]
+        ];
+
+        return $options;
     }
 
-    public function getAlwaysSaveCard()
+    protected function getFrontendSubscriptionUpdateDetails()
     {
-        return $this->config->alwaysSaveCards();
-    }
+        try
+        {
+            $subscriptionUpdateDetails = $this->helper->getCheckoutSession()->getSubscriptionUpdateDetails();
+            if (!empty($subscriptionUpdateDetails['_data']['subscription_id']))
+            {
+                // Ensure that the subscription can be updated
+                $subscription = $this->config->getStripeClient()->subscriptions->retrieve($subscriptionUpdateDetails['_data']['subscription_id'], []);
+                if ($subscription->status != "active")
+                {
+                    $this->subscriptionsHelper->cancelSubscriptionUpdate(true);
+                    $message = __("This subscription cannot be updated because it is not active.");
+                    $this->helper->addError($message);
+                    $this->redirect('stripe/customer/subscriptions');
+                    return null;
+                }
 
-    /**
-     * Retrieve list of months translation
-     *
-     * @return array
-     * @api
-     */
-    public function getMonths()
-    {
-        $data = [];
-        $months = (new DataBundle())->get(
-            $this->localeResolver->getLocale()
-        )['calendar']['gregorian']['monthNames']['format']['wide'];
-        foreach ($months as $key => $value) {
-            $monthNum = ++$key < 10 ? '0' . $key : $key;
-            $data[$key] = $monthNum . ' - ' . $value;
+                // Ensure that the product is still in the cart
+                if (empty($subscriptionUpdateDetails['_data']['product_ids']))
+                {
+                    $this->helper->logError("Canceling subscription update: No product IDs set.");
+                    $this->helper->getCheckoutSession()->unsSubscriptionUpdateDetails();
+                    return null;
+                }
+
+                $quote = $this->quoteHelper->getQuote();
+
+                unset($subscriptionUpdateDetails['_data']); // Unset sensitive _data and return the remaining info for front-end display
+
+                $subscriptionUpdateDetails["success_url"] = $this->helper->getUrl("stripe/customer/subscriptions", ["updateSuccess" => 1]);
+                $subscriptionUpdateDetails["cancel_url"] = $this->helper->getUrl("stripe/customer/subscriptions", ["updateCancel" => 1]);
+                $subscriptionUpdateDetails["is_virtual"] = $quote->getIsVirtual();
+                return $subscriptionUpdateDetails;
+            }
+
+            return null;
         }
-        return $data;
-    }
-
-    /**
-     * Retrieve array of available years
-     *
-     * @return array
-     * @api
-     */
-    public function getYears()
-    {
-        $years = [];
-        $first = (int)$this->_date->date('Y');
-        for ($index = 0; $index <= self::YEARS_RANGE; $index++) {
-            $year = $first + $index;
-            $years[$year] = $year;
+        catch (\Exception $e)
+        {
+            $this->helper->logError("Canceling subscription update: " . $e->getMessage());
+            $this->helper->getCheckoutSession()->unsSubscriptionUpdateDetails();
+            $this->helper->logError($e->getMessage(), $e->getTraceAsString());
+            return null;
         }
-        return $years;
-    }
-
-    /**
-     * Retrieve CVV tooltip image url
-     *
-     * @return string
-     */
-    public function getCvvImageUrl()
-    {
-        return $this->getViewFileUrl('Magento_Checkout::cvv.png');
     }
 
     /**
@@ -195,6 +215,9 @@ class ConfigProvider implements ConfigProviderInterface
                 $specific = explode(",", $this->config->getCardIcons());
                 foreach ($specific as $code)
                 {
+                    if (empty($code))
+                        continue;
+
                     $icons[] = [
                         'code' => $code,
                         'name' => null,
@@ -208,33 +231,10 @@ class ConfigProvider implements ConfigProviderInterface
         }
     }
 
-    public function getApmIcons()
+    public function redirect($path)
     {
-        return [
-            'acss_debit' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bank.svg"),
-            'afterpay_clearpay' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/afterpay_clearpay.svg"),
-            'alipay' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/alipay.svg"),
-            'bacs_debit' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bacs_debit.svg"),
-            'au_becs_debit' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bank.svg"),
-            'bancontact' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bancontact.svg"),
-            'boleto' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/boleto.svg"),
-            'eps' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/eps.svg"),
-            'fpx' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/fpx.svg"),
-            'giropay' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/giropay.svg"),
-            'grabpay' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/grabpay.svg"),
-            'ideal' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/ideal.svg"),
-            'klarna' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/klarna.svg"),
-            'paypal' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/paypal.svg"),
-            'multibanco' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/multibanco.svg"),
-            'p24' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/p24.svg"),
-            'sepa' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/sepa_debit.svg"),
-            'sepa_debit' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/sepa_debit.svg"),
-            'sepa_credit' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/sepa_credit.svg"),
-            'sofort' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/klarna.svg"),
-            'wechat' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/wechat.svg"),
-            'ach' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/ach.svg"),
-            'oxxo' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/oxxo.svg"),
-            'bank' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bank.svg")
-        ];
+        $this->response->clearHeaders()->setNoCacheHeaders();
+        $url = $this->helper->getUrl($path);
+        $this->response->setRedirect($url)->sendResponse();
     }
 }

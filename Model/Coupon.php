@@ -2,41 +2,33 @@
 
 namespace StripeIntegration\Payments\Model;
 
-use StripeIntegration\Payments\Helper\Logger;
-use StripeIntegration\Payments\Exception;
+use StripeIntegration\Payments\Api\Data\CouponInterface;
 
-class Coupon extends \Magento\Framework\Model\AbstractModel
+/**
+ * Coupon - Database handling
+ */
+class Coupon extends \Magento\Framework\Model\AbstractModel implements CouponInterface
 {
-    public function __construct(
-        \Magento\Framework\Model\Context $context,
-        \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
-        array $data = []
-    ) {
-        $this->_registry = $registry;
-        $this->_appState = $context->getAppState();
-        $this->_eventManager = $context->getEventDispatcher();
-        $this->_cacheManager = $context->getCacheManager();
-        $this->_resource = $resource;
-        $this->_resourceCollection = $resourceCollection;
-        $this->_logger = $context->getLogger();
-        $this->_actionValidator = $context->getActionValidator();
+    /**
+     * Constant for Coupon Type - Sales Rule
+     */
+    public const COUPON_FOREVER = 'forever';
+    public const COUPON_ONCE = 'once';
+    public const COUPON_REPEATING = 'repeating';
 
-        if (method_exists($this->_resource, 'getIdFieldName')
-            || $this->_resource instanceof \Magento\Framework\DataObject
-        ) {
-            $this->_idFieldName = $this->_getResource()->getIdFieldName();
-        }
-
-        parent::__construct($context, $registry, $resource, $resourceCollection, $data);
-    }
-
+    /**
+     * Initialise resource model
+     */
     protected function _construct()
     {
-        $this->_init('StripeIntegration\Payments\Model\ResourceModel\Coupon');
+        $this->_init(ResourceModel\Coupon::class);
     }
 
+    /**
+     * Set Duration type based on the input
+     *
+     * @return mixed|string|null
+     */
     public function duration()
     {
         switch ($this->getCouponDuration()) {
@@ -49,11 +41,110 @@ class Coupon extends \Magento\Framework\Model\AbstractModel
         }
     }
 
+    /**
+     * Set the expired month based on the input
+     *
+     * @return mixed|string|null
+     */
     public function months()
     {
-        if ($this->duration() == 'repeating' && is_numeric($this->getCouponMonths()) && $this->getCouponMonths() > 0)
+        if ($this->duration() == 'repeating' && is_numeric($this->getCouponMonths()) && $this->getCouponMonths() > 0) {
             return $this->getCouponMonths();
+        }
 
         return null;
+    }
+
+    public function expires()
+    {
+        return $this->duration() != "forever";
+    }
+
+    /**
+     * Get coupon ID
+     *
+     * @return int|mixed|null
+     */
+    public function getCouponId()
+    {
+        return $this->_getData(self::COUPON_ID);
+    }
+
+    /**
+     * Set Coupon ID
+     *
+     * @param int $couponId
+     * @return $this|Coupon
+     */
+    public function setCouponId($couponId)
+    {
+        $this->setData(self::COUPON_ID, $couponId);
+        return $this;
+    }
+
+    /**
+     * Get Coupon Sales Rule ID
+     *
+     * @return int|mixed|null
+     */
+    public function getCouponSalesRuleId()
+    {
+        return $this->_getData(self::COUPON_RULE_ID);
+    }
+
+    /**
+     * Set Sales Rule ID
+     *
+     * @param int $ruleId
+     * @return $this|Coupon
+     */
+    public function setCouponSalesRuleId($ruleId)
+    {
+        $this->setData(self::COUPON_RULE_ID, $ruleId);
+        return $this;
+    }
+
+    /**
+     * Get Coupon Duration
+     *
+     * @return mixed|string|null
+     */
+    public function getCouponDuration()
+    {
+        return $this->_getData(self::COUPON_DURATION);
+    }
+
+    /**
+     * Set Coupon Duration
+     *
+     * @param string $couponDuration
+     * @return $this|Coupon
+     */
+    public function setCouponDuration($couponDuration)
+    {
+        $this->setData(self::COUPON_DURATION, $couponDuration);
+        return $this;
+    }
+
+    /**
+     * Get Coupon Months
+     *
+     * @return mixed|string|null
+     */
+    public function getCouponMonths()
+    {
+        return $this->_getData(self::COUPON_MONTHS);
+    }
+
+    /**
+     * Set Coupon Months
+     *
+     * @param string $couponMonths
+     * @return $this|Coupon
+     */
+    public function setCouponMonths($couponMonths)
+    {
+        $this->setData(self::COUPON_MONTHS, $couponMonths);
+        return $this;
     }
 }

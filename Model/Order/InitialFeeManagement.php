@@ -1,10 +1,7 @@
 <?php
 namespace StripeIntegration\Payments\Model\Order;
 
-use StripeIntegration\Payments\Model\InitialFee;
 use Magento\Quote\Model\Quote\Address as QuoteAddress;
-use Magento\Sales\Api\Data\OrderExtensionFactory;
-use Magento\Sales\Api\Data\OrderExtensionInterface;
 use Magento\Sales\Model\Order;
 
 class InitialFeeManagement
