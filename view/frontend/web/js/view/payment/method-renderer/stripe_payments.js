@@ -226,33 +226,7 @@ define(
 
             isBillingAddressSet: function()
             {
-                let addressCusstom = {};
-                // return true;
-                if (isCustomerLoggedIn) {
-                    return quote.billingAddress() ? true : false;
-                }else {
-                    if (!quote.billingAddress()) {
-                        addressCusstom = {
-                            city : window.localStorage.city_booking,
-                            countryId : "GB",
-                            customerAddressId : null,
-                            customerId : null,
-                            firstname : window.localStorage.fname_booking,
-                            lastname : window.localStorage.lname_booking,
-                            postcode : window.localStorage.postcode_booking,
-                            region : null,
-                            regionCode : null,
-                            saveInAddressBook : 0,
-                            street : [window.localStorage.addr_booking],
-                            telephone : '0999999999'
-                        };
-                        quote.billingAddress(addressCusstom);
-                        return true;
-                    } else {
-                        return true;
-                    }
-
-                }
+                return quote.billingAddress() && quote.billingAddress().canUseForBilling();
             },
 
             isPlaceOrderEnabled: function()
@@ -260,8 +234,8 @@ define(
                 if (this.stripePaymentsError())
                     return false;
 
-                // if (this.stripeCreatingToken())
-                //     return false;
+                if (this.stripeCreatingToken())
+                    return false;
 
                 if (this.fetchingInstallments())
                     return false;
@@ -324,8 +298,6 @@ define(
 
                 var self = this;
 
-                self.showMessage("Please do not close your browser and await the successful booking page once payment has been taken.");
-                
                 this.stripePaymentsStripeJsToken(null);
                 this.stripeCreatingToken(true);
                 stripe.quote = quote;
@@ -499,12 +471,6 @@ define(
             {
                 document.getElementById('actions-toolbar').scrollIntoView(true);
                 this.messageContainer.addErrorMessage({ "message": message });
-            },
-            
-            showMessage: function(message)
-            {
-                document.getElementById('stripe-notice').style.display = "";
-                document.getElementById('stripe-notice').innerHTML = message;
             },
 
             // afterPlaceOrder: function()

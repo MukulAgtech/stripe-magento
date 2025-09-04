@@ -11,18 +11,14 @@ use Magento\Framework\Exception\LocalizedException;
 class Config
 {
     public static $moduleName           = "Magento2";
-    public static $moduleVersion        = "4.0.0";
+    public static $moduleVersion        = "2.9.5";
     public static $minStripePHPVersion  = "7.100.0";
     public static $moduleUrl            = "https://stripe.com/docs/plugins/magento";
     public static $partnerId            = "pp_partner_Fs67gT2M6v3mH7";
-    const STRIPE_API                    = "2024-03-02";
+    const STRIPE_API                    = "2020-03-02";
     public $isInitialized               = false;
     public $isSubscriptionsEnabled      = null;
     public static $stripeClient         = null;
-
-    protected $_checkoutSession;
-
-    public $session;
 
     public function __construct(
         ScopeConfigInterface $scopeConfig,
@@ -36,7 +32,6 @@ class Config
         \StripeIntegration\Payments\Helper\SetupIntentFactory $setupIntentFactory,
         \Magento\Tax\Model\Config $taxConfig,
         \StripeIntegration\Payments\Model\ResourceModel\Webhook\Collection $webhookCollection,
-        \Magento\Checkout\Model\Session $_checkoutSession,
         \Magento\Store\Api\StoreRepositoryInterface $storeRepository
     ) {
         $this->scopeConfig = $scopeConfig;
@@ -50,8 +45,6 @@ class Config
         $this->setupIntentFactory = $setupIntentFactory;
         $this->taxConfig = $taxConfig;
         $this->webhookCollection = $webhookCollection;
-        $this->_checkoutSession = $_checkoutSession;
-        $this->session = &$checkoutSession;
         $this->storeRepository = $storeRepository;
 
         $this->isInitialized = $this->initStripe();
@@ -293,45 +286,11 @@ class Config
         return $this->getConfigData('stripe_mode', 'basic', $storeId);
     }
 
-    public function getSellerId()
-    {
-        $seller_id = 0;
-        $productId = 0;
-
-        $cartQuote = $this->_checkoutSession->getQuote();
-        $items = $cartQuote->getAllItems();
-        foreach ($items as $item) {
-            $productId = $item->getProductId();
-            //echo "<br>PID 1: ".$productId;
-            break;
-        }
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        $helper = $objectManager->get('Webkul\Marketplace\Helper\Data');
-        $marketplaceProduct = $helper->getSellerProductDataByProductId($productId);
-        foreach ($marketplaceProduct as $value) {
-            $seller_id = $value['seller_id'];
-        }
-
-        return $seller_id;
-    }
-    
     public function getSecretKey($mode = null, $storeId = null)
     {
         if (empty($mode))
             $mode = $this->getStripeMode($storeId);
 
-        $seller_id = $this->getSellerId();
-        
-        if ($seller_id > 0){
-            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-            $blockSellerEditprofileObj = $objectManager->get('Webkul\MpVendorAttributeManager\Block\Account\Editprofile');
-            $selletAttributeCollection = $blockSellerEditprofileObj->_loadCustomer($seller_id)->toArray();
-            $key = $selletAttributeCollection['secret_key'] ?? '';
-            if ($key) {
-                return $key;
-            }
-        }
-        
         $key = $this->getConfigData("stripe_{$mode}_sk", "basic", $storeId);
 
         return $this->decrypt($key);
@@ -349,18 +308,6 @@ class Config
     {
         if (empty($mode))
             $mode = $this->getStripeMode();
-
-        $seller_id = $this->getSellerId();
-        
-        if ($seller_id > 0){
-            $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-            $blockSellerEditprofileObj = $objectManager->get('Webkul\MpVendorAttributeManager\Block\Account\Editprofile');
-            $selletAttributeCollection = $blockSellerEditprofileObj->_loadCustomer($seller_id)->toArray();
-            $key = $selletAttributeCollection['publishable_key'] ?? '';
-            if ($key) {
-                return $key;
-            }
-        }
 
         return trim($this->getConfigData("stripe_{$mode}_pk", "basic", $storeId));
     }
@@ -644,15 +591,14 @@ class Config
 
     public function getStoreViewAPIKey($store, $mode)
     {
-        $storeId = $store->getStoreId();
-        $secretKey = $this->getSecretKey($mode,$storeId);
+        $secretKey = $this->scopeConfig->getValue("payment/stripe_payments_basic/stripe_{$mode}_sk", \Magento\Store\Model\ScopeInterface::SCOPE_STORE, $store['code']);
         if (empty($secretKey))
             return null;
 
         return array_merge($store->getData(), [
             'api_keys' => [
-                'pk' => $this->getPublishableKey($mode,$storeId),
-                'sk' => $secretKey
+                'pk' => $this->scopeConfig->getValue("payment/stripe_payments_basic/stripe_{$mode}_pk", \Magento\Store\Model\ScopeInterface::SCOPE_STORE, $store['code']),
+                'sk' => $this->decrypt($secretKey)
             ],
             'mode' => $mode,
             'mode_label' => ucfirst($mode) . " Mode",

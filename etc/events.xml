@@ -13,9 +13,9 @@
     <event name="shortcut_buttons_container">
         <observer name="stripe_payments_express_buttons" instance="StripeIntegration\Payments\Observer\AddExpressButton"/>
     </event>
-<!--    <event name="sales_quote_collect_totals_before">-->
-<!--        <observer name="stripe_payments_sales_quote_collect_totals_before" instance="StripeIntegration\Payments\Observer\QuoteObserver"/>-->
-<!--    </event>-->
+    <event name="sales_quote_collect_totals_before">
+        <observer name="stripe_payments_sales_quote_collect_totals_before" instance="StripeIntegration\Payments\Observer\QuoteObserver"/>
+    </event>
 
     <event name="payment_method_is_active">
         <observer name="stripe_payments_method_active" instance="StripeIntegration\Payments\Observer\PaymentMethodActiveObserver" />
@@ -43,9 +43,9 @@
     <event name="stripe_payments_currency_switch">
         <observer name="update_initial_fee_currency_switch" instance="StripeIntegration\Payments\Observer\CurrencySwitchObserver" />
     </event>
-<!--    <event name="sales_quote_address_collect_totals_after">-->
-<!--        <observer name="add_initial_fee_tax" instance="StripeIntegration\Payments\Observer\AddInitialFeeTaxObserver" />-->
-<!--    </event>-->
+    <event name="sales_quote_address_collect_totals_after">
+        <observer name="add_initial_fee_tax" instance="StripeIntegration\Payments\Observer\AddInitialFeeTaxObserver" />
+    </event>
 
     <!-- Webhooks -->
     <event name="stripe_payments_webhook_charge_refunded_card">

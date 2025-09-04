@@ -34,7 +34,7 @@ define(
 
             getApplePayParams: function(type, callback)
             {
-                var serviceUrl = urlBuilder.build('rest/V1/stripe/payments/get_prapi_params', {}),
+                var serviceUrl = urlBuilder.build('/rest/V1/stripe/payments/get_prapi_params', {}),
                     payload = {type: type},
                     self = this;
 

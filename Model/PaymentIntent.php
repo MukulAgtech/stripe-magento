@@ -322,82 +322,46 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
     {
         if (!empty($this->customParams))
             return $this->customParams;
-        
-        //For dynamic currency seller wise
-        $seller_id = 0;
-        $productId = 0;
 
-        $items = $quote->getAllItems();
-        foreach($items as $item) {
-             $productId = $item->getProductId();
-             //echo "<br>PID 1: ".$productId;exit;
-             break;
-        }
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        $helper = $objectManager->get('Webkul\Marketplace\Helper\Data');
-        $marketplaceProduct = $helper->getSellerProductDataByProductId($productId);
-        foreach ($marketplaceProduct as $value) {
-            $seller_id = $value['seller_id'];
-        }
-        //$seller_id = 1962;
-        if ($seller_id > 0) {
-            $blockSellerEditprofileObj = $objectManager->get('Webkul\MpVendorAttributeManager\Block\Account\Editprofile');
-            $selletAttributeCollection = $blockSellerEditprofileObj->_loadCustomer($seller_id)->toArray();
-            $currency = (isset($selletAttributeCollection['seller_base_currency'])) ? $selletAttributeCollection['seller_base_currency'] : $this->getConfigData('currency_code');
-            
-            $amount = $quote->getBaseGrandTotal();
-            if($currency=='OMR' || $currency=='KWD' ||$currency=='BHD' || $currency=='JOD'){
-                $cents = 1000;
-            } else { //default
-                $cents = 100;
-            }
-            $params['amount'] = round($amount * $cents);
-            $params['currency'] = strtolower($currency);
-            $params['capture_method'] = $this->getCaptureMethod();
-            $params["payment_method_types"] = ["card"]; // For now
-            $params['confirmation_method'] = 'manual';
-            
-        } else {
+        if ($order)
+        {
+            $payment = $order->getPayment();
 
-            if ($order)
+            if ($this->config->useStoreCurrency($order))
             {
-                $payment = $order->getPayment();
-    
-                if ($this->config->useStoreCurrency($order))
-                {
-                    $amount = $order->getGrandTotal();
-                    $currency = $order->getOrderCurrencyCode();
-                }
-                else
-                {
-                    $amount = $order->getBaseGrandTotal();
-                    $currency = $order->getBaseCurrencyCode();
-                }
+                $amount = $order->getGrandTotal();
+                $currency = $order->getOrderCurrencyCode();
             }
             else
             {
-                if ($this->config->useStoreCurrency($order))
-                {
-                    $amount = $quote->getGrandTotal();
-                    $currency = $quote->getQuoteCurrencyCode();
-                }
-                else
-                {
-                    $amount = $quote->getBaseGrandTotal();
-                    $currency = $quote->getBaseCurrencyCode();
-                }
+                $amount = $order->getBaseGrandTotal();
+                $currency = $order->getBaseCurrencyCode();
             }
-    
-            $cents = 100;
-            if ($this->helper->isZeroDecimal($currency))
-                $cents = 1;
-    
-            $params['amount'] = round($amount * $cents);
-            $params['currency'] = strtolower($currency);
-            $params['capture_method'] = $this->getCaptureMethod();
-            $params["payment_method_types"] = ["card"]; // For now
-            $params['confirmation_method'] = 'manual';
         }
+        else
+        {
+            if ($this->config->useStoreCurrency($order))
+            {
+                $amount = $quote->getGrandTotal();
+                $currency = $quote->getQuoteCurrencyCode();
+            }
+            else
+            {
+                $amount = $quote->getBaseGrandTotal();
+                $currency = $quote->getBaseCurrencyCode();
+            }
+        }
+
+        $cents = 100;
+        if ($this->helper->isZeroDecimal($currency))
+            $cents = 1;
+
+        $params['amount'] = round($amount * $cents);
+        $params['currency'] = strtolower($currency);
+        $params['capture_method'] = $this->getCaptureMethod();
+        $params["payment_method_types"] = ["card"]; // For now
+        $params['confirmation_method'] = 'manual';
+
         if ($paymentMethodId)
         {
             $extraParams = $this->getPaymentMethodDetails($quote, $paymentMethodId, $order);
@@ -409,9 +373,6 @@ class PaymentIntent extends \Magento\Framework\Model\AbstractModel
             $params["description"] = $this->helper->getOrderDescription($order);
             $params["metadata"] = $this->config->getMetadata($order);
         }
-        // Add customer data to metadata
-        $params["metadata"]["Customer email"] = $quote->getBookingEmail();
-        $params["metadata"]["Customer name"] = $quote->getBookingFirstname() .' '. $quote->getBookingLastname();
 
         $params['amount'] = $this->adjustAmountForSubscriptions($params['amount'], $params['currency'], $quote, $order);
 

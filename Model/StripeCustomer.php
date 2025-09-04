@@ -108,28 +108,26 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         // $paymentMethod = $quote->getPayment()->getMethod();
         // if (empty($paymentMethod) || $paymentMethod != "stripe_payments") return;
 
-        // Customization customer stripe not to updating information
-        $quote = $this->helper->checkoutSession;
-        $quoteModel = $this->helper->quoteFactory->create()->load($quote->getQuoteId());
-        $bookingEmail = $quoteModel->getBookingEmail();
-        $bookingFName = $quoteModel->getBookingFirstname();
-        $bookingLName = $quoteModel->getBookingLastname();
+        $retrievedSecondsAgo = (time() - $this->getLastRetrieved());
 
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
-        $resource = $objectManager->get('Magento\Framework\App\ResourceConnection');
-        $conn = $resource->getConnection();
-        $stripe_customers_table = $resource->getTableName('stripe_customers');
-        $stripe_customers_delete_sql = "DELETE FROM " . $stripe_customers_table . " ";
-        $conn->query($stripe_customers_delete_sql);
-
-        $this->createStripeCustomer('','',$bookingEmail,$bookingFName,$bookingLName);
-        $this->setCustomerEmail($bookingEmail);
-        $this->save();
+        if (!$this->getStripeId())
+        {
+            $this->createStripeCustomer($order);
+        }
+        // if the customer was retrieved from Stripe in the last 10 minutes, we're good to go
+        // otherwise retrieve them now to make sure they were not deleted from Stripe somehow
+        else if ($retrievedSecondsAgo > (60 * 10) || $noCache)
+        {
+            if (!$this->retrieveByStripeID($this->getStripeId()))
+            {
+                $this->createStripeCustomer($order);
+            }
+        }
 
         return $this->_stripeCustomer;
     }
 
-    public function createStripeCustomer($order = null, $params = null, $bookingEmail = null,$fName = null,$lName = null)
+    public function createStripeCustomer($order = null, $params = null)
     {
         $customer = $this->helper->getMagentoCustomer();
 
@@ -188,9 +186,6 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         // This is the case for new customer registrations and guest checkouts
         // if (empty($customerId))
         //     $customerId = -1;
-        $customerEmail = $bookingEmail;
-        $customerFirstname = $fName;
-        $customerLastname = $lName;
 
         return $this->createNewStripeCustomer($customerFirstname, $customerLastname, $customerEmail, $customerId, $params);
     }

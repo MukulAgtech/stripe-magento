@@ -7,8 +7,8 @@ use Magento\Framework\Setup\Patch\DataPatchInterface;
 use Magento\Framework\Setup\Patch\PatchRevertableInterface;
 
 class InitialInstall
-    // implements DataPatchInterface,
-    // PatchRevertableInterface
+    implements DataPatchInterface,
+    PatchRevertableInterface
 {
     /**
      * @var ModuleDataSetupInterface
