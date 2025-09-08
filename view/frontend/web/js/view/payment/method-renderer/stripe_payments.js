@@ -9,7 +9,7 @@ define(
         'StripeIntegration_Payments/js/action/post-restore-quote',
         'StripeIntegration_Payments/js/action/post-cancel-order',
         'StripeIntegration_Payments/js/action/get-requires-action',
-        'StripeIntegration_Payments/js/view/checkout/trialing_subscriptions',
+        'StripeIntegration_Payments/js/view/checkout/future_subscriptions',
         'StripeIntegration_Payments/js/stripe',
         'stripe_payments_express',
         'mage/translate',
@@ -34,7 +34,7 @@ define(
         restoreQuoteAction,
         cancelLastOrderAction,
         getRequiresAction,
-        trialingSubscriptions,
+        futureSubscriptions,
         stripe,
         stripeExpress,
         $t,
@@ -63,6 +63,7 @@ define(
             paymentElement: null,
             zeroDecimalCurrencies: ['BIF','CLP','DJF','GNF','JPY','KMF','KRW','MGA','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF'],
             threeDecimalCurrencies: ['BHD','JOD','KWD','OMR','TND'],
+            selectedPaymentMethodCode: null,
 
             initObservable: function ()
             {
@@ -80,6 +81,7 @@ define(
                         'useQuoteBillingAddress',
                         'cvcToken',
                         'paymentElementPaymentMethod',
+                        'isPlaceOrderActionAllowed',
 
                         // Saved payment methods dropdown
                         'dropdownOptions',
@@ -236,6 +238,11 @@ define(
 
             getPaymentMethodId: function()
             {
+                if (this.isExternalPaymentMethodCode(this.selectedPaymentMethodCode))
+                {
+                    return this.selectedPaymentMethodCode;
+                }
+
                 var selection = this.selection();
 
                 if (selection && typeof selection.value != "undefined" && selection.value != "new")
@@ -294,6 +301,23 @@ define(
             getInitParams: function()
             {
                 return window.checkoutConfig.payment.stripe_payments.initParams;
+            },
+
+            isWalletEnabled: function(walletName)
+            {
+                if (window.checkoutConfig &&
+                    window.checkoutConfig.payment &&
+                    window.checkoutConfig.payment.express_checkout &&
+                    window.checkoutConfig.payment.express_checkout.buttonConfig &&
+                    window.checkoutConfig.payment.express_checkout.buttonConfig.paymentMethods &&
+                    window.checkoutConfig.payment.express_checkout.buttonConfig.paymentMethods[walletName]
+                )
+                {
+                    var value = window.checkoutConfig.payment.express_checkout.buttonConfig.paymentMethods[walletName];
+                    return (value == "always" || value == "auto");
+                }
+
+                return false;
             },
 
             onPaymentElementContainerRendered: function()
@@ -363,6 +387,7 @@ define(
                         self.cardCvcElement = elements.create('cardCvc', self.getCardCVCOptions());
                         self.cardCvcElement.mount('#stripe-card-cvc-element');
                         self.cardCvcElement.on('change', self.onCvcChange.bind(self));
+                        self.cardCvcElement.on('loaderror', self.onLoadError.bind(self));
                     }
                     catch (e)
                     {
@@ -388,7 +413,7 @@ define(
                 else
                     this.permanentError($t("Sorry, this payment method is not available. Please contact us for assistance."));
 
-                console.error("Error: " + message);
+                console.error("Error: ", message);
             },
 
             softCrash: function(message)
@@ -399,7 +424,7 @@ define(
                 else
                     this.showError($t("Sorry, this payment method is not available. Please contact us for assistance."));
 
-                console.error("Error: " + message);
+                console.error("Error: ", message);
             },
 
             isCollapsed: function()
@@ -445,6 +470,7 @@ define(
                     this.paymentElement = this.elements.create('payment', this.getPaymentElementOptions());
                     this.paymentElement.mount('#stripe-payment-element');
                     this.paymentElement.on('change', this.onChange.bind(this));
+                    this.paymentElement.on('loaderror', this.onLoadError.bind(this));
                 }
                 catch (e)
                 {
@@ -452,20 +478,98 @@ define(
                 }
             },
 
+            onLoadError: function(event)
+            {
+                if (event && event.error && event.error.message)
+                {
+                    this.permanentError(event.error.message);
+                }
+                else
+                {
+                    this.crash(event);
+                }
+            },
+
+            shouldHideRedirectBasedPaymentMethods: function()
+            {
+                var totals = quote.totals();
+                if (!totals || !totals.total_segments || !totals.total_segments.length)
+                {
+                    return false;
+                }
+
+                var targetSegments = ["giftcardaccount", "customerbalance", "reward"];
+
+                for (var i = 0; i < totals.total_segments.length; i++)
+                {
+                    var segment = totals.total_segments[i];
+                    if (targetSegments.indexOf(segment.code) >= 0 && !isNaN(segment.value) && segment.value != 0)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            },
+
             getElementsOptions: function(filterPaymentMethods)
             {
-                var options = window.checkoutConfig.payment.stripe_payments.elementOptions;
+                var options = Object.assign({}, window.checkoutConfig.payment.stripe_payments.elementOptions);
 
-                if (!filterPaymentMethods && options.payment_method_types)
-                    delete options.payment_method_types;
+                if (this.shouldHideRedirectBasedPaymentMethods())
+                {
+                    options.paymentMethodTypes = ['card'];
+
+                    if (this.isWalletEnabled("link"))
+                    {
+                        options.paymentMethodTypes.push('link');
+                    }
+                }
+                else if (options.paymentMethodTypes)
+                {
+                    // Case where paymentMethodOptions were passed from the server side
+                }
+                else
+                {
+                    // Unset any previously set paymentMethodTypes in case a gift card was removed etc
+                    options.paymentMethodTypes = null;
+                }
+
+                if (!filterPaymentMethods && options.paymentMethodTypes)
+                    delete options.paymentMethodTypes;
 
                 if (options.mode != "setup")
                 {
                     options.amount = this.getElementsAmount();
-                    options.currency = this.getElementsCurrency();
+                }
+
+                var externalPaymentMethods = this.getExternalPaymentMethods();
+                if (externalPaymentMethods)
+                {
+                    options.externalPaymentMethodTypes = externalPaymentMethods.map(function(method)
+                    {
+                        return method.code;
+                    });
                 }
 
                 return options;
+            },
+
+            getExternalPaymentMethods: function()
+            {
+                var initParams = this.getInitParams();
+
+                if (initParams &&
+                    initParams.externalPaymentMethods &&
+                    initParams.externalPaymentMethods.length > 0 &&
+                    initParams.externalPaymentMethods[0].code &&
+                    initParams.externalPaymentMethods[0].redirect_url
+                )
+                {
+                    return initParams.externalPaymentMethods;
+                }
+
+                return null;
             },
 
             getPaymentElementOptions: function()
@@ -473,8 +577,17 @@ define(
                 var options = {};
 
                 var params = this.getInitParams();
-                if (params && typeof params.wallets != "undefined" && params.wallets)
-                    options.wallets = params.wallets;
+                if (params)
+                {
+                    if (params.wallets)
+                        options.wallets = params.wallets;
+
+                    if (params.layout)
+                        options.layout = params.layout;
+
+                    if (params.terms)
+                        options.terms = params.terms;
+                }
 
                 var billingAddress = quote.billingAddress();
 
@@ -490,7 +603,7 @@ define(
                             billingDetails: {
                                 name: 'never',
                                 email: 'never',
-                                phone: (billingAddress.telephone ? 'never' : 'auto'),
+                                phone: 'auto',
                                 address: {
                                     line1: ((billingAddress.street.length > 0) ? 'never' : 'auto'),
                                     line2: ((billingAddress.street.length > 0) ? 'never' : 'auto'),
@@ -525,11 +638,6 @@ define(
                     this.useQuoteBillingAddress(false);
                 }
 
-                if (params.layout)
-                {
-                    options.layout = params.layout;
-                }
-
                 return options;
             },
 
@@ -549,6 +657,45 @@ define(
             {
                 this.isLoading(false);
                 this.isPaymentFormComplete(event.complete);
+
+                if (event.value && event.value.type)
+                {
+                    this.selectedPaymentMethodCode = event.value.type;
+                }
+                else
+                {
+                    this.selectedPaymentMethodCode = null;
+                }
+            },
+
+            isExternalPaymentMethodCode: function(code)
+            {
+                var methods = this.getExternalPaymentMethods();
+                if (!methods)
+                    return false;
+
+                for (var i = 0; i < methods.length; i++)
+                {
+                    if (methods[i].code == code)
+                        return true;
+                }
+
+                return false;
+            },
+
+            getExternalPaymentMethodRedirectUrl: function(code)
+            {
+                var methods = this.getExternalPaymentMethods();
+                if (!methods)
+                    return null;
+
+                for (var i = 0; i < methods.length; i++)
+                {
+                    if (methods[i].code == code)
+                        return methods[i].redirect_url;
+                }
+
+                return null;
             },
 
             getElementsAmount: function()
@@ -557,6 +704,20 @@ define(
 
                 if (totals && totals.grand_total)
                 {
+                    // If total_segments includes a grand_total, we use that instead
+                    if (totals.total_segments && totals.total_segments.length > 0)
+                    {
+                        for (var i = 0; i < totals.total_segments.length; i++)
+                        {
+                            var segment = totals.total_segments[i];
+                            if (segment.code == "grand_total")
+                            {
+                                return this.convertToStripeAmount(segment.value, this.getElementsCurrency());
+                            }
+                        }
+                    }
+
+                    // Othewise use the quote grand total
                     var amount = totals.grand_total;
                     return this.convertToStripeAmount(amount, this.getElementsCurrency());
                 }
@@ -605,6 +766,9 @@ define(
                     return false;
 
                 if (this.permanentError())
+                    return false;
+
+                if (!this.isPlaceOrderActionAllowed())
                     return false;
 
                 return this.isBillingAddressSet();
@@ -740,6 +904,10 @@ define(
                 else if (this.isSavedPaymentMethodSelected())
                 {
                     this.placeOrderWithSavedPaymentMethod();
+                }
+                else if (this.isExternalPaymentMethodCode(this.selectedPaymentMethodCode))
+                {
+                    this.onPaymentMethodCreatedForOrderPlacement();
                 }
                 else
                 {
@@ -927,6 +1095,7 @@ define(
             {
                 var self = this;
 
+                this.isPlaceOrderActionAllowed(false);
                 this.isLoading(false); // Needed for the terms and conditions checkbox
                 this.getPlaceOrderDeferredObject()
                     .fail(this.handlePlaceOrderErrors.bind(this))
@@ -936,6 +1105,11 @@ define(
                         if (status != "success")
                         {
                             self.isLoading(false);
+
+                            if (response.responseJSON && response.responseJSON.message && response.responseJSON.message.indexOf("Authentication Required: ") < 0)
+                            {
+                                self.isPlaceOrderActionAllowed(true);
+                            }
                         }
                     });
             },
@@ -967,6 +1141,13 @@ define(
                 }
 
                 this.isLoading(true);
+
+                if (this.isExternalPaymentMethodCode(this.selectedPaymentMethodCode))
+                {
+                    window.location.href = this.getExternalPaymentMethodRedirectUrl(this.selectedPaymentMethodCode);
+                    return;
+                }
+
                 var self = this;
                 var handleNextActions = this.handleNextActions.bind(this);
                 getRequiresAction(function(clientSecret)
@@ -1259,7 +1440,7 @@ define(
             showError: function(message)
             {
                 this.isLoading(false);
-                this.isPlaceOrderEnabled(true);
+                this.isPlaceOrderActionAllowed(true);
                 this.messageContainer.addErrorMessage({ "message": message });
             },
 

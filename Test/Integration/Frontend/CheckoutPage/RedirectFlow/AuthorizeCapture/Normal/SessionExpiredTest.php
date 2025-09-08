@@ -20,6 +20,7 @@ class SessionExpiredTest extends \PHPUnit\Framework\TestCase
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testMixedCart()
     {

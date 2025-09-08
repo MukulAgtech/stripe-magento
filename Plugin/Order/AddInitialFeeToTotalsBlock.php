@@ -49,10 +49,22 @@ class AddInitialFeeToTotalsBlock
         $orderItems = $this->getFilteredOrderItems($subject, $order);
 
         if (!isset($this->fees[$order->getId()]))
-            $this->fees[$order->getId()] = $this->helper->getTotalInitialFeeForOrder($orderItems, $order);
+        {
+            $totalsType = $subject->getType();
+            if (strpos($totalsType, "Magento\Sales\Block\Adminhtml\Order\Creditmemo\Totals") === 0)
+            {
+                $creditmemo = $subject->getCreditmemo();
+                $this->fees[$order->getId()] = $this->helper->getTotalInitialFeeForCreditmemo($creditmemo, null);
+            }
+            else
+            {
+                $this->fees[$order->getId()] = $this->helper->getTotalInitialFeeForOrder($orderItems, $order);
+            }
+        }
 
         $baseFee = $this->fees[$order->getId()]['base_initial_fee'];
         $fee = $this->fees[$order->getId()]['initial_fee'];
+
         if ($fee > 0)
         {
             $subject->addTotalBefore(new DataObject([

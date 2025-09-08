@@ -3,6 +3,7 @@
 namespace StripeIntegration\Payments\Model;
 
 use StripeIntegration\Payments\Exception\GenericException;
+use StripeIntegration\Payments\Exception\OrderPlacedAndPaidException;
 
 class PaymentElement extends \Magento\Framework\Model\AbstractModel
 {
@@ -26,6 +27,12 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
     private $stripePaymentMethodFactory;
     private $setupIntentCollection;
     private $checkoutFlow;
+    private $orderValidator;
+    private $errorHelper;
+    private $stripePaymentMethod;
+    private $paymentState;
+    private $areaCodeHelper;
+    private $stripeClient;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\Data $dataHelper,
@@ -35,18 +42,24 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\OrderValidator $orderValidator,
+        \StripeIntegration\Payments\Helper\Error $errorHelper,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
         \StripeIntegration\Payments\Model\PaymentIntentFactory $paymentIntentModelFactory,
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Order\PaymentState $paymentState,
         \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethod $stripePaymentMethod,
         \StripeIntegration\Payments\Model\Stripe\PaymentIntent $stripePaymentIntent,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodFactory,
+        \StripeIntegration\Payments\Model\Stripe\Client $stripeClient,
         \StripeIntegration\Payments\Model\ResourceModel\PaymentElement $resourceModel,
         \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\Collection $paymentIntentCollection,
         \StripeIntegration\Payments\Model\ResourceModel\SetupIntent\Collection $setupIntentCollection,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+        ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+        ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
         array $data = []
         )
     {
@@ -58,6 +71,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->cache = $context->getCacheManager();
         $this->config = $config;
+        $this->paymentState = $paymentState;
         $this->stripePaymentIntent = $stripePaymentIntent;
         $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
         $this->customer = $helper->getCustomerModel();
@@ -65,8 +79,13 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         $this->resourceModel = $resourceModel;
         $this->paymentIntentCollection = $paymentIntentCollection;
         $this->setupIntentCollection = $setupIntentCollection;
+        $this->orderValidator = $orderValidator;
         $this->orderHelper = $orderHelper;
+        $this->errorHelper = $errorHelper;
+        $this->areaCodeHelper = $areaCodeHelper;
         $this->checkoutFlow = $checkoutFlow;
+        $this->stripePaymentMethod = $stripePaymentMethod;
+        $this->stripeClient = $stripeClient;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
     }
@@ -78,8 +97,18 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
 
     public function updateFromOrder($order)
     {
-        if (empty($order))
-            throw new GenericException("No order specified.");
+        try
+        {
+            if (!$this->helper->isMultiShipping())
+            {
+                $this->orderValidator->validate($order);
+            }
+        }
+        catch (OrderPlacedAndPaidException $e)
+        {
+            $this->quoteHelper->deactivateQuoteById($order->getQuoteId());
+            return $this->helper->throwError(__("The order has already been placed and paid."));
+        }
 
         $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
 
@@ -103,7 +132,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
                 }
 
                 $oldOrder->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
-                $this->helper->removeTransactions($oldOrder);
+                $this->orderHelper->removeTransactions($oldOrder);
                 $this->helper->cancelOrCloseOrder($oldOrder, true);
             }
         }
@@ -129,8 +158,15 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
 
         // Update any existing subscriptions
         $paymentIntentModel = $this->paymentIntentModelFactory->create();
-        $params = $paymentIntentModel->getParamsFrom($quote, $order);
+        $params = $paymentIntentModel->getParamsFrom($order);
+
+        if (!empty($params['payment_method']))
+        {
+            $this->validatePaymentMethod($params['payment_method']);
+        }
+
         $subscription = $this->subscriptionsHelper->updateSubscriptionFromOrder($order, $this->getSubscriptionId(), $params);
+
         if (!empty($subscription->id))
         {
             $this->updateFromSubscription($subscription);
@@ -197,13 +233,22 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         $this->resourceModel->save($this);
     }
 
-    // This method checks if any subscriptions with future start dates are in the cart,
+    public function validatePaymentMethod($paymentMethodId)
+    {
+        $paymentMethod = $this->stripePaymentMethod->fromPaymentMethodId($paymentMethodId)->getStripeObject();
+        if (!empty($paymentMethod->customer) && $this->customer->getStripeId() && $paymentMethod->customer != $this->customer->getStripeId())
+        {
+            $this->helper->throwError(__("This payment method cannot be used."));
+        }
+    }
+
+    // This method checks if any subscriptions with start dates are in the cart,
     // and if so, tries to set up a saved payment method to be used later for the
     // subscription creation when the setup intent eventually succeeds.
     // Returns a confirmed SetupIntent model only if it requires microdeposits verification
     public function setupPaymentMethod($order): ?\StripeIntegration\Payments\Model\SetupIntent
     {
-        if (!$this->quoteHelper->hasSubscriptionsWithFutureStartDate())
+        if (!$this->quoteHelper->hasSubscriptionsWithStartDate())
             return null;
 
         if ($order->getPayment()->getAdditionalInformation("confirmation_token"))
@@ -254,7 +299,8 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         }
 
         $orders = $this->helper->getOrdersByTransactionId($transactionId);
-        $comment = __("The cart contents or customer details have changed. The order is canceled because a new one will be placed (#%1) with the new details.", $currentOrder->getIncrementId());
+
+        $comment = __("The cart contents or customer details have changed, or a checkout crash occurred. The order is canceled because a new one will be placed (#%1).", $currentOrder->getIncrementId());
 
         foreach ($orders as $order)
         {
@@ -276,7 +322,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
                     continue;
                 }
                 $order->addStatusToHistory($status = false, $comment, $isCustomerNotified = false);
-                $this->helper->removeTransactions($order);
+                $this->orderHelper->removeTransactions($order);
                 $this->helper->cancelOrCloseOrder($order, true);
 
                 if ($currentOrder->getQuoteId() != $order->getQuoteId())
@@ -478,26 +524,21 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
                 // We get here in 2 cases:
                 // a) A checkout crash in a sales_order_place_after observer may have forced the customer to place the order twice
                 // b) Non-PaymentElement 3D Secure authentications or handleNextActions, which were done on the client side, i.e. GraphQL, Wallet button etc
+                $this->paymentState->setConfirmedPaymentIntent($confirmationObject);
                 return $confirmationObject;
             }
 
             $confirmParams = $this->paymentIntentHelper->getConfirmParams($order, $confirmationObject, true);
-
-            try
+            if ($this->areaCodeHelper->isAdmin())
+            {
+                $result = $this->stripeClient->adminConfirmPaymentIntent($confirmationObject->id, $confirmParams);
+            }
+            else
             {
                 $result = $this->config->getStripeClient()->paymentIntents->confirm($confirmationObject->id, $confirmParams);
-                $this->paymentIntent = $result;
             }
-            catch (\Stripe\Exception\InvalidRequestException $e)
-            {
-                if (!$this->dataHelper->isMOTOError($e->getError()))
-                    throw $e;
-
-                $this->cache->save($value = "1", $key = "no_moto_gate", ["stripe_payments"], $lifetime = 6 * 60 * 60);
-                unset($confirmParams['payment_method_options']['card']['moto']);
-                $result = $this->config->getStripeClient()->paymentIntents->confirm($confirmationObject->id, $confirmParams);
-                $this->paymentIntent = $result;
-            }
+            $this->paymentIntent = $result;
+            $this->paymentState->setConfirmedPaymentIntent($result);
         }
         else if ($confirmationObject = $this->getSetupIntent())
         {
@@ -526,7 +567,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
             }
             catch (\Stripe\Exception\InvalidRequestException $e)
             {
-                if (!$this->dataHelper->isMOTOError($e->getError()))
+                if (!$this->errorHelper->isMOTOError($e->getError()))
                     throw $e;
 
                 $this->cache->save($value = "1", $key = "no_moto_gate", ["stripe_payments"], $lifetime = 6 * 60 * 60);
@@ -540,6 +581,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
             // We get here in the following scenarios:
             // - Buying a subscription which has a start date, and not payment is required today
             // - Buying a subscription with ACH Direct Debit, which requires a bank account microdeposit verification
+            // - A subscription is being re-activated, but it no longer has a PM, so one is collected via the checkout page
             $confirmationObject = $this->updateSubscriptionFromOrder($confirmationObject, $order);
 
             if ($confirmationObject->status == "trialing")
@@ -600,6 +642,7 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
                 else
                 {
                     // A subscription could be in incomplete status if user actions are required, i.e. verification of microdeposits with ACH.
+                    // Subscription re-activations with a billing_cycle_anchor will also hit here.
                     return $confirmationObject;
                 }
             }
@@ -631,17 +674,17 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         if (($subscription->status == "trialing" || $subscription->status == "active") &&
             empty($subscription->default_payment_method))
         {
-            $paymentMethodToken = $order->getPayment()->getAdditionalInformation("token");
-            if ($paymentMethodToken)
+            $paymentMethodId = $this->orderHelper->getPaymentMethodId($order);
+            if ($paymentMethodId)
             {
                 try
                 {
                     // Attach the payment method to the customer
-                    $this->config->getStripeClient()->paymentMethods->attach($paymentMethodToken, [
+                    $this->config->getStripeClient()->paymentMethods->attach($paymentMethodId, [
                         'customer' => $this->customer->getStripeId()
                     ]);
 
-                    $updateParams['default_payment_method'] = $paymentMethodToken;
+                    $updateParams['default_payment_method'] = $paymentMethodId;
                 }
                 catch (\Exception $e)
                 {
@@ -680,6 +723,61 @@ class PaymentElement extends \Magento\Framework\Model\AbstractModel
         if ($this->setupIntent && $this->setupIntent->status == "requires_confirmation")
         {
             return true;
+        }
+
+        return false;
+    }
+
+    public function hasPaymentMethodChanged()
+    {
+
+        if (!$this->paymentIntent && !$this->setupIntent)
+        {
+            if ($this->getPaymentIntentId())
+            {
+                $obj = $this->paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($this->getPaymentIntentId(), []);
+            }
+            else if ($this->getSetupIntentId())
+            {
+                $obj = $this->setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($this->getSetupIntentId(), []);
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        if (!$this->getOrderIncrementId())
+        {
+            return false;
+        }
+
+        $order = $this->orderHelper->loadOrderByIncrementId($this->getOrderIncrementId());
+        if (!$order)
+        {
+            return false;
+        }
+
+        $paymentMethodId = $order->getPayment()->getAdditionalInformation("token");
+        if (empty($paymentMethodId))
+        {
+            return false;
+        }
+
+        if ($this->paymentIntent)
+        {
+            if (empty($this->paymentIntent->payment_method) || $this->paymentIntent->payment_method != $paymentMethodId)
+            {
+                return true;
+            }
+        }
+
+        if ($this->setupIntent)
+        {
+            if (empty($this->setupIntent->payment_method) || $this->setupIntent->payment_method != $paymentMethodId)
+            {
+                return true;
+            }
         }
 
         return false;

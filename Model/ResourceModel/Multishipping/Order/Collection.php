@@ -22,4 +22,21 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
         return $collection;
     }
 
+    public function deleteByQuoteId($quoteId)
+    {
+        if (empty($quoteId) || !is_numeric($quoteId))
+            return false;
+
+        $this->clear()->getSelect()->reset(\Magento\Framework\DB\Select::WHERE);
+
+        $this->addFieldToFilter('quote_id', ['eq' => $quoteId]);
+
+        foreach ($this as $item)
+        {
+            $item->delete();
+        }
+
+        return true;
+    }
+
 }

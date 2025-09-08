@@ -13,8 +13,6 @@ define(
         {
             var serviceUrl = urlBuilder.createUrl('/stripe/payments/get_requires_action', {});
 
-            customerData.invalidate(['cart']);
-
             if (!promise)
                 promise = storage.get(serviceUrl);
             else
@@ -23,6 +21,7 @@ define(
             return promise.always(function(result, outcome, response)
             {
                 promise = null; // Marks it as resolved
+                customerData.invalidate(['cart']);
                 callback(result, outcome, response);
             });
         };

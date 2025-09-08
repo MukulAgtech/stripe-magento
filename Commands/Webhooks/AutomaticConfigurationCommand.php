@@ -29,9 +29,8 @@ class AutomaticConfigurationCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
         $enabled = $input->getArgument("enabled");
 
         $areaCode = $this->areaCodeFactory->create();

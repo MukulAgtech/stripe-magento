@@ -23,7 +23,7 @@ class RetryFailedWebhookEvents
         {
             if (!$webhookEventModel->shouldRetry())
             {
-                return false;
+                continue;
             }
 
             try

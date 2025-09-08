@@ -7,6 +7,9 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * @codeCoverageIgnore
+ */
 class ProcessEventCommand extends Command
 {
     private $areaCodeFactory;
@@ -35,7 +38,7 @@ class ProcessEventCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $eventId = $input->getArgument("event_id");
         $force = $input->getOption("force");

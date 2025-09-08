@@ -19,7 +19,7 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
                     ->addFieldToFilter('order_increment_id', ['eq' => $incrementId])
                     ->setOrder('created_at','ASC');
 
-        return $collection;
+        return $collection->getFirstItem();
     }
 
     public function getBySubscriptionId($subscriptionId)
@@ -30,10 +30,7 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
                     ->addFieldToFilter('subscription_id', ['eq' => $subscriptionId])
                     ->setOrder('created_at','DESC');
 
-        if ($collection->getSize() > 0)
-            return $collection->getFirstItem();
-
-        return null;
+        return $collection->getFirstItem();
     }
 
     public function getBySubscriptionStatus($status)

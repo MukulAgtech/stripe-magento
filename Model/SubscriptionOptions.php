@@ -13,8 +13,8 @@ class SubscriptionOptions extends \Magento\Framework\Model\AbstractModel impleme
         \StripeIntegration\Payments\Model\ConfigFactory $configFactory,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+        ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+        ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
         array $data = []
     ) {
         $this->configFactory = $configFactory;
@@ -35,30 +35,6 @@ class SubscriptionOptions extends \Magento\Framework\Model\AbstractModel impleme
         else
         {
             return $this->getData("upgrades_downgrades");
-        }
-    }
-
-    public function getProrateUpgrades()
-    {
-        if ($this->getProrateUpgradesUseConfig())
-        {
-            return $this->getConfig()->getConfigData("prorations_upgrades", "subscriptions");
-        }
-        else
-        {
-            return $this->getData("prorate_upgrades");
-        }
-    }
-
-    public function getProrateDowngrades()
-    {
-        if ($this->getProrateDowngradesUseConfig())
-        {
-            return $this->getConfig()->getConfigData("prorations_downgrades", "subscriptions");
-        }
-        else
-        {
-            return $this->getData("prorate_downgrades");
         }
     }
 

@@ -23,7 +23,7 @@
         <h2>Verification Details</h2>
     </legend>
 
-    <p class="form-instructions">Please verify your bank account ending <b><?= $block->getBankAccountLast4(); // phpcs:ignore ?></b> by entering the two micro-deposits that appear in your bank statement as <b>AMNTS:</b></p>
+    <p class="form-instructions">Please verify your bank account ending <b><?= $block->escapeHtml($block->getBankAccountLast4()); ?></b> by entering the two micro-deposits that appear in your bank statement as <b>AMNTS:</b></p>
 
     <div class="field required">
         <label class="label" for="amount1"><span>Amount 1</span></label>

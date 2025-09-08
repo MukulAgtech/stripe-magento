@@ -2,7 +2,7 @@
 
 namespace StripeIntegration\Payments\Model\Stripe\Event;
 
-use StripeIntegration\Payments\Exception\LocalizedException;
+use StripeIntegration\Payments\Exception\WebhookException;
 use StripeIntegration\Payments\Exception\MissingOrderException;
 use StripeIntegration\Payments\Model\Stripe\StripeObjectTrait;
 
@@ -21,6 +21,7 @@ class SetupIntentSucceeded
     private $helper;
     private $customerModel;
     private $paymentIntentHelper;
+    private $stripeSubscriptionFactory;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
@@ -28,6 +29,7 @@ class SetupIntentSucceeded
         \StripeIntegration\Payments\Model\PaymentElementFactory $paymentElementFactory,
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntentModel,
         \StripeIntegration\Payments\Model\ResourceModel\SetupIntent\Collection $setupIntentCollection,
+        \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $stripeSubscriptionFactory,
         \StripeIntegration\Payments\Helper\Webhooks $webhooksHelper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Generic $helper,
@@ -46,6 +48,7 @@ class SetupIntentSucceeded
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->helper = $helper;
         $this->setupIntentCollection = $setupIntentCollection;
+        $this->stripeSubscriptionFactory = $stripeSubscriptionFactory;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
         $this->customerModel = $this->helper->getCustomerModel();
@@ -71,6 +74,14 @@ class SetupIntentSucceeded
             return $this->setupDelayedSubscription($setupIntentModel->getStripeObject(), $order);
         }
 
+        if ($order->getPayment()->getAdditionalInformation("payment_action") == "order")
+        {
+            $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($object['id']);
+            $this->paymentIntentModel->processSuccessfulOrder($order, $setupIntent);
+            $this->helper->setProcessingState($order, __("The payment method has been authenticated and saved."));
+            $this->orderHelper->saveOrder($order);
+        }
+
         return $this->updateTrialSubscriptionMetadata($object['id'], $order, $object);
     }
 
@@ -85,7 +96,8 @@ class SetupIntentSucceeded
         if (!$paymentElement->getSubscriptionId())
             return null;
 
-        $subscription = $this->config->getStripeClient()->subscriptions->retrieve($paymentElement->getSubscriptionId());
+        $stripeSubscriptionModel = $this->stripeSubscriptionFactory->create()->fromSubscriptionId($paymentElement->getSubscriptionId());
+        $subscription = $stripeSubscriptionModel->getStripeObject();
 
         $updateData = [];
 
@@ -103,12 +115,42 @@ class SetupIntentSucceeded
 
         if (!empty($updateData))
         {
-            $subscription = $this->config->getStripeClient()->subscriptions->update($subscription->id, $updateData);
+            $subscription = $stripeSubscriptionModel->update($updateData);
         }
 
-        $this->webhooksHelper->processTrialingSubscriptionOrder($order, $subscription);
+        if ($subscription->status == "trialing")
+        {
+            $this->processTrialingSubscriptionOrder($order, $subscription);
+        }
 
         return $subscription;
+    }
+
+    protected function processTrialingSubscriptionOrder($order, \Stripe\Subscription $subscription)
+    {
+        if ($subscription->status != "trialing")
+        {
+            throw new WebhookException("The subscription is not in trialing status.");
+        }
+
+        // Trial subscriptions should still be fulfilled. A new order will be created when the trial ends.
+        $state = \Magento\Sales\Model\Order::STATE_PROCESSING;
+        $status = $order->getConfig()->getStateDefaultStatus($state);
+        $comment = __("Your trial period for order #%1 has started.", $order->getIncrementId());
+        $order->setState($state)->addStatusToHistory($status, $comment, $isCustomerNotified = true);
+
+        if ($this->subscriptionsHelper->isZeroAmountOrder($order))
+        {
+            if (!$order->getEmailSent())
+            {
+                $this->orderHelper->sendNewOrderEmailFor($order, true);
+            }
+
+            // There will be no charge.succeeded event for trial subscription orders, so create the invoice here.
+            $this->helper->invoiceOrder($order, null, \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE);
+        }
+
+        $this->orderHelper->saveOrder($order);
     }
 
     protected function setupDelayedSubscription(\Stripe\SetupIntent $setupIntent, $order)
@@ -116,63 +158,68 @@ class SetupIntentSucceeded
         $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
         if (!$quote->getId())
         {
-            throw new \Exception("Could not set up subscription for order becuase the order's quote could not be loaded.");
+            throw new WebhookException("Could not set up subscription for order becuase the order's quote could not be loaded.");
         }
 
         if (empty($setupIntent->payment_method))
         {
-            throw new \Exception("Could not set up subscription for order because the payment method is missing.");
+            throw new WebhookException("Could not set up subscription for order because the payment method is missing.");
         }
 
         if (empty($setupIntent->customer))
         {
-            throw new \Exception("Could not set up subscription for order because the customer is missing.");
+            throw new WebhookException("Could not set up subscription for order because the customer is missing.");
         }
 
         $this->customerModel->fromStripeCustomerId($setupIntent->customer);
         $order->getPayment()->setAdditionalInformation("token", $setupIntent->payment_method);
-        $params = $this->paymentIntentModel->getParamsFrom($quote, $order);
+        $params = $this->paymentIntentModel->getParamsFrom($order);
         /** @var \Stripe\Subscription $subscription */
         $subscription = $this->subscriptionsHelper->updateSubscriptionFromOrder($order, null, $params);
         if (!empty($subscription->id))
         {
-            try
+            $msg = __("Successfully verified the payment method");
+            $this->orderHelper->addOrderComment($msg, $order);
+            $this->paymentIntentModel->processFutureSubscriptionOrder($order, $subscription->customer, $subscription->id);
+            $this->orderHelper->saveOrder($order);
+
+            // The payment confirmation must be last, because a charge.succeeded event will be triggered, and we want
+            // to avoid race conditions with charge.succeeded.
+            if ($subscription->status == "incomplete")
             {
-                $msg = __("Successfully verified the payment method");
-                $this->orderHelper->addOrderComment($msg, $order);
-                $this->paymentIntentModel->processFutureSubscriptionOrder($order, $subscription->customer, $subscription->id);
-                $this->orderHelper->saveOrder($order);
-
-                // The payment confirmation must be last, because a charge.succeeded event will be triggered, and we want
-                // to avoid race conditions with charge.succeeded.
-                if ($subscription->status == "incomplete")
+                if (!empty($subscription->latest_invoice->payment_intent->id))
                 {
-                    if (!empty($subscription->latest_invoice->payment_intent->id))
-                    {
-                        // We get here when a subscription with a future start date is purchased together with a regular product
-                        $invoice = $this->config->getStripeClient()->invoices->pay($subscription->latest_invoice->id, [
-                            'expand' => ['payment_intent', 'subscription']
-                        ]);
+                    // We get here when a subscription with a future start date is purchased together with a regular product
+                    $invoice = $this->config->getStripeClient()->invoices->pay($subscription->latest_invoice->id, [
+                        'expand' => ['payment_intent', 'subscription']
+                    ]);
 
-                        // Reload the subscription
-                        $subscription = $invoice->subscription;
-                    }
-                    else
-                    {
-                        $msg = __("The payment method has been verified but the subscription is incomplete. Please try again.");
-                        throw new LocalizedException($msg);
-                    }
+                    // Reload the subscription
+                    $subscription = $invoice->subscription;
                 }
-
-                if (!in_array($subscription->status, ["active", "trialing"]))
+                else
                 {
-                    $msg = __("The payment method has been verified but the subscription is not active. Please try again.");
-                    throw new LocalizedException($msg);
+                    $msg = __("The payment method has been verified but the subscription is incomplete. Please try again.");
+                    $this->orderHelper->addOrderComment($msg, $order);
+                    $this->orderHelper->saveOrder($order);
+                    return $subscription;
                 }
             }
-            catch (LocalizedException $e)
+            else if ($subscription->latest_invoice->status == "open")
             {
-                $this->orderHelper->addOrderComment($e->getMessage(), $order);
+                // We get here when a subscription has a configured start date of which the first payment is on the order date
+                $invoice = $this->config->getStripeClient()->invoices->pay($subscription->latest_invoice->id, [
+                    'expand' => ['payment_intent', 'subscription']
+                ]);
+
+                // Reload the subscription
+                $subscription = $invoice->subscription;
+            }
+
+            if (!in_array($subscription->status, ["active", "trialing"]))
+            {
+                $msg = __("The payment method has been verified but the subscription is not active. Please try again.");
+                $this->orderHelper->addOrderComment($msg, $order);
                 $this->orderHelper->saveOrder($order);
                 return $subscription;
             }

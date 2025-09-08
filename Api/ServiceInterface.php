@@ -5,14 +5,6 @@ namespace StripeIntegration\Payments\Api;
 interface ServiceInterface
 {
     /**
-     * Returns the Stripe Checkout redirect URL
-     *
-     * @api
-     * @return string Redirect Url
-     */
-    public function redirect_url();
-
-    /**
      * Get Express Checkout Element initialization params
      *
      * @api
@@ -47,16 +39,6 @@ interface ServiceInterface
     public function ece_shipping_rate_changed($address, $shipping_id = null);
 
     /**
-     * Set billing address from data object
-     *
-     * @api
-     * @param mixed $data
-     *
-     * @return string
-     */
-    public function set_billing_address($data);
-
-    /**
      * Place Order
      *
      * @api
@@ -88,7 +70,7 @@ interface ServiceInterface
      * @param string|null $couponCode
      * @return string
      */
-    public function get_trialing_subscriptions($billingAddress = null, $shippingAddress = null, $shippingMethod = null, $couponCode = null);
+    public function get_future_subscriptions($billingAddress = null, $shippingAddress = null, $shippingMethod = null, $couponCode = null);
 
     /**
      * Get Stripe Checkout available payment methods for the ative customer quote
@@ -164,7 +146,7 @@ interface ServiceInterface
     public function finalize_multishipping_order($quoteId = null, $error = null);
 
     /**
-     * For subscription updates, it retrieves totals with prorations for the subscription update
+     * For subscription updates, it retrieves totals for the subscription update
      *
      * @api
      *

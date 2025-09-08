@@ -38,18 +38,23 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         $eventHelper = $this->tests->event();
         $subscriptionId = $order->getPayment()->getAdditionalInformation("subscription_id");
+        $this->assertNotEmpty($subscriptionId);
+
+        $subscription = $this->tests->stripe()->subscriptions->retrieve($subscriptionId);
+        $this->assertEquals("trialing", $subscription->status);
+        $this->assertEquals(1583, $subscription->plan->amount);
         $eventHelper->triggerSubscriptionEventsById($subscriptionId);
 
         // Create the payment info block for $order
         $paymentInfoBlock = $this->objectManager->create(\StripeIntegration\Payments\Block\PaymentInfo\Element::class);
         $paymentInfoBlock->setOrder($order);
         $paymentInfoBlock->setInfo($order->getPayment());
+        $paymentInfoBlock->toHtml();
 
         // Test the payment info block
         $paymentMethod = $paymentInfoBlock->getPaymentMethod();
         $formattedAmount = $paymentInfoBlock->getFormattedAmount();
         $paymentStatus = $paymentInfoBlock->getPaymentStatus();
-        $isStripeMethod = $paymentInfoBlock->isStripeMethod();
         $paymentIntent = $paymentInfoBlock->getPaymentIntent();
         $subscription = $paymentInfoBlock->getSubscription();
         $setupIntent = $paymentInfoBlock->getSetupIntent();
@@ -64,7 +69,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertStringStartsWith("pm_", $paymentMethod->id);
         $this->assertEmpty($formattedAmount);
         $this->assertEmpty($paymentStatus);
-        $this->assertTrue($isStripeMethod);
         $this->assertStringStartsWith("sub_", $subscription->id);
         $this->assertStringStartsWith("seti_", $setupIntent->id);
         $this->assertStringStartsWith("http", $subscriptionOrderUrl);
@@ -81,25 +85,27 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Check Stripe Payment method
         $paymentMethod = $this->tests->loadPaymentMethod($order->getId());
-        $this->assertEquals('', $paymentMethod->getPaymentMethodType());
+        $this->assertEquals('card', $paymentMethod->getPaymentMethodType());
 
         // Assert order status, amount due
         $this->tests->compare($order->getData(), [
-            "total_paid" => 15.83,
+            "total_paid" => 0,
             "total_due" => 0,
-            "total_refunded" => 15.83,
-            "total_canceled" => 0,
+            "total_refunded" => "unset",
+            "total_canceled" => "unset",
             "state" => "processing",
             "status" => "processing"
         ]);
 
         $this->assertTrue($order->canShip());
-        $this->assertFalse($order->canCreditmemo());
+        $this->assertTrue($order->canCreditmemo());
 
         // Activate the subscription
         $ordersCount = $this->tests->getOrdersCount();
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->tests->endTrialSubscription($customer->subscriptions->data[0]->id);
         $newOrdersCount = $this->tests->getOrdersCount();
         $this->assertEquals($ordersCount + 1, $newOrdersCount);
@@ -118,7 +124,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         ]);
 
         // Process a recurring subscription billing webhook
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice);
         $this->tests->event()->trigger("invoice.payment_succeeded", $invoice, ['billing_reason' => 'subscription_cycle']);
         $newOrdersCount = $this->tests->getOrdersCount();
@@ -131,7 +139,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEquals($order->getIncrementId(), $newOrder->getIncrementId());
         $this->assertEquals("processing", $newOrder->getState());
         $this->assertEquals("processing", $newOrder->getStatus());
-        $this->assertEquals($order->getGrandTotal(), $newOrder->getGrandTotal());
+        $this->assertEquals(15.83, $newOrder->getGrandTotal());
         $this->assertEquals(0, $newOrder->getTotalDue());
         $this->assertEquals(1, $newOrder->getInvoiceCollection()->getSize());
         $this->assertStringContainsString("pi_", $newOrder->getInvoiceCollection()->getFirstItem()->getTransactionId());
@@ -147,5 +155,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
                 ]
             ]
         ]);
+
+        // Switch to the admin area
+        $this->objectManager->get(\Magento\Framework\App\State::class)->setAreaCode('adminhtml');
+        $order = $this->tests->refreshOrder($order);
+
+        // Create the payment info block for $order
+        $this->assertNotEmpty($this->tests->renderPaymentInfoBlock(\StripeIntegration\Payments\Block\PaymentInfo\Element::class, $order));
     }
 }

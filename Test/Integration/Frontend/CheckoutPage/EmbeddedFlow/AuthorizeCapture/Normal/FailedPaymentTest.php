@@ -64,7 +64,9 @@ class FailedPaymentTest extends \PHPUnit\Framework\TestCase
         $this->tests->confirm($order);
 
         // Check the payment intent in Stripe
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($this->paymentElement->getPaymentIntent()->id, []);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($this->paymentElement->getPaymentIntent()->id, [
+            'expand' => ['latest_charge']
+        ]);
         $this->tests->compare($paymentIntent, [
             'metadata' => [
                 'Order #' => $order->getIncrementId()
@@ -79,16 +81,12 @@ class FailedPaymentTest extends \PHPUnit\Framework\TestCase
             "currency" => "usd",
             "amount_received" => $grandTotal,
             "description" => "Order #$orderIncrementId by Joyce Strother",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $grandTotal,
-                        "amount_captured" => $grandTotal,
-                        "amount_refunded" => 0,
-                        "metadata" => [
-                            "Order #" => $orderIncrementId
-                        ]
-                    ]
+            "latest_charge" => [
+                "amount" => $grandTotal,
+                "amount_captured" => $grandTotal,
+                "amount_refunded" => 0,
+                "metadata" => [
+                    "Order #" => $orderIncrementId
                 ]
             ],
             "metadata" => [

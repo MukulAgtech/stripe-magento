@@ -123,43 +123,7 @@ class SubscriptionsTab extends AbstractModifier
                                     ]
                                 ]
                             ]
-                        ],
-                        'prorate_upgrades' => [
-                            'arguments' => [
-                                'data' => [
-                                    'config' => [
-                                        'visible' => $visibleParentSubscriptionOptions,
-                                    ]
-                                ]
-                            ]
-                        ],
-                        'prorate_upgrades_use_config' => [
-                            'arguments' => [
-                                'data' => [
-                                    'config' => [
-                                        'visible' => $visibleParentSubscriptionOptions,
-                                    ]
-                                ]
-                            ]
-                        ],
-                        'prorate_downgrades' => [
-                            'arguments' => [
-                                'data' => [
-                                    'config' => [
-                                        'visible' => $visibleParentSubscriptionOptions,
-                                    ]
-                                ]
-                            ]
-                        ],
-                        'prorate_downgrades_use_config' => [
-                            'arguments' => [
-                                'data' => [
-                                    'config' => [
-                                        'visible' => $visibleParentSubscriptionOptions,
-                                    ]
-                                ]
-                            ]
-                        ],
+                        ]
                     ]
                 ],
             ]
@@ -192,13 +156,8 @@ class SubscriptionsTab extends AbstractModifier
                                 'start_on_specific_date' => (bool)$model->getStartOnSpecificDate(),
                                 'start_date' => $model->getStartDate(),
                                 'first_payment' => $model->getFirstPayment(),
-                                'prorate_first_payment' => (bool)$model->getProrateFirstPayment(),
                                 'upgrades_downgrades' => (bool)$model->getUpgradesDowngrades(),
                                 'upgrades_downgrades_use_config' => $model->getUpgradesDowngradesUseConfig(),
-                                'prorate_upgrades' => (bool)$model->getProrateUpgrades(),
-                                'prorate_upgrades_use_config' => $model->getProrateUpgradesUseConfig(),
-                                'prorate_downgrades' => (bool)$model->getProrateDowngrades(),
-                                'prorate_downgrades_use_config' => $model->getProrateDowngradesUseConfig(),
                             ]
                         ],
                     ]

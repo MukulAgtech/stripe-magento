@@ -34,6 +34,42 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
     public function testAddresses()
     {
         $product = $this->helper->loadProductBySku("simple-product");
+
+        // Define the parameters as specified in the requirements
+        $location = "product";
+        $productId = $product->getId();
+
+        // Call the ece_params method with the specified parameters
+        $result = $this->apiService->ece_params($location, $productId);
+
+        // Verify the response is not empty
+        $this->assertNotEmpty($result);
+
+        // Parse the JSON response
+        $data = json_decode($result, true);
+
+        // Verify the structure of the response
+        $this->assertIsArray($data);
+        $this->assertArrayHasKey('resolvePayload', $data);
+        $this->assertArrayHasKey('elementOptions', $data);
+
+        // Verify the contents of the resolvePayload
+        $resolvePayload = $data['resolvePayload'];
+        $this->assertArrayHasKey('allowedShippingCountries', $resolvePayload);
+        $this->assertArrayHasKey('billingAddressRequired', $resolvePayload);
+        $this->assertArrayHasKey('emailRequired', $resolvePayload);
+        $this->assertArrayHasKey('phoneNumberRequired', $resolvePayload);
+        $this->assertArrayHasKey('shippingAddressRequired', $resolvePayload);
+
+        // Verify that the location parameter was passed correctly
+        $this->assertTrue($resolvePayload['billingAddressRequired'], 'Billing address should be required for product page');
+        $this->assertTrue($resolvePayload['shippingAddressRequired'], 'Shipping address should be required for product page');
+
+        // Verify the elementOptions contains necessary data
+        $elementOptions = $data['elementOptions'];
+        $this->assertIsArray($elementOptions);
+
+        // Test adding the product to the cart
         $request = [
             "product" => $product->getId(),
             "related_product" => "",
@@ -60,18 +96,11 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEmpty($data["resolvePayload"]['shippingRates']);
 
         $stripe = $this->stripeConfig->getStripeClient();
-        $paymentMethod = $stripe->paymentMethods->create([
-          'type' => 'card',
-          'card' => [
-            'number' => '4242424242424242',
-            'exp_month' => 7,
-            'exp_year' => date("Y", time()) + 1,
-            'cvc' => '314',
-          ],
-          'billing_details' => $this->tests->address()->getStripeFormat("NewYork")
+        $confirmationToken = $stripe->testHelpers->confirmationTokens->create([
+            'payment_method' => 'pm_card_visa'
         ]);
-        $this->assertNotEmpty($paymentMethod);
-        $this->assertNotEmpty($paymentMethod->id);
+        $this->assertNotEmpty($confirmationToken);
+        $this->assertNotEmpty($confirmationToken->id);
 
         $address = $this->tests->address()->getStripeFormat("NewYork");
         $result = [
@@ -80,10 +109,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "billingDetails" => $address,
             "shippingAddress" => $address,
             "shippingRate" =>  $selectedShippingMethod,
-            "paymentMethod" =>  $paymentMethod
+            "confirmationToken" =>  $confirmationToken
         ];
 
-        $this->markTestIncomplete('$result["confirmationToken"] must be created and passed to the API');
         $result = $this->apiService->place_order($result, "product");
         $this->assertNotEmpty($result);
 
@@ -102,13 +130,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Load the payment intent
         $paymentIntentId = $order->getPayment()->getLastTransId();
         $this->assertNotEmpty($paymentIntentId);
-        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId);
+        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId, ['expand' => ['latest_charge']]);
 
         // Stripe checks
         $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->amount);
-        $this->assertCount(1, $paymentIntent->charges->data);
-        $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->charges->data[0]->amount);
-        $this->assertEquals("succeeded", $paymentIntent->charges->data[0]->status);
+        $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->latest_charge->amount);
+        $this->assertEquals("succeeded", $paymentIntent->latest_charge->status);
         $this->assertEquals("Order #$orderIncrementId by Flint Jerry", $paymentIntent->description);
         $this->assertEquals($orderIncrementId, $paymentIntent->metadata->{"Order #"});
 

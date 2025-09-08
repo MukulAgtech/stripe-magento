@@ -4,46 +4,64 @@ namespace StripeIntegration\Payments\Helper;
 
 use Magento\Framework\Exception\LocalizedException;
 use StripeIntegration\Payments\Model\ResourceModel\StripePaymentMethod as ResourceStripePaymentMethod;
-use StripeIntegration\Payments\Model\StripePaymentMethodFactory;
 use Magento\Framework\Serialize\Serializer\Json;
 use Magento\Sales\Api\Data\OrderExtensionFactory;
-use Magento\Framework\App\State;
 
 class PaymentMethod
 {
     private $methodDetails = [];
     private $themeModel = null;
-    public const CAN_BE_SAVED_ON_SESSION = [
+    private const CAN_BE_SAVED_ON_SESSION = [
         'acss_debit',
         'au_becs_debit',
         'boleto',
         'card',
         'sepa_debit',
-        'us_bank_account' // ACHv2
+        'us_bank_account', // ACHv2
+        // Commented due to an issue with mandate data. Saved Korean payment methods cannot be reused for follow up orders.
+        // 'kr_card',
+        // 'kakao_pay'
     ];
-    public const CAN_BE_SAVED_OFF_SESSION = [ // Do not add methods that can be saved on_session here, see Model/PaymentIntent.php::getPaymentMethodOptions()
+
+    // These should always have setup_future_usage=off_session,
+    // because they do not support on_session saving.
+    // Do not add methods that can be saved on_session here.
+    private const CAN_ONLY_BE_SAVED_OFF_SESSION = [
         'bancontact',
         'ideal',
-        'sofort',
-        'link'
+        'link',
+        'revolut_pay',
+        'paypal'
     ];
+
     public const SUPPORTS_SUBSCRIPTIONS = [
         'card',
         'sepa_debit',
-        'us_bank_account' // ACHv2
+        'revolut_pay',
+        'us_bank_account'
     ];
     public const SETUP_INTENT_PAYMENT_METHOD_OPTIONS = [
         'acss_debit',
         'card',
         'sepa_debit',
-        'us_bank_account' // ACHv2
+        'us_bank_account'
     ];
     public const CAN_AUTHORIZE_ONLY = [
         'card',
         'link',
         'afterpay_clearpay',
         'klarna',
-        'paypal'
+        'paypal',
+        'amazon_pay',
+        'mobilepay',
+        'samsung_pay',
+        'kr_card',
+        'kakao_pay',
+        'naver_pay',
+        'payco',
+        'revolut_pay',
+        'satispay',
+        'billie'
     ];
     public const REQUIRES_VOUCHER_PAYMENT = [
         'boleto',
@@ -81,8 +99,7 @@ class PaymentMethod
         'konbini',
         'oxxo',
         'p24',
-        'paynow',
-        'sofort'
+        'paynow'
     ];
 
     private $dataHelper;
@@ -91,20 +108,21 @@ class PaymentMethod
     private $scopeConfig;
     private $storeManager;
     private $themeProvider;
+    private $checkoutFlow;
+    private $tokenHelper;
+    private $stripePaymentMethodModelFactory;
 
-    protected $stripePaymentMethodFactory;
+    protected $orderPaymentMethodFactory;
 
     protected $resourceStripePaymentMethod;
 
     protected $json;
 
-    private $checkoutSession;
-
     protected $orderExtensionFactory;
 
     private $appEmulation;
 
-    private $state;
+    private $areaCodeHelper;
 
     public function __construct(
         \Magento\Framework\App\RequestInterface $request,
@@ -112,28 +130,32 @@ class PaymentMethod
         \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
         \Magento\Store\Model\StoreManagerInterface $storeManager,
         \Magento\Framework\View\Design\Theme\ThemeProviderInterface $themeProvider,
-        \Magento\Checkout\Model\Session $checkoutSession,
         \StripeIntegration\Payments\Helper\Data $dataHelper,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
         ResourceStripePaymentMethod $resourceStripePaymentMethod,
-        StripePaymentMethodFactory $stripePaymentMethodFactory,
+        \StripeIntegration\Payments\Model\StripePaymentMethodFactory $orderPaymentMethodFactory,
+        \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodModelFactory,
         Json $json,
         OrderExtensionFactory $orderExtensionFactory,
-        \Magento\Store\Model\App\Emulation $appEmulation,
-        State $state
+        \Magento\Store\Model\App\Emulation $appEmulation
     ) {
         $this->request = $request;
         $this->assetRepo = $assetRepo;
         $this->scopeConfig = $scopeConfig;
         $this->storeManager = $storeManager;
         $this->themeProvider = $themeProvider;
-        $this->checkoutSession = $checkoutSession;
         $this->dataHelper = $dataHelper;
-        $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
+        $this->orderPaymentMethodFactory = $orderPaymentMethodFactory;
         $this->resourceStripePaymentMethod = $resourceStripePaymentMethod;
         $this->json = $json;
         $this->orderExtensionFactory = $orderExtensionFactory;
         $this->appEmulation = $appEmulation;
-        $this->state = $state;
+        $this->areaCodeHelper = $areaCodeHelper;
+        $this->checkoutFlow = $checkoutFlow;
+        $this->stripePaymentMethodModelFactory = $stripePaymentMethodModelFactory;
+        $this->tokenHelper = $tokenHelper;
     }
 
     public function getCardIcon($brand)
@@ -145,21 +167,13 @@ class PaymentMethod
         return $this->getPaymentMethodIcon('generic');
     }
 
-    public function getCardLabel($card, $hideLast4 = false, $array = false)
+    public function getCardLabel($card, $hideLast4 = false)
     {
-        if ($array) {
-            if (!empty($card['last4']) && !$hideLast4)
-                return __("•••• %1", $card['last4']);
+        if (!empty($card->last4) && !$hideLast4)
+            return __("•••• %1", $card->last4);
 
-            if (!empty($card['brand']))
-                return $this->getCardName($card['brand']);
-        } else {
-            if (!empty($card->last4) && !$hideLast4)
-                return __("•••• %1", $card->last4);
-
-            if (!empty($card->brand))
-                return $this->getCardName($card->brand);
-        }
+        if (!empty($card->brand))
+            return $this->getCardName($card->brand);
 
         return __("Card");
     }
@@ -238,6 +252,10 @@ class PaymentMethod
                 'name' => "ACSS Direct Debit / Canadian PADs",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bank.svg")
             ],
+            'affirm' => [
+                'name' => "Affirm",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/affirm.svg")
+            ],
             'afterpay_clearpay' => [
                 'name' => "Afterpay / Clearpay",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/afterpay_clearpay.svg")
@@ -245,6 +263,14 @@ class PaymentMethod
             'alipay' => [
                 'name' => "Alipay",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/alipay.svg")
+            ],
+            'alma' => [
+                'name' => "Alma",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/alma.svg")
+            ],
+            'amazon_pay' => [
+                'name' => "Amazon Pay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/amazon_pay.svg")
             ],
             'bacs_debit' => [
                 'name' => "BACS Direct Debit",
@@ -257,6 +283,10 @@ class PaymentMethod
             'bancontact' => [
                 'name' => "Bancontact",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/bancontact.svg")
+            ],
+            'billie' => [
+                'name' => "Billie",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/billie.svg")
             ],
             'boleto' => [
                 'name' => "Boleto",
@@ -286,6 +316,10 @@ class PaymentMethod
                 'name' => "iDEAL",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/ideal.svg")
             ],
+            'kakao_pay' => [
+                'name' => "Kakao Pay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/kakao_pay.svg")
+            ],
             'klarna' => [
                 'name' => "Klarna",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/klarna.svg")
@@ -294,9 +328,22 @@ class PaymentMethod
                 'name' => "Konbini",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/konbini.svg")
             ],
+            'kr_card' => [
+                'name' => "Korean Card",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/cards/generic.svg")
+            ],
+            'naver_pay' => [
+                'name' => "Naver Pay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/naver_pay.svg")
+            ],
+            // Intentionally left empty because the logo is the same as the name
             'paypal' => [
                 'name' => "",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/paypal.svg")
+            ],
+            'mb_way' => [
+                'name' => "MB WAY",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/mb_way.svg")
             ],
             'multibanco' => [
                 'name' => "Multibanco",
@@ -305,6 +352,22 @@ class PaymentMethod
             'p24' => [
                 'name' => "P24",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/p24.svg")
+            ],
+            'revolut_pay' => [
+                'name' => "Revolut Pay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/revolut_pay.svg")
+            ],
+            'samsung_pay' => [
+                'name' => "Samsung Pay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/samsung_pay.svg")
+            ],
+            'satispay' => [
+                'name' => "Satispay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/satispay.svg")
+            ],
+            'scalapay' => [
+                'name' => "ScalaPay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/scalapay.svg")
             ],
             'sepa_debit' => [
                 'name' => "SEPA Direct Debit",
@@ -315,10 +378,14 @@ class PaymentMethod
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/sepa_credit.svg")
             ],
             'sofort' => [
-                'name' => "SOFORT",
+                'name' => "Klarna",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/klarna.svg")
             ],
-            'wechat' => [
+            'twint' => [
+                'name' => "TWINT",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/twint.svg")
+            ],
+            'wechat_pay' => [
                 'name' => "WeChat Pay",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/wechat.svg")
             ],
@@ -334,9 +401,17 @@ class PaymentMethod
                 'name' => "OXXO",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/oxxo.svg")
             ],
+            'payco' => [
+                'name' => "PayCo",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/payco.svg")
+            ],
             'paynow' => [
                 'name' => "PayNow",
                 'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/paynow.svg")
+            ],
+            'mobilepay' => [
+                'name' => "MobilePay",
+                'icon' => $this->getViewFileUrl("StripeIntegration_Payments::img/methods/mobilepay.svg")
             ],
             'link' => [
                 'name' => 'Link',
@@ -399,19 +474,35 @@ class PaymentMethod
     {
         $type = $method->type;
         $methodName = $this->getPaymentMethodName($type);
+        /** @var \stdClass $details */
         $details = $method->{$type};
 
         if ($type == "card")
         {
             return $this->getCardLabel($details);
         }
+        else if ($type == "paypal")
+        {
+            return __("PayPal");
+        }
         else if (isset($details->last4))
         {
-            return __("%1 •••• %2", $methodName, $details->last4);
+            if (!empty($details->brand))
+            {
+                return __("%1 •••• %2", ucfirst($details->brand), $details->last4);
+            }
+            else
+            {
+                return __("%1 •••• %2", $methodName, $details->last4);
+            }
         }
         else if (isset($details->tax_id)) // Boleto
         {
             return __("%1 - %2", $methodName, $details->tax_id);
+        }
+        else if ($this->getPaymentMethodName($type))
+        {
+            return $this->getPaymentMethodName($type);
         }
         else
         {
@@ -438,11 +529,11 @@ class PaymentMethod
 
             switch ($type)
             {
-                case "card":
+                case "kr_card":
                     foreach ($methodList as $method)
                     {
-                        $details = $method->card;
-                        $key = $details->fingerprint;
+                        $details = $method->kr_card;
+                        $key = $details->fingerprint ?? $method->id;
 
                         if (isset($savedMethods[$key]) && $savedMethods[$key]['created'] > $method->created)
                             continue;
@@ -453,7 +544,33 @@ class PaymentMethod
                             "id" => $method->id,
                             "created" => $method->created,
                             "type" => $type,
-                            "fingerprint" => $details->fingerprint,
+                            "fingerprint" => $method->fingerprint ?? $method->id,
+                            "label" => $label,
+                            "value" => $method->id,
+                            "icon" => $this->getPaymentMethodIcon($type),
+                            "cvc" => $cvc,
+                            "brand" => null,
+                            "exp_month" => null,
+                            "exp_year" => null,
+                        ];
+                    }
+                    break;
+                case "card":
+                    foreach ($methodList as $method)
+                    {
+                        $details = $method->card;
+                        $key = $details->fingerprint ?? $method->id;
+
+                        if (isset($savedMethods[$key]) && $savedMethods[$key]['created'] > $method->created)
+                            continue;
+
+                        $label = $this->getPaymentMethodLabel($method);
+
+                        $savedMethods[$key] = [
+                            "id" => $method->id,
+                            "created" => $method->created,
+                            "type" => $type,
+                            "fingerprint" => $key,
                             "label" => $label,
                             "value" => $method->id,
                             "icon" => $this->getCardIcon($details->brand),
@@ -467,7 +584,8 @@ class PaymentMethod
                 case "link":
                     foreach ($methodList as $method)
                     {
-                        $key = $method->id;
+                        $details = $method->link;
+                        $key = $details->fingerprint ?? $method->id;
                         $label = $this->getPaymentMethodLabel($method);
 
                         $savedMethods[$key] = [
@@ -477,6 +595,7 @@ class PaymentMethod
                             "label" => $label,
                             "value" => $method->id,
                             "icon" => $this->getPaymentMethodIcon($type),
+                            "fingerprint" => $key
                         ];
                     }
                     break;
@@ -485,14 +604,12 @@ class PaymentMethod
                     {
                         /** @var \Stripe\PaymentMethod $details */
                         $details = $method->{$type};
-                        if (empty($details->fingerprint) || empty($details->last4))
-                            continue;
 
                         $icon = $this->getPaymentMethodIcon($type);
                         if (!$icon)
                             $icon = $this->getPaymentMethodIcon("bank");
 
-                        $key = $details->fingerprint;
+                        $key = $details->fingerprint ?? $method->id;
 
                         if (isset($savedMethods[$key]) && $savedMethods[$key]['created'] > $method->created)
                             continue;
@@ -505,7 +622,7 @@ class PaymentMethod
                             "id" => $method->id,
                             "created" => $method->created,
                             "type" => $type,
-                            "fingerprint" => $details->fingerprint,
+                            "fingerprint" => $key,
                             "label" => $label,
                             "value" => $method->id,
                             "icon" => $icon
@@ -520,9 +637,10 @@ class PaymentMethod
 
     protected function getViewFileUrl($fileId)
     {
-        $areaCode = $this->state->getAreaCode();
+        $areaCode = $this->areaCodeHelper->getAreaCode();
+        $compatibleAreaCodes = ['frontend', 'adminhtml'];
 
-        if ($areaCode === 'webapi_rest') {
+        if (!in_array($areaCode, $compatibleAreaCodes)) {
             $this->appEmulation->startEnvironmentEmulation($this->storeManager->getStore()->getId(), \Magento\Framework\App\Area::AREA_FRONTEND, true);
         }
 
@@ -532,15 +650,17 @@ class PaymentMethod
                 '_secure' => $this->request->isSecure()
             ];
 
-            $return = $this->assetRepo->getUrlWithParams($fileId, $params);//$this->assetRepo->getUrl($fileId);
+            $return = $this->assetRepo->getUrlWithParams($fileId, $params);
         }
         catch (LocalizedException $e)
         {
             $return = null;
         }
-        if ($areaCode === 'webapi_rest') {
+
+        if (!in_array($areaCode, $compatibleAreaCodes)) {
             $this->appEmulation->stopEnvironmentEmulation();
         }
+
         return $return;
     }
 
@@ -558,59 +678,6 @@ class PaymentMethod
         $this->themeModel = $this->themeProvider->getThemeById($themeId);
 
         return $this->themeModel;
-    }
-
-    public function insertPaymentMethods($paymentIntentResponse, $order, $array = false, $fromObserver = false)
-    {
-        $paymentMethodType = '';
-        $cardData = [];
-        if ($array) {
-            if (isset($paymentIntentResponse['payment_method_details']['type'])
-                && $paymentIntentResponse['payment_method_details']['type']) {
-                $paymentMethod = $paymentIntentResponse['payment_method_details'];
-
-                if ($paymentMethod['type'] === 'card') {
-                    $cardData = ['card_type' => $paymentMethod['card']['brand'], 'card_data' => $paymentMethod['card']['last4']];
-
-                    if (isset($paymentMethod['card']['wallet']['type']) && $paymentMethod['card']['wallet']['type']) {
-                        $cardData['wallet'] = $paymentMethod['card']['wallet']['type'];
-                    }
-                }
-                $paymentMethodType = $paymentMethod['type'];
-            }
-        } else {
-            if (isset($paymentIntentResponse->charges->data[0]->payment_method_details->type)
-                && $paymentIntentResponse->charges->data[0]->payment_method_details->type)
-            {
-                /** @var \Stripe\Charge $charge */
-                $charge = $paymentIntentResponse->charges->data[0];
-                $paymentMethod = $charge->payment_method_details;
-
-                if ($paymentMethod->type === 'card') {
-                    $cardData = ['card_type' => $paymentMethod->card->brand, 'card_data' => $paymentMethod->card->last4];
-
-                    if (isset($paymentMethod->card->wallet->type) && $paymentMethod->card->wallet->type) {
-                        $cardData['wallet'] = $paymentMethod->card->wallet->type;
-                    }
-                }
-                $paymentMethodType = $paymentMethod->type;
-            }
-        }
-
-        if ($fromObserver && $paymentMethodType) {
-            $this->savePaymentMethod($order->getId(), $paymentMethodType, $this->json->serialize($cardData));
-        } else {
-            $extensionAttributes = $order->getExtensionAttributes();
-            if ($extensionAttributes === null) {
-                $extensionAttributes = $this->orderExtensionFactory->create();
-            }
-            if (method_exists($extensionAttributes, 'setPaymentMethodType') && method_exists($extensionAttributes, 'setPaymentMethodCardData'))
-            {
-                $extensionAttributes->setPaymentMethodType($paymentMethodType);
-                $extensionAttributes->setPaymentMethodCardData($this->json->serialize($cardData));
-                $order->setExtensionAttributes($extensionAttributes);
-            }
-        }
     }
 
     public function getIconFromPaymentType($type, $cardType = 'visa', $format = null)
@@ -631,20 +698,108 @@ class PaymentMethod
         return $icon;
     }
 
-    public function savePaymentMethod($orderId, $paymentMethodType, $cardData)
+    public function saveOrderPaymentMethodById($order, $paymentMethodId)
     {
-        $modelClass = $this->stripePaymentMethodFactory->create();
-        $this->resourceStripePaymentMethod->load($modelClass, $orderId, 'order_id');
-        $modelClass->setOrderId($orderId);
+        if ($this->tokenHelper->isPaymentMethodToken($paymentMethodId))
+        {
+            $stripePaymentMethodModel = $this->stripePaymentMethodModelFactory->create()->fromPaymentMethodId($paymentMethodId);
+            $this->savePaymentMethod($order, $stripePaymentMethodModel->getPaymentMethodType(), $stripePaymentMethodModel->getCardData());
+        }
+    }
+
+    public function savePaymentMethod($order, $paymentMethodType, $cardData)
+    {
+        // Used in grid label
+        $modelClass = $this->orderPaymentMethodFactory->create();
+        $this->resourceStripePaymentMethod->load($modelClass, $order->getId(), 'order_id');
+        $modelClass->setOrderId($order->getId());
         $modelClass->setPaymentMethodType($paymentMethodType);
-        $modelClass->setPaymentMethodCardData($cardData);
+        $modelClass->setPaymentMethodCardData($this->json->serialize($cardData));
         $this->resourceStripePaymentMethod->save($modelClass);
+
+        // Used in grid search
+        $searchablePaymentMethodType = $this->getSearchablePaymentMethodType($paymentMethodType, $cardData);
+        if (!empty($searchablePaymentMethodType))
+        {
+            $order->setStripePaymentMethodType($searchablePaymentMethodType);
+        }
+    }
+
+    public function getSearchablePaymentMethodType($paymentMethodType, $cardData)
+    {
+        $type = strtolower($this->getPaymentMethodName($paymentMethodType) ?? "");
+        $cardBrand = $cardData['brand'] ?? null;
+
+        if (!empty($cardBrand))
+        {
+            $type .= " " . strtolower($cardBrand);
+        }
+
+        if (!empty($cardData['wallet']))
+        {
+            $wallet = explode("_", $cardData['wallet']);
+            $wallet = implode(" ", $wallet);
+            $type .= " " . $wallet;
+        }
+
+        return $type;
     }
 
     public function loadPaymentMethod($orderId)
     {
-        $modelClass = $this->stripePaymentMethodFactory->create();
+        $modelClass = $this->orderPaymentMethodFactory->create();
         $this->resourceStripePaymentMethod->load($modelClass, $orderId, 'order_id');
         return $modelClass;
+    }
+
+    public function getPaymentMethodsThatCanBeSaved()
+    {
+        $methods = array_merge(self::CAN_BE_SAVED_ON_SESSION, self::CAN_ONLY_BE_SAVED_OFF_SESSION);
+
+        if ($this->checkoutFlow->isExpressCheckout)
+        {
+            // Express Checkout does not support setup_future_usage when used with PayPal.
+            $methods = array_diff($methods, ['paypal']);
+        }
+
+        return $methods;
+    }
+
+    public function getPaymentMethodsThatCanOnlyBeSavedOffSession()
+    {
+        $methods = self::CAN_ONLY_BE_SAVED_OFF_SESSION;
+
+        if ($this->checkoutFlow->isExpressCheckout)
+        {
+            // Express Checkout does not support setup_future_usage when used with PayPal.
+            $methods = array_diff($methods, ['paypal']);
+        }
+
+        return $methods;
+    }
+
+    public function getPaymentMethodsThatCanCaptureManually()
+    {
+        return self::CAN_AUTHORIZE_ONLY;
+    }
+
+    public function supportsSubscriptions(?string $methodCode)
+    {
+        if (empty($methodCode))
+            return false;
+
+        return in_array($methodCode, ["stripe_payments", "stripe_payments_checkout", "stripe_payments_express"]);
+    }
+
+    public function getExternalPaymentMethods($quote): array
+    {
+        $methods = [];
+
+        // $methods[] = [
+        //     'code' => 'external_payment_method_code',
+        //     'redirect_url' => "https://example.com/checkout?merchant=stripeintegration&amount=" . $quote->getGrandTotal() * 100
+        // ];
+
+        return $methods;
     }
 }

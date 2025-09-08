@@ -9,11 +9,13 @@ namespace StripeIntegration\Payments\Test\Integration\Frontend\CheckoutPage\Redi
  */
 class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 {
+    private $objectManager;
     private $quote;
     private $tests;
 
     public function setUp(): void
     {
+        $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
     }
@@ -24,6 +26,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -46,11 +49,13 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Confirm the payment
         $paymentIntent = $this->tests->confirmCheckoutSession($order, "MixedTrial", "card", "NewYork");
 
-        $trialSubscriptionAmount = 1346;
+        $trialSubscriptionAmount = 1346; // = 1583 * 0.85
 
         // Stripe checks
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $this->tests->compare($customer->subscriptions->data[0], [
             "status" => "trialing",
@@ -73,8 +78,8 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $invoice = $order->getInvoiceCollection()->getFirstItem();
         $this->assertEquals($order->getTotalPaid(), $invoice->getGrandTotal());
         $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
-        $this->assertEquals(8.5, $invoice->getShippingAmount());
-        $this->assertEquals(10, $invoice->getBaseShippingAmount());
+        $this->assertEquals(5, $invoice->getBaseShippingAmount());
+        $this->assertEquals(4.25, $invoice->getShippingAmount()); // = 5 * 0.85
 
         // Stripe checks
         $this->assertNotEmpty($customer->subscriptions->data[0]->latest_invoice);
@@ -94,12 +99,19 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // New order checks
         $order = $this->tests->getLastOrder();
-        $this->assertEquals(15.84, $order->getBaseGrandTotal());
+        $this->assertEquals(15.84, $order->getBaseGrandTotal()); // Do we have a rounding error here? Should be 15.83
         if ($this->tests->magento("<", "2.4"))
             $this->assertEquals(13.59, $order->getGrandTotal()); // Magento 2.3.7-p3 does not perform a currency conversion on the tax_amount
         else
             $this->assertEquals(13.46, $order->getGrandTotal());
 
         $this->assertEquals(1, $order->getInvoiceCollection()->count());
+
+        // Switch to the admin area
+        $this->objectManager->get(\Magento\Framework\App\State::class)->setAreaCode('adminhtml');
+        $order = $this->tests->refreshOrder($order);
+
+        // Create the payment info block for $order
+        $this->assertNotEmpty($this->tests->renderPaymentInfoBlock(\StripeIntegration\Payments\Block\PaymentInfo\Checkout::class, $order));
     }
 }

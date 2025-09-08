@@ -4,7 +4,6 @@ namespace StripeIntegration\Payments\Block\PaymentInfo;
 
 class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
 {
-    private $helper;
     private $paymentsConfig;
     private $paymentMethodHelper;
     private $stripePaymentMethodObject;
@@ -13,13 +12,17 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
     private $stripePaymentIntentModelFactory;
     private $country;
     private $tokenHelper;
+    private $currencyHelper;
+    private $areaCodeHelper;
+    private $request;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
         \Magento\Payment\Gateway\ConfigInterface $config,
-        \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
         \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
         \StripeIntegration\Payments\Model\Config $paymentsConfig,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodModelFactory,
         \StripeIntegration\Payments\Model\Stripe\PaymentIntentFactory $stripePaymentIntentModelFactory,
@@ -28,13 +31,15 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
     ) {
         parent::__construct($context, $config, $data);
 
-        $this->helper = $helper;
         $this->paymentsConfig = $paymentsConfig;
         $this->country = $country;
         $this->paymentMethodHelper = $paymentMethodHelper;
         $this->stripePaymentMethodModelFactory = $stripePaymentMethodModelFactory;
         $this->stripePaymentIntentModelFactory = $stripePaymentIntentModelFactory;
         $this->tokenHelper = $tokenHelper;
+        $this->currencyHelper = $currencyHelper;
+        $this->areaCodeHelper = $areaCodeHelper;
+        $this->request = $context->getRequest();
     }
 
     public function getPaymentMethod()
@@ -73,7 +78,7 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
         if ($transactionId && strpos($transactionId, "pi_") === 0)
         {
             $stripePaymentIntentModel = $this->stripePaymentIntentModelFactory->create()
-                ->setExpandParams(['payment_method'])
+                ->setExpandParams(['payment_method', 'invoice'])
                 ->fromPaymentIntentId($transactionId);
 
             return $this->stripePaymentIntentObject = $stripePaymentIntentModel->getStripeObject();
@@ -84,23 +89,15 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
 
     public function getPaymentMethodIconUrl($format = null)
     {
-        $method = $this->getPaymentMethod();
-
-        if (!$method)
-            return null;
-
-        return $this->paymentMethodHelper->getIcon($method, $format);
+        return $this->paymentMethodHelper->getIcon([
+            "type" => "customer_balance"
+        ], $format);
     }
 
 
     public function getPaymentMethodName($hideLast4 = false)
     {
-        $paymentMethod = $this->getPaymentMethod();
-
-        if (!$paymentMethod)
-            return null;
-
-        return $this->paymentMethodHelper->getPaymentMethodName($paymentMethod->type);
+        return $this->paymentMethodHelper->getPaymentMethodName("customer_balance");
     }
 
     public function getFormattedAmountRemaining()
@@ -108,31 +105,46 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
         /** @var \Stripe\PaymentIntent $paymentIntent */
         $paymentIntent = $this->getPaymentIntent();
 
+        if (!$paymentIntent)
+            return null;
+
         $amountRemaining = 0;
         $currency = $paymentIntent->currency;
+
         if (!empty($paymentIntent->next_action->display_bank_transfer_instructions->amount_remaining))
         {
+            // For orders placed from the frontend
             /** @var \Stripe\StripeObject $instructions */
             $instructions = $paymentIntent->next_action->display_bank_transfer_instructions;
             $amountRemaining = $instructions->amount_remaining;
             $currency = $instructions->currency;
         }
+        else if (!empty($paymentIntent->invoice->amount_remaining))
+        {
+            // For orders placed from the admin area
+            $amountRemaining = $paymentIntent->invoice->amount_remaining;
+            $currency = $paymentIntent->invoice->currency;
+        }
 
-        return $this->helper->formatStripePrice($amountRemaining, $currency);
+        return $this->currencyHelper->formatStripePrice($amountRemaining, $currency);
     }
 
     public function getFormattedAmountRefunded()
     {
         $paymentIntent = $this->getPaymentIntent();
 
+        if (!$paymentIntent)
+            return null;
+
         $amountRefunded = 0;
         $currency = $paymentIntent->currency;
-        if (empty($paymentIntent->charges->data))
+        $charges = $this->paymentsConfig->getStripeClient()->charges->all(['payment_intent' => $paymentIntent->id]);
+        if (empty($charges->data))
         {
             return null;
         }
 
-        foreach ($paymentIntent->charges->data as $charge)
+        foreach ($charges->data as $charge)
         {
             if ($charge->refunded)
             {
@@ -141,7 +153,7 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
             }
         }
 
-        return $this->helper->formatStripePrice($amountRefunded, $currency);
+        return $this->currencyHelper->formatStripePrice($amountRefunded, $currency);
     }
 
     public function getTransactionId()
@@ -229,6 +241,79 @@ class BankTransfers extends \Magento\Payment\Block\ConfigurableInfo
         if (!$this->paymentsConfig->getStripeClient())
             return null;
 
-        return 'paymentInfo/bank_transfers.phtml';
+        if (!$this->isAllowedAction())
+            return 'StripeIntegration_Payments::paymentInfo/generic.phtml';
+
+        return 'StripeIntegration_Payments::paymentInfo/bank_transfers.phtml';
+    }
+
+    public function isAllowedAction()
+    {
+        if (!$this->areaCodeHelper->isAdmin())
+            return true;
+
+        $allowedAdminActions = ["view", "new", "email"];
+        $action = $this->request->getActionName();
+        if (in_array($action, $allowedAdminActions))
+            return true;
+
+        return false;
+    }
+
+    public function getTitle()
+    {
+        return $this->getMethod()->getTitle();
+    }
+
+    public function getInvoiceURL()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (empty($paymentIntent->invoice->hosted_invoice_url))
+            return null;
+
+        return $paymentIntent->invoice->hosted_invoice_url;
+    }
+
+    public function getInvoicePDF()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (empty($paymentIntent->invoice->invoice_pdf))
+            return null;
+
+        return $paymentIntent->invoice->invoice_pdf;
+    }
+
+    public function getStripeInvoiceURL()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (empty($paymentIntent->invoice->id))
+            return null;
+
+        return "https://dashboard.stripe.com/{$this->getMode()}invoices/" . $paymentIntent->invoice->id;
+    }
+
+    public function getDateDue()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (empty($paymentIntent->invoice->due_date))
+            return null;
+
+        $date = $paymentIntent->invoice->due_date;
+
+        return date('j M Y', $date);
+    }
+
+    public function getStatus()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (empty($paymentIntent->invoice->status))
+            return null;
+
+        return ucfirst($paymentIntent->invoice->status);
     }
 }

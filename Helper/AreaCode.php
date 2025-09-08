@@ -68,4 +68,9 @@ class AreaCode
                 return false;
         }
     }
+
+    public function isTesting()
+    {
+        return defined('TESTS_TEMP_DIR');
+    }
 }

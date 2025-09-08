@@ -6,7 +6,7 @@ use Magento\Payment\Block\ConfigurableInfo;
 
 class Checkout extends ConfigurableInfo
 {
-    protected $_template = 'form/checkout.phtml';
+    protected $_template = 'StripeIntegration_Payments::form/checkout.phtml';
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,

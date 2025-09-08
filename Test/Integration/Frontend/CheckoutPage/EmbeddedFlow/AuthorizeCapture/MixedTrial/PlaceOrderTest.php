@@ -51,7 +51,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $paymentMethod = $paymentInfoBlock->getPaymentMethod();
         $formattedAmount = $paymentInfoBlock->getFormattedAmount();
         $paymentStatus = $paymentInfoBlock->getPaymentStatus();
-        $isStripeMethod = $paymentInfoBlock->isStripeMethod();
         $paymentIntent = $paymentInfoBlock->getPaymentIntent();
         $subscription = $paymentInfoBlock->getSubscription();
         $setupIntent = $paymentInfoBlock->getSetupIntent();
@@ -66,7 +65,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertStringStartsWith("pm_", $paymentMethod->id);
         $this->assertEquals("$15.83", $formattedAmount);
         $this->assertEquals("succeeded", $paymentStatus);
-        $this->assertTrue($isStripeMethod);
         $this->assertStringStartsWith("pi_", $paymentIntent->id);
         $this->assertStringStartsWith("sub_", $subscription->id);
         $this->assertEmpty($setupIntent);
@@ -82,7 +80,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Check Stripe objects
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $stripe->customers->retrieve($customerId);
+        $customer = $stripe->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertEquals(1, count($customer->subscriptions->data));
         $subscription = $customer->subscriptions->data[0];
 
@@ -122,10 +122,11 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
         $this->assertEquals($paymentIntentId, $invoice->getTransactionId());
         $this->tests->compare($order->getData(), [
+            "grand_total" => 15.83,
             "total_paid" => $order->getGrandTotal(),
             "base_total_paid" => $order->getBaseGrandTotal(),
-            "total_refunded" => 15.83,
-            "base_total_refunded" => 15.83
+            "total_refunded" => "unset",
+            "base_total_refunded" => "unset"
         ]);
 
         // Check that the transaction IDs have been associated with the order

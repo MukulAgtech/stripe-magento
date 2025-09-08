@@ -16,6 +16,7 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
     private $subscriptionOptionsCollectionFactory;
     private $customerSubscriptionsController;
     private $orderServicePlugin;
+    private $request;
 
     public function setUp(): void
     {
@@ -24,8 +25,9 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
         $this->compare = new \StripeIntegration\Payments\Test\Integration\Helper\Compare($this);
         $this->subscriptionOptionsCollectionFactory = $this->objectManager->create(\StripeIntegration\Payments\Model\ResourceModel\SubscriptionOptions\CollectionFactory::class);
-        $this->customerSubscriptionsController = $this->objectManager->get(\StripeIntegration\Payments\Controller\Customer\Subscriptions::class);
+        $this->customerSubscriptionsController = $this->objectManager->get(\StripeIntegration\Payments\Controller\Subscriptions\Change::class);
         $this->orderServicePlugin = $this->objectManager->get(\StripeIntegration\Payments\Plugin\Sales\Model\Service\OrderService::class);
+        $this->request = $this->objectManager->get(\Magento\Framework\App\RequestInterface::class);
     }
 
     /**
@@ -37,10 +39,6 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         $product->setSubscriptionOptions([
             'upgrades_downgrades' => 1,
             'upgrades_downgrades_use_config' => 0,
-            'prorate_upgrades' => 0,
-            'prorate_upgrades_use_config' => 0,
-            'prorate_downgrades' => 0,
-            'prorate_downgrades_use_config' => 0,
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -60,7 +58,9 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
@@ -80,7 +80,10 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
                                 "interval_count" => 1
                             ],
                         ],
-                        "quantity" => 1
+                        "quantity" => 1,
+                        "plan" => [
+                            "amount" => 1583
+                        ]
                     ]
                 ]
             ],
@@ -94,14 +97,14 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         // Upgrade from 1 to 2
         $this->quote->create()->loginOpc()->setPaymentMethod("SubscriptionUpdate")->save();
 
-        // Set the "edit" request parameter on $this->customerSubscriptionsController
-        $request = $this->customerSubscriptionsController->getRequest();
-        $request->setParam("edit", $subscription->id);
+        // Change the subscription
+        $this->request->setParam("subscription_id", $subscription->id);
         $this->customerSubscriptionsController->execute();
 
         // Change the product qty in the cart from 1 to 2
         $quote = $this->quote->getQuote();
-        $quote->getItemsCollection()->getFirstItem()->setQty(2);
+        $item = $quote->getItemsCollection()->getFirstItem();
+        $item->setQty(2);
         $quote->save();
 
         // Place the order
@@ -114,12 +117,14 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
 
         // The order should be closed
         $this->tests->compare($newOrder->getData(), [
-            "state" => "canceled",
-            "status" => "canceled"
+            "state" => "complete",
+            "status" => "complete"
         ]);
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->tests->compare($subscription, [
@@ -127,7 +132,7 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
                 "data" => [
                     0 => [
                         "plan" => [
-                            "amount" => $newOrder->getGrandTotal() * 100
+                            "amount" => 3165
                         ]
                     ]
                 ]
@@ -152,8 +157,7 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
 
         // Check the new order
         $recurringOrder = $this->tests->getLastOrder();
-        $this->assertNotEquals($newOrder->getGrandTotal(), $order->getGrandTotal());
-        $this->assertEquals($newOrder->getGrandTotal(), $recurringOrder->getGrandTotal());
+        $this->assertEquals(31.65, $recurringOrder->getGrandTotal());
     }
 
     public function testDowngrade()
@@ -162,10 +166,6 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         $product->setSubscriptionOptions([
             'upgrades_downgrades' => 1,
             'upgrades_downgrades_use_config' => 0,
-            'prorate_upgrades' => 0,
-            'prorate_upgrades_use_config' => 0,
-            'prorate_downgrades' => 0,
-            'prorate_downgrades_use_config' => 0,
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -186,7 +186,9 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
@@ -206,7 +208,10 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
                                 "interval_count" => 1
                             ],
                         ],
-                        "quantity" => 1
+                        "quantity" => 1,
+                        "plan" => [
+                            "amount" => 3165
+                        ]
                     ]
                 ]
             ],
@@ -220,9 +225,8 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
         // Downgrade from 2 to 1
         $this->quote->create()->loginOpc()->setPaymentMethod("SubscriptionUpdate")->save();
 
-        // Set the "edit" request parameter on $this->customerSubscriptionsController
-        $request = $this->customerSubscriptionsController->getRequest();
-        $request->setParam("edit", $subscription->id);
+        // Change the subscription
+        $this->request->setParam("subscription_id", $subscription->id);
         $this->customerSubscriptionsController->execute();
 
         // Change the product qty in the cart
@@ -240,12 +244,14 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
 
         // The order should be closed
         $this->tests->compare($newOrder->getData(), [
-            "state" => "canceled",
-            "status" => "canceled"
+            "state" => "complete",
+            "status" => "complete"
         ]);
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->tests->compare($subscription, [
@@ -253,7 +259,7 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
                 "data" => [
                     0 => [
                         "plan" => [
-                            "amount" => $newOrder->getGrandTotal() * 100
+                            "amount" => 1583
                         ]
                     ]
                 ]
@@ -278,7 +284,6 @@ class ChangeTest extends \PHPUnit\Framework\TestCase
 
         // Check the new order
         $recurringOrder = $this->tests->getLastOrder();
-        $this->assertNotEquals($newOrder->getGrandTotal(), $order->getGrandTotal());
-        $this->assertEquals($newOrder->getGrandTotal(), $recurringOrder->getGrandTotal());
+        $this->assertEquals(15.83, $recurringOrder->getGrandTotal());
     }
 }

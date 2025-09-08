@@ -1,5 +1,5 @@
 <h4>
-    <span class="stripe-method-title"><?= __('Stripe - Customer request for subscription update'); //phpcs:ignore ?></span>
+    <span class="stripe-method-title"><?= $block->escapeHtml(__('Stripe - Customer request for subscription update')); ?></span>
 </h4>
 
 <table class="admin__table-secondary order-information-table stripe payment-info">
@@ -7,10 +7,10 @@
 
     <?php if ($block->getOriginalSubscriptionOrderIncrementId()): ?>
     <tr>
-        <th><?= __('Original order number'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Previous subscription order')); ?></th>
         <td class="stripe-original-order">
-            <a href="<?= $block->getSubscriptionOrderUrl($block->getOriginalSubscriptionOrderIncrementId()); //phpcs:ignore ?>" target="_blank">
-                #<?= $block->getOriginalSubscriptionOrderIncrementId(); //phpcs:ignore ?>
+            <a href="<?= $block->escapeUrl($block->getSubscriptionOrderUrl($block->getOriginalSubscriptionOrderIncrementId())); ?>" target="_blank">
+                #<?= $block->escapeHtml($block->getOriginalSubscriptionOrderIncrementId()); ?>
             </a>
         </td>
     </tr>
@@ -18,13 +18,13 @@
 
     <?php if (!empty($block->getFormattedAmount())): ?>
     <tr>
-        <th><?= __('Amount'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Amount')); ?></th>
         <td class="stripe-amount">
             <strong>
                 <?php if ($block->isMultiShipping()): ?>
-                    <?= $block->getFormattedMultishippingAmount(); //phpcs:ignore ?>
+                    <?= $block->escapeHtml($block->getFormattedMultishippingAmount()); ?>
                 <?php else: ?>
-                    <?= $block->getFormattedAmount(); //phpcs:ignore ?>
+                    <?= $block->escapeHtml($block->getFormattedAmount()); ?>
                 <?php endif; ?>
             </strong>
         </td>
@@ -33,19 +33,48 @@
 
     <?php if (!empty($block->getFormattedSubscriptionAmount())): ?>
     <tr>
-        <th><?= __('Subscription amount'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Subscription amount')); ?></th>
         <td class="stripe-subscription-amount">
-            <?= $block->getFormattedSubscriptionAmount(); //phpcs:ignore ?>
+            <?= $block->escapeHtml($block->getFormattedSubscriptionAmount()); ?>
+        </td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if (!empty($block->getPreviousSubscriptionAmount())): ?>
+    <tr>
+        <th><?= $block->escapeHtml(__('Previous subscription amount')); ?></th>
+        <td class="stripe-subscription-amount">
+            <?= $block->escapeHtml($block->getPreviousSubscriptionAmount()); ?>
+        </td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if (!empty($block->getFormattedNewSubscriptionAmount())): ?>
+    <tr>
+        <th><?= $block->escapeHtml(__('New subscription amount')); ?></th>
+        <td class="stripe-subscription-amount">
+            <?= $block->escapeHtml($block->getFormattedNewSubscriptionAmount()); ?>
+        </td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if (!empty($block->getNewSubscriptionOrderIncrementId())): ?>
+    <tr>
+        <th><?= $block->escapeHtml(__('New subscription order')); ?></th>
+        <td class="stripe-subscription-amount">
+            <a href="<?= $block->escapeUrl($block->getSubscriptionOrderUrl($block->getNewSubscriptionOrderIncrementId())); ?>" target="_blank">
+                #<?= $block->escapeHtml($block->getNewSubscriptionOrderIncrementId()); ?>
+            </a>
         </td>
     </tr>
     <?php endif; ?>
 
     <?php if (!empty($block->getSubscriptionStatus())): ?>
     <tr>
-        <th><?= __('Subscription status'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Subscription status')); ?></th>
         <td class="stripe-subscription-status">
-            <span class="stripe-subscription-status-<?= $block->getSubscriptionStatus(); //phpcs:ignore ?>">
-                <?= $block->getSubscriptionStatusName(); //phpcs:ignore ?>
+            <span class="stripe-subscription-status-<?= $block->escapeHtmlAttr($block->getSubscriptionStatus()); ?>">
+                <?= $block->escapeHtml($block->getSubscriptionStatusName()); ?>
             </span>
         </td>
     </tr>
@@ -53,46 +82,46 @@
 
     <?php if (!empty($block->getRiskScore())): ?>
     <tr>
-        <th><?= __('Risk evaluation'); //phpcs:ignore ?></th>
-        <td class="stripe-payment-risk-<?= $block->getRiskLevelCode(); //phpcs:ignore ?>">
-            <span class="stripe-payment-risk-score <?= ucfirst($block->getRiskScore()); //phpcs:ignore ?>">
+        <th><?= $block->escapeHtml(__('Risk evaluation')); ?></th>
+        <td class="stripe-payment-risk-<?= $block->escapeHtmlAttr($block->getRiskLevelCode()); ?>">
+            <span class="stripe-payment-risk-score <?= $block->escapeHtmlAttr(ucfirst($block->getRiskScore())); ?>">
                 <span class="score-value">
-                    <?= ucfirst($block->getRiskScore()); //phpcs:ignore ?>
+                    <?= $block->escapeHtml(ucfirst($block->getRiskScore())); ?>
                 </span>
             </span>
-            <span class="stripe-payment-risk-level"><?= ucfirst($block->getRiskEvaluation()); //phpcs:ignore ?></span>
+            <span class="stripe-payment-risk-level"><?= $block->escapeHtml(ucfirst($block->getRiskEvaluation())); ?></span>
         </td>
     </tr>
     <?php endif; ?>
     <?php if ($block->getPaymentId()): ?>
     <tr>
-        <th><?= __('Payment'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Payment')); ?></th>
         <td class="payment">
-            <a href="https://dashboard.stripe.com/<?= $block->getMode(); //phpcs:ignore ?>payments/<?= $block->getPaymentId(); //phpcs:ignore ?>" target="_blank" rel="noopener noreferrer">View in Stripe</a>
+            <a href="https://dashboard.stripe.com/<?= $block->escapeUrl($block->getMode()); ?>payments/<?= $block->escapeUrl($block->getPaymentId()); ?>" target="_blank" rel="noopener noreferrer"><?= $block->escapeHtml(__("View in Stripe")); ?></a>
         </td>
     </tr>
     <?php endif; ?>
     <?php if ($block->getSubscription()): ?>
     <tr>
-        <th><?= __('Subscription'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Subscription')); ?></th>
         <td class="subscription">
-            <a href="https://dashboard.stripe.com/<?= $block->getMode(); //phpcs:ignore ?>subscriptions/<?= $block->getSubscription()->id; //phpcs:ignore ?>" target="_blank" rel="noopener noreferrer">View in Stripe</a>
+            <a href="https://dashboard.stripe.com/<?= $block->escapeUrl($block->getMode()); ?>subscriptions/<?= $block->escapeUrl($block->getSubscription()->id); ?>" target="_blank" rel="noopener noreferrer"><?= $block->escapeHtml(__("View in Stripe")); ?></a>
         </td>
     </tr>
     <?php endif; ?>
     <?php if ($block->getCustomerId()): ?>
     <tr>
-        <th><?= __('Customer'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Customer')); ?></th>
         <td class="customer">
-            <a href="https://dashboard.stripe.com/<?= $block->getMode(); //phpcs:ignore ?>customers/<?= $block->getCustomerId(); //phpcs:ignore ?>" target="_blank" rel="noopener noreferrer">View in Stripe</a>
+            <a href="https://dashboard.stripe.com/<?= $block->escapeUrl($block->getMode()); ?>customers/<?= $block->escapeUrl($block->getCustomerId()); ?>" target="_blank" rel="noopener noreferrer"><?= $block->escapeHtml(__("View in Stripe")); ?></a>
         </td>
     </tr>
     <?php endif; ?>
-    <?php if ($block->getOXXOVoucherLink()): ?>
+    <?php if ($block->getVoucherLink()): ?>
     <tr>
-        <th><?= __('Voucher'); //phpcs:ignore ?></th>
+        <th><?= $block->escapeHtml(__('Voucher')); ?></th>
         <td class="customer">
-            <a href="<?= $block->getOXXOVoucherLink(); //phpcs:ignore ?>" target="_blank" rel="noopener noreferrer"><?= __("View voucher"); //phpcs:ignore ?></a>
+            <a href="<?= $block->escapeUrl($block->getVoucherLink()); ?>" target="_blank" rel="noopener noreferrer"><?= $block->escapeHtml(__("View voucher")); ?></a>
         </td>
     </tr>
     <?php endif; ?>

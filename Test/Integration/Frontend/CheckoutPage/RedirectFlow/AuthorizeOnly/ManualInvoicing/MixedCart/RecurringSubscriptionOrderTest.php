@@ -21,6 +21,7 @@ class RecurringSubscriptionOrderTest extends \PHPUnit\Framework\TestCase
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoConfigFixture current_store payment/stripe_payments/payment_action authorize
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -52,7 +53,9 @@ class RecurringSubscriptionOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $session->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         $ordersCount = $this->tests->getOrdersCount();
@@ -98,12 +101,16 @@ class RecurringSubscriptionOrderTest extends \PHPUnit\Framework\TestCase
         $this->tests->helper()->clearCache();
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Stripe checks
         $this->assertNotEmpty($customer->subscriptions->data[0]->latest_invoice);
-        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, [
+            'expand' => ['payment_intent.latest_charge']
+        ]);
         $this->tests->compare($customer->subscriptions->data[0], [
             "items" => [
                 "data" => [
@@ -141,13 +148,9 @@ class RecurringSubscriptionOrderTest extends \PHPUnit\Framework\TestCase
             "payment_intent" => [
                 "amount" => 6986,
                 "amount_received" => 6986,
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount" => 6986,
-                            "amount_captured" => 6986
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount" => 6986,
+                    "amount_captured" => 6986
                 ],
                 "description" => "Subscription order #$orderIncrementId by Flint Jerry",
                 "metadata" => [
@@ -194,15 +197,13 @@ class RecurringSubscriptionOrderTest extends \PHPUnit\Framework\TestCase
         $this->tests->refundOnline($invoice, ['simple-monthly-subscription-initial-fee-product' => 1], $baseShipping = 5);
 
         // Stripe checks
-        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        // Tax is 8.375, price is 10 and it is taxed, initial fee is 3 and it is taxed, shipping fee is 5 and not taxed:
+        // 10 * 1.08375 + 3 * 1.08375 + 5 = 19.09
+        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent.latest_charge']]);
         $this->tests->compare($invoice, [
             "payment_intent" => [
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount_refunded" => 1884
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount_refunded" => 1909
                 ]
             ]
         ]);

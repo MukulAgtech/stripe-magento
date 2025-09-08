@@ -47,11 +47,6 @@
       <comment><![CDATA[This is the payment method title used at the checkout page]]></comment>
       <config_path>payment/stripe_payments/title</config_path>
     </field>
-    <field id="payment_method_configuration" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
-      <label>Payment method configuration</label>
-      <comment><![CDATA[Enable/disable payment methods.]]></comment>
-      <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Frontend\PaymentMethodConfiguration</frontend_model>
-    </field>
     <field id="payment_action" translate="label" type="select" sortOrder="90" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Payment action</label>
       <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\PaymentAction</source_model>
@@ -109,15 +104,41 @@
     </field>
     <field id="statement_descriptor" translate="label" type="text" sortOrder="190" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Optional statement descriptor</label>
+      <comment>This will appear on the customer's bank statement</comment>
       <config_path>payment/stripe_payments/statement_descriptor</config_path>
       <validate>validate-length maximum-length-22</validate>
     </field>
     <field id="sort_order" translate="label" type="text" sortOrder="200" showInDefault="1" showInWebsite="1" showInStore="1">
-     <label>Sort order</label>
-     <comment>Adjust this to move the payment method above or below other payment methods</comment>
-     <frontend_class>validate-number</frontend_class>
-     <config_path>payment/stripe_payments/sort_order</config_path>
-   </field>
+      <label>Sort order</label>
+      <comment>Adjust this to move the payment method above or below other payment methods</comment>
+      <frontend_class>validate-number</frontend_class>
+      <config_path>payment/stripe_payments/sort_order</config_path>
+    </field>
 
- </group>
+    <group id="pmc" translate="label" type="text" sortOrder="200" showInDefault="1" showInWebsite="1" showInStore="1">
+      <label>Filter payment methods</label>
+      <comment>
+        <![CDATA[You can filter which payment methods to display by creating different payment method configurations from the
+        <a href="https://dashboard.stripe.com/settings/payment_methods" target="_blank">Stripe dashboard</a>. Once the
+        configurations have been created, you can apply them to different store views and cart types.]]>
+      </comment>
+      <depends>
+        <field id="payment_flow">0</field>
+      </depends>
+
+      <field id="pmc_all_carts" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="1">
+        <label>Apply to all carts</label>
+        <comment><![CDATA[When disabled, all payment methods will be displayed.]]></comment>
+        <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Frontend\PaymentMethodConfiguration</frontend_model>
+        <config_path>payment/stripe_payments/pmc_all_carts</config_path>
+      </field>
+
+      <field id="pmc_virtual_carts" translate="label" type="select" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+        <label>Apply only to virtual carts</label>
+        <comment><![CDATA[Only applies to carts that do not have any physical products.]]></comment>
+        <frontend_model>StripeIntegration\Payments\Model\Adminhtml\Frontend\PaymentMethodConfiguration</frontend_model>
+        <config_path>payment/stripe_payments/pmc_virtual_carts</config_path>
+      </field>
+    </group>
+  </group>
 </include>

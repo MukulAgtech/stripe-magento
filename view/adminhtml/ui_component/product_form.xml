@@ -138,10 +138,6 @@
                                     <callback>hide</callback>
                                 </action>
                                 <action name="2">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_first_payment</target>
-                                    <callback>hide</callback>
-                                </action>
-                                <action name="3">
                                     <target>product_form.product_form.subscriptions-by-stripe.sub_trial</target>
                                     <callback>enable</callback>
                                 </action>
@@ -159,10 +155,6 @@
                                     <callback>show</callback>
                                 </action>
                                 <action name="2">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_first_payment</target>
-                                    <callback>show</callback>
-                                </action>
-                                <action name="3">
                                     <target>product_form.product_form.subscriptions-by-stripe.sub_trial</target>
                                     <callback>disable</callback>
                                 </action>
@@ -197,6 +189,7 @@
                 </tooltip>
                 <dataType>text</dataType>
                 <dataScope>start_date</dataScope>
+                <placeholder translate="true">mm/dd/yyyy</placeholder>
                 <validation>
                     <rule name="validate-date" xsi:type="boolean">true</rule>
                 </validation>
@@ -212,31 +205,6 @@
                     <item name="default" xsi:type="string">on_start_date</item>
                 </item>
             </argument>
-            <settings>
-                <switcherConfig>
-                    <rules>
-                        <rule name="0">
-                            <value>on_start_date</value>
-                            <actions>
-                                <action name="0">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_first_payment</target>
-                                    <callback>disable</callback>
-                                </action>
-                            </actions>
-                        </rule>
-                        <rule name="1">
-                            <value>on_order_date</value>
-                            <actions>
-                                <action name="0">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_first_payment</target>
-                                    <callback>enable</callback>
-                                </action>
-                            </actions>
-                        </rule>
-                    </rules>
-                    <enabled>true</enabled>
-                </switcherConfig>
-            </settings>
             <formElements>
                 <select>
                     <settings>
@@ -252,32 +220,6 @@
                         </options>
                     </settings>
                 </select>
-            </formElements>
-        </field>
-        <field name="prorate_first_payment" formElement="checkbox">
-            <argument name="data" xsi:type="array">
-                <item name="config" xsi:type="array">
-                    <item name="sortOrder" xsi:type="number">196</item>
-                    <item name="default" xsi:type="string">false</item>
-                </item>
-            </argument>
-            <settings>
-                <label translate="true">Prorate first payment</label>
-                <tooltip>
-                    <description translate="true">When enabled, the first payment will be reduced to the amount of remaining time from the date of order placement to the subscription start date.</description>
-                </tooltip>
-                <dataScope>prorate_first_payment</dataScope>
-            </settings>
-            <formElements>
-                <checkbox>
-                    <settings>
-                        <prefer>toggle</prefer>
-                        <valueMap>
-                            <map name="false" xsi:type="boolean">false</map>
-                            <map name="true" xsi:type="boolean">true</map>
-                        </valueMap>
-                    </settings>
-                </checkbox>
             </formElements>
         </field>
 
@@ -299,53 +241,6 @@
                 <tooltip>
                     <description translate="true">Allow customers to change the quantity or options of active subscriptions from the customer account section.</description>
                 </tooltip>
-                <switcherConfig>
-                    <rules>
-                        <rule name="0">
-                            <value>0</value>
-                            <actions>
-                                <action name="0">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_upgrades</target>
-                                    <callback>hide</callback>
-                                </action>
-                                <action name="1">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_upgrades_use_config</target>
-                                    <callback>hide</callback>
-                                </action>
-                                <action name="2">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_downgrades</target>
-                                    <callback>hide</callback>
-                                </action>
-                                <action name="3">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_downgrades_use_config</target>
-                                    <callback>hide</callback>
-                                </action>
-                            </actions>
-                        </rule>
-                        <rule name="1">
-                            <value>1</value>
-                            <actions>
-                                <action name="0">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_upgrades</target>
-                                    <callback>show</callback>
-                                </action>
-                                <action name="1">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_upgrades_use_config</target>
-                                    <callback>show</callback>
-                                </action>
-                                <action name="2">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_downgrades</target>
-                                    <callback>show</callback>
-                                </action>
-                                <action name="3">
-                                    <target>product_form.product_form.subscriptions-by-stripe.prorate_downgrades_use_config</target>
-                                    <callback>show</callback>
-                                </action>
-                            </actions>
-                        </rule>
-                    </rules>
-                    <enabled>true</enabled>
-                </switcherConfig>
             </settings>
             <formElements>
                 <checkbox>
@@ -373,130 +268,6 @@
                 <dataScope>upgrades_downgrades_use_config</dataScope>
                 <links>
                     <link name="linkedValue">${$.provider}:data.product.subscription_options.upgrades_downgrades</link>
-                </links>
-                <imports>
-                    <link name="disabled">ns = ${ $.ns }, index = subscription_options:disabled</link>
-                </imports>
-            </settings>
-            <formElements>
-                <checkbox class="StripeIntegration\Payments\Ui\Component\Product\Form\Element\UseConfigSettings">
-                    <settings>
-                        <description translate="true">Use Config Settings</description>
-                        <valueMap>
-                            <map name="false" xsi:type="string">0</map>
-                            <map name="true" xsi:type="string">1</map>
-                        </valueMap>
-                    </settings>
-                </checkbox>
-            </formElements>
-        </field>
-        <field name="prorate_upgrades" formElement="checkbox">
-            <argument name="data" xsi:type="array">
-                <item name="config" xsi:type="array">
-                    <item name="rawOptions" xsi:type="boolean">true</item>
-                    <item name="value" xsi:type="object">StripeIntegration\Payments\Model\Stripe\Source\ConfigUpgradesDowngrades</item>
-                    <item name="sortOrder" xsi:type="number">202</item>
-                </item>
-            </argument>
-            <settings>
-                <scopeLabel>[GLOBAL]</scopeLabel>
-                <label translate="true">Prorate upgrades</label>
-                <dataScope>prorate_upgrades</dataScope>
-                <imports>
-                    <link name="disabled">${$.parentName}.prorate_upgrades_use_config:disableParent</link>
-                </imports>
-                <tooltip>
-                    <description translate="true">When enabled, upgrades will incur an extra fee for the price difference.</description>
-                </tooltip>
-            </settings>
-            <formElements>
-                <checkbox>
-                    <settings>
-                        <options class="Magento\Config\Model\Config\Source\Enabledisable"/>
-                        <prefer>toggle</prefer>
-                        <valueMap>
-                            <map name="false" xsi:type="boolean">false</map>
-                            <map name="true" xsi:type="boolean">true</map>
-                        </valueMap>
-                    </settings>
-                </checkbox>
-            </formElements>
-        </field>
-        <field name="prorate_upgrades_use_config" component="StripeIntegration_Payments/js/components/use-config-settings" formElement="checkbox">
-            <argument name="data" xsi:type="array">
-                <item name="config" xsi:type="array">
-                    <item name="value" xsi:type="string">1</item>
-                    <item name="valueFromConfig" xsi:type="object">StripeIntegration\Payments\Model\Stripe\Source\ConfigUpgradesDowngrades</item>
-                    <item name="keyInConfiguration" xsi:type="string">prorations_upgrades</item>
-                    <item name="sortOrder" xsi:type="number">204</item>
-                </item>
-            </argument>
-            <settings>
-                <dataScope>prorate_upgrades_use_config</dataScope>
-                <links>
-                    <link name="linkedValue">${$.provider}:data.product.subscription_options.prorate_upgrades</link>
-                </links>
-                <imports>
-                    <link name="disabled">ns = ${ $.ns }, index = subscription_options:disabled</link>
-                </imports>
-            </settings>
-            <formElements>
-                <checkbox class="StripeIntegration\Payments\Ui\Component\Product\Form\Element\UseConfigSettings">
-                    <settings>
-                        <description translate="true">Use Config Settings</description>
-                        <valueMap>
-                            <map name="false" xsi:type="string">0</map>
-                            <map name="true" xsi:type="string">1</map>
-                        </valueMap>
-                    </settings>
-                </checkbox>
-            </formElements>
-        </field>
-        <field name="prorate_downgrades" formElement="checkbox">
-            <argument name="data" xsi:type="array">
-                <item name="config" xsi:type="array">
-                    <item name="rawOptions" xsi:type="boolean">true</item>
-                    <item name="value" xsi:type="object">StripeIntegration\Payments\Model\Stripe\Source\ConfigUpgradesDowngrades</item>
-                    <item name="sortOrder" xsi:type="number">206</item>
-                </item>
-            </argument>
-            <settings>
-                <scopeLabel>[GLOBAL]</scopeLabel>
-                <label translate="true">Prorate downgrades</label>
-                <dataScope>prorate_downgrades</dataScope>
-                <imports>
-                    <link name="disabled">${$.parentName}.prorate_downgrades_use_config:disableParent</link>
-                </imports>
-                <tooltip>
-                    <description translate="true">When enabled, downgrades will credit the customer's account balance, and will be used to offset future subscription payments.</description>
-                </tooltip>
-            </settings>
-            <formElements>
-                <checkbox>
-                    <settings>
-                        <options class="Magento\Config\Model\Config\Source\Enabledisable"/>
-                        <prefer>toggle</prefer>
-                        <valueMap>
-                            <map name="false" xsi:type="boolean">false</map>
-                            <map name="true" xsi:type="boolean">true</map>
-                        </valueMap>
-                    </settings>
-                </checkbox>
-            </formElements>
-        </field>
-        <field name="prorate_downgrades_use_config" component="StripeIntegration_Payments/js/components/use-config-settings" formElement="checkbox">
-            <argument name="data" xsi:type="array">
-                <item name="config" xsi:type="array">
-                    <item name="value" xsi:type="string">1</item>
-                    <item name="valueFromConfig" xsi:type="object">StripeIntegration\Payments\Model\Stripe\Source\ConfigUpgradesDowngrades</item>
-                    <item name="keyInConfiguration" xsi:type="string">prorations_downgrades</item>
-                    <item name="sortOrder" xsi:type="number">208</item>
-                </item>
-            </argument>
-            <settings>
-                <dataScope>prorate_downgrades_use_config</dataScope>
-                <links>
-                    <link name="linkedValue">${$.provider}:data.product.subscription_options.prorate_downgrades</link>
                 </links>
                 <imports>
                     <link name="disabled">ns = ${ $.ns }, index = subscription_options:disabled</link>

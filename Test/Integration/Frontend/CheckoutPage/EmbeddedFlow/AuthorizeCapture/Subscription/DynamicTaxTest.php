@@ -67,7 +67,9 @@ class DynamicTaxTest extends \PHPUnit\Framework\TestCase
         ]);
 
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->tests->compare($subscription, [
@@ -102,6 +104,11 @@ class DynamicTaxTest extends \PHPUnit\Framework\TestCase
         $order->getShippingAddress()->addData($newYorkData)->save();
         $order->getBillingAddress()->addData($newYorkData)->save();
         $this->tests->helper()->clearCache();
+
+        // Increase the product price by $10
+        $sku = $order->getItemsCollection()->getFirstItem()->getSku();
+        $product = $this->tests->getProduct($sku);
+        $product->setPrice($product->getPrice() + 10)->save();
 
         // Count the active quotes
         $count = $this->countActiveQuotes();

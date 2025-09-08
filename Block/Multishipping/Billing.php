@@ -7,7 +7,7 @@ use StripeIntegration\Payments\Model\Config as StripeConfig;
 // Payment method form in the multi-shipping page
 class Billing extends \Magento\Payment\Block\Form\Cc
 {
-    protected $_template = 'multishipping/billing/payment_element.phtml';
+    protected $_template = 'StripeIntegration_Payments::multishipping/billing/payment_element.phtml';
     private $formKey;
     private $initParams;
     private $helper;

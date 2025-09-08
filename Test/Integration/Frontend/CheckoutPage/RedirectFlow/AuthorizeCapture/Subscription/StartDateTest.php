@@ -11,16 +11,19 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
 {
     private $quote;
     private $tests;
+    private $service;
 
     public function setUp(): void
     {
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
+        $this->service = $this->tests->objectManager->get(\StripeIntegration\Payments\Api\Service::class);
     }
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoConfigFixture current_store payment/stripe_payments/save_payment_method 0
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -28,8 +31,7 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
             'start_date' => "2021-01-10",
-            'first_payment' => 'on_start_date',
-            'prorate_first_payment' => 0
+            'first_payment' => 'on_start_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -42,6 +44,10 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
             ->setPaymentMethod("StripeCheckout");
 
         $order = $this->quote->placeOrder();
+
+        // Verify that a checkout session ID is returned after placing the order
+        $checkoutSessionId = $this->service->get_checkout_session_id();
+        $this->assertNotEmpty($checkoutSessionId, "The checkout session ID should not be empty after placing an order");
 
         // Confirm the payment
         $order->setHasStartDate(true);

@@ -6,7 +6,7 @@ if (empty($canceledSubscriptions))
 
 <tr>
   <td colspan="3" style="border-top: 0">
-    <h3><?= __("Canceled Subscriptions"); //phpcs:ignore ?></h3>
+    <h3><?= $block->escapeHtml(__("Canceled Subscriptions")); ?></h3>
   </td>
 </tr>
 <?php foreach ($canceledSubscriptions as $subscription) : ?>
@@ -14,33 +14,33 @@ if (empty($canceledSubscriptions))
   /** @var \StripeIntegration\Payments\Model\Stripe\Subscription $stripeSubscriptionModel */
   $stripeSubscriptionModel = $block->getSubscriptionModel($subscription);
   ?>
-  <tr class="<?= $subscription->id; //phpcs:ignore ?>">
+  <tr class="<?= $block->escapeHtmlAttr($subscription->id); ?>">
     <td data-th="Order #" class="col order">
-      <a href="viewOrder/<?= $subscription->metadata["Order #"]; //phpcs:ignore ?>">
-        <?= $subscription->metadata["Order #"]; //phpcs:ignore ?>
+      <a href="viewOrder/<?= $block->escapeHtmlAttr($subscription->metadata["Order #"]); ?>">
+        <?= $block->escapeHtml($subscription->metadata["Order #"]); ?>
       </a>
     </td>
-    <td data-th="<?= __("Subscription"); //phpcs:ignore ?>" class="col id">
+    <td data-th="<?= $block->escapeHtmlAttr(__("Subscription")); ?>" class="col id">
       <div class="subscription-name">
-        <?= $block->getSubscriptionName($subscription); //phpcs:ignore ?>
+        <?= $block->escapeHtml($block->getSubscriptionName($subscription)); ?>
       </div>
       <div class="billed">
-        <?= $stripeSubscriptionModel->getFormattedBilling(); //phpcs:ignore ?>
+        <?= /* @noEscape */ $stripeSubscriptionModel->getFormattedBilling(); ?>
       </div>
-      <div class="<?= $subscription->id; //phpcs:ignore ?> payment-method stripe-subscription-edit">
+      <div class="<?= $block->escapeHtmlAttr($subscription->id); ?> payment-method stripe-subscription-edit">
         <div class="static section">
           <div class="details stripe-payments">
             <?php $paymentMethod = $block->getSubscriptionDefaultPaymentMethod($subscription); ?>
             <?php if ($paymentMethod) : ?>
-              <img class="icon" src="<?= $paymentMethod['icon']; //phpcs:ignore ?>" alt="<?= $paymentMethod['label']; //phpcs:ignore ?>">
-              <span class="label"><?= $paymentMethod['label']; //phpcs:ignore ?></span>
+              <img class="icon" src="<?= $block->escapeHtmlAttr($paymentMethod['icon']); ?>" alt="<?= $block->escapeHtmlAttr($paymentMethod['label']); ?>">
+              <span class="label"><?= $block->escapeHtml($paymentMethod['label']); ?></span>
               <?php if (!empty($paymentMethod['exp_month'])) : ?>
                 <span class="exp">
-                  <?= $paymentMethod['exp_month']; //phpcs:ignore ?>/<?= $paymentMethod['exp_year']; //phpcs:ignore ?>
+                  <?= $block->escapeHtml($paymentMethod['exp_month']); ?>/<?= $block->escapeHtml($paymentMethod['exp_year']); ?>
                 </span>
               <?php endif; ?>
             <?php else : ?>
-              <?= __("No payment method."); //phpcs:ignore ?>
+              <?= $block->escapeHtml(__("No payment method.")); ?>
             <?php endif; ?>
           </div>
         </div>
@@ -48,9 +48,11 @@ if (empty($canceledSubscriptions))
     </td>
     <td data-th="Actions" class="col">
       <div class="primary">
-        <button type="button" onclick="location.href='<?= $block->getUrl('stripe/customer/subscriptions/reactivate/' . $subscription->id); //phpcs:ignore ?>';" class="action" title="<?= __("Reactivate"); //phpcs:ignore ?>">
-          <span><?= __("Reactivate"); //phpcs:ignore ?></span>
-        </button>
+        <form method="POST" action="<?= $block->escapeUrl($block->getUrl('stripe/subscriptions/reactivate')); ?>">
+          <input type="hidden" name="form_key" value="<?= $block->escapeHtmlAttr($block->getFormKey()); ?>">
+          <input type="hidden" name="subscription_id" value="<?= $block->escapeHtmlAttr($subscription->id); ?>">
+          <button type="submit" class="action"><?= $block->escapeHtml(__('Reactivate')); ?></button>
+        </form>
       </div>
     </td>
   </tr>

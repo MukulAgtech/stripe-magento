@@ -7,6 +7,9 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputOption;
 
+/**
+ * @codeCoverageIgnore
+ */
 class ConfigureCommand extends Command
 {
     private $areaCodeFactory;
@@ -31,9 +34,8 @@ class ConfigureCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
         $interactive = $input->getOption("interactive");
 
         $areaCode = $this->areaCodeFactory->create();

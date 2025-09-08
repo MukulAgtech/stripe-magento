@@ -180,7 +180,44 @@
         </arguments>
     </type>
 
+    <!-- Checkout crashes logger -->
+    <type name="StripeIntegration\Payments\Logger\CheckoutCrash\Logger">
+        <arguments>
+            <argument name="name" xsi:type="string">stripe_checkout_crashes</argument>
+            <argument name="handlers" xsi:type="array">
+                <item name="0" xsi:type="object">StripeIntegration\Payments\Logger\CheckoutCrash\Handler</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!-- Warnings logger -->
+    <type name="StripeIntegration\Payments\Logger\Warnings\Logger">
+        <arguments>
+            <argument name="name" xsi:type="string">stripe_warnings</argument>
+            <argument name="handlers" xsi:type="array">
+                <item name="0" xsi:type="object">StripeIntegration\Payments\Logger\Warnings\Handler</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <type name="Magento\Quote\Model\QuoteManagement">
+        <plugin name="stripe_payments_quote_management" type="StripeIntegration\Payments\Plugin\Quote\QuoteManagement" />
+    </type>
+
+    <type name="Magento\Quote\Model\Quote\Address\Total\Shipping">
+        <plugin name="stripe_payments_trial_subscription_shipping_total" type="StripeIntegration\Payments\Plugin\Quote\AddressShippingTotal" />
+    </type>
+
+    <type name="Magento\Payment\Model\Checks\ZeroTotal">
+        <plugin name="stripe_payments_zero_total_check" type="StripeIntegration\Payments\Plugin\Validations\ZeroTotalCheck" />
+    </type>
+
+    <type name="Magento\SalesRule\Model\Coupon\Quote\UpdateCouponUsages">
+        <plugin name="stripe_update_coupon_usages_plugin" type="StripeIntegration\Payments\Plugin\SalesRule\UpdateCouponUsagesPlugin" sortOrder="10"/>
+    </type>
+
     <preference for="StripeIntegration\Payments\Api\ServiceInterface" type="StripeIntegration\Payments\Api\Service" />
+    <preference for="StripeIntegration\Payments\Api\PaymentMethodOptionsServiceInterface" type="StripeIntegration\Payments\Service\PaymentMethodOptionsService"/>
 
     <!-- Console Commands -->
     <type name="Magento\Framework\Console\CommandList">
@@ -195,7 +232,6 @@
 
                 <!-- Webhooks -->
                 <item name="WebhooksAutomaticConfiguration" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\AutomaticConfigurationCommand</item>
-                <item name="WebhooksCleanup" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\CleanupCommand</item>
                 <item name="WebhooksConfigure" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ConfigureCommand</item>
                 <item name="WebhooksOriginCheck" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\OriginCheckCommand</item>
                 <item name="WebhooksProcessEvent" xsi:type="object">StripeIntegration\Payments\Commands\Webhooks\ProcessEventCommand</item>
@@ -236,6 +272,9 @@
     <type name="Magento\Sales\Model\ResourceModel\Order\Collection">
         <plugin name="setInitialFeeExtensionAfterLoad" type="StripeIntegration\Payments\Plugin\Order\LoadInitialFeeOnCollection" sortOrder="30"/>
     </type>
+    <type name="Magento\Quote\Model\Quote\Item\ToOrderItem">
+        <plugin name="addInitalFeeToOrderItem" type="StripeIntegration\Payments\Plugin\Quote\QuoteItemToOrderItem" sortOrder="30"/>
+    </type>
 
     <!-- Disable manual invoice capturing -->
     <type name="Magento\Sales\Model\Order\Invoice">
@@ -248,11 +287,6 @@
                 type="StripeIntegration\Payments\Plugin\Sales\Model\Service\OrderService"
                 sortOrder="1"
                 disabled="false"/>
-    </type>
-
-    <!-- Magento 2.4.6 3D Secure redirect -->
-    <type name="Magento\Webapi\Controller\Rest">
-        <plugin name="stripeWebapiRest" type="StripeIntegration\Payments\Plugin\Webapi\Controller\Rest" sortOrder="30" />
     </type>
 
     <!-- Subscriptions -->
@@ -319,6 +353,21 @@
     <!-- Before add to cart validations -->
     <type name="Magento\Quote\Model\Quote">
         <plugin name="stripeBeforeAddToCartValidations" type="StripeIntegration\Payments\Plugin\Cart\BeforeAddToCart" sortOrder="7"/>
+        <plugin name="stripeBeforeQuoteSave" type="StripeIntegration\Payments\Plugin\Quote\BeforeSave" sortOrder="7"/>
+    </type>
+    <type name="Magento\Quote\Api\CartRepositoryInterface">
+        <plugin name="stripeBeforeCartRepositorySave" type="StripeIntegration\Payments\Plugin\CartRepository\BeforeSave" sortOrder="7"/>
+    </type>
+
+    <!-- Gift cards, store credit and reward points -->
+    <type name="Magento\GiftCardAccount\Model\Service\GiftCardAccountManagement">
+        <plugin name="stripeFutureSubscriptionsGiftCards" type="StripeIntegration\Payments\Plugin\Cart\FutureSubscriptionsGiftcards" sortOrder="10" />
+    </type>
+    <type name="Magento\Reward\Model\RewardManagement">
+        <plugin name="stripeFutureSubscriptionsRewards" type="StripeIntegration\Payments\Plugin\Cart\FutureSubscriptionsRewards" sortOrder="10" />
+    </type>
+    <type name="Magento\CustomerBalance\Model\BalanceManagement">
+        <plugin name="stripeFutureSubscriptionsStoreCredit" type="StripeIntegration\Payments\Plugin\Cart\FutureSubscriptionsStoreCredit" sortOrder="10" />
     </type>
 
     <!-- Handlers -->
@@ -351,16 +400,12 @@
         </arguments>
     </type>
 
-    <!-- Used by Stripe Checkout to update the guest customer email if it changes -->
-    <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
-        <plugin name="stripeUpdateGuestCustomerDetails" type="StripeIntegration\Payments\Plugin\Checkout\GuestPaymentInformationManagement" sortOrder="30" />
-    </type>
-
     <virtualType name="Magento\Sales\Model\ResourceModel\Order\Grid">
         <arguments>
             <argument name="columns" xsi:type="array">
                 <item name="stripe_radar_risk_score" xsi:type="string">sales_order.stripe_radar_risk_score</item>
                 <item name="stripe_radar_risk_level" xsi:type="string">sales_order.stripe_radar_risk_level</item>
+                <item name="stripe_payment_method_type" xsi:type="string">sales_order.stripe_payment_method_type</item>
             </argument>
         </arguments>
     </virtualType>
@@ -406,15 +451,12 @@
         <arguments>
             <argument name="commands" xsi:type="array">
                 <item name="order" xsi:type="string">StripeBankTransfersOrderCommand</item>
-                <item name="void" xsi:type="string">StripeBankTransfersCancelCommand</item>
-                <item name="cancel" xsi:type="string">StripeBankTransfersCancelCommand</item>
                 <item name="refund" xsi:type="string">StripeBankTransfersRefundCommand</item>
             </argument>
         </arguments>
     </virtualType>
     <virtualType name="StripeBankTransfersOrderCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\OrderCommand"></virtualType>
     <virtualType name="StripeBankTransfersRefundCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\RefundCommand"></virtualType>
-    <virtualType name="StripeBankTransfersCancelCommand" type="StripeIntegration\Payments\Gateway\Command\BankTransfers\CancelCommand"></virtualType>
 
     <!-- Redirect Flow (Stripe Checkout) -->
     <virtualType name="RedirectFlowFacade" type="StripeIntegration\Payments\Model\Method\Checkout">
@@ -471,4 +513,8 @@
     <virtualType name="RedirectFlowOrderCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\OrderCommand"></virtualType>
     <virtualType name="RedirectFlowRefundCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\RefundCommand"></virtualType>
     <virtualType name="RedirectFlowCaptureCommand" type="StripeIntegration\Payments\Gateway\Command\RedirectFlow\CaptureCommand"></virtualType>
+
+    <type name="Magento\Sales\Model\Order\Item">
+        <plugin name="stripe_order_item" type="StripeIntegration\Payments\Plugin\Sales\Model\Order\Item" sortOrder="10"/>
+    </type>
 </config>

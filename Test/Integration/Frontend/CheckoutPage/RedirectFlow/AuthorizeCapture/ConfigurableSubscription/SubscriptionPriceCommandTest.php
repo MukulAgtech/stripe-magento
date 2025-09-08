@@ -31,6 +31,7 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      *
      * @dataProvider addressesProvider
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testSubscriptionMigration($shippingAddress, $billingAddress, $payerDetails)
     {
@@ -67,7 +68,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Reset
@@ -106,7 +109,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEquals($order->getGrandTotal(), $newOrder->getGrandTotal());
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Stripe checks
@@ -163,7 +168,7 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         ]);
     }
 
-    public function addressesProvider()
+    public static function addressesProvider()
     {
         $data = [
             // Full address

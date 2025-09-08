@@ -56,18 +56,11 @@ class AuthenticationRequiredTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEmpty($data["resolvePayload"]['shippingRates']);
 
         $stripe = $this->stripeConfig->getStripeClient();
-        $paymentMethod = $stripe->paymentMethods->create([
-          'type' => 'card',
-          'card' => [
-            'number' => '4000000000003220',
-            'exp_month' => 7,
-            'exp_year' => date("Y", time()) + 1,
-            'cvc' => '314',
-          ],
-          'billing_details' => $this->tests->address()->getStripeFormat("NewYork")
+        $confirmationToken = $stripe->testHelpers->confirmationTokens->create([
+            'payment_method' => 'pm_card_authenticationRequired'
         ]);
-        $this->assertNotEmpty($paymentMethod);
-        $this->assertNotEmpty($paymentMethod->id);
+        $this->assertNotEmpty($confirmationToken);
+        $this->assertNotEmpty($confirmationToken->id);
 
         $address = $this->tests->address()->getStripeFormat("NewYork");
         $result = [
@@ -76,10 +69,8 @@ class AuthenticationRequiredTest extends \PHPUnit\Framework\TestCase
             "billingDetails" => $address,
             "shippingAddress" => $address,
             "shippingRate" =>  $selectedShippingMethod,
-            "paymentMethod" =>  $paymentMethod
+            "confirmationToken" =>  $confirmationToken
         ];
-
-        $this->markTestIncomplete('$result["confirmationToken"] must be created and passed to the API');
 
         try
         {

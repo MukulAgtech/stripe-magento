@@ -9,8 +9,7 @@ class SetupIntent
     public const ONLINE_ACTIONS = [
         'three_d_secure_redirect',
         'use_stripe_sdk',
-        'redirect_to_url',
-        'verify_with_microdeposits'
+        'redirect_to_url'
     ];
 
     private $config;
@@ -20,22 +19,28 @@ class SetupIntent
     private $httpHeader;
     private $paymentMethodFactory;
     private $orderHelper;
+    private $paymentMethodTypesHelper;
+    private $checkoutFlow;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory,
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\PaymentMethodTypes $paymentMethodTypesHelper,
         \Magento\Framework\HTTP\PhpEnvironment\RemoteAddress $remoteAddress,
         \Magento\Framework\HTTP\Header $httpHeader
     ) {
         $this->paymentMethodFactory = $paymentMethodFactory;
         $this->config = $config;
+        $this->checkoutFlow = $checkoutFlow;
         $this->helper = $helper;
         $this->customer = $helper->getCustomerModel();
         $this->remoteAddress = $remoteAddress;
         $this->httpHeader = $httpHeader;
         $this->orderHelper = $orderHelper;
+        $this->paymentMethodTypesHelper = $paymentMethodTypesHelper;
     }
 
     public function getCreateParams($order)
@@ -57,17 +62,28 @@ class SetupIntent
             "return_url" => $this->helper->getUrl("stripe/payment/index")
         ];
 
-        if ($order && $order->getPayment()->getAdditionalInformation("confirmation_token"))
+        $paymentMethodTypes = $this->paymentMethodTypesHelper->getPaymentMethodTypes();
+        if ($paymentMethodTypes)
+        {
+            $params["payment_method_types"] = $paymentMethodTypes;
+        }
+        else
+        {
+            $params["automatic_payment_methods"] = [ 'enabled' => 'true' ];
+
+            // @todo: Should SetupIntents also take into account the configured payment_method_configuration?
+        }
+
+        $isExpressCheckout = $order && $order->getPayment()->getAdditionalInformation("confirmation_token") && $this->checkoutFlow->isExpressCheckout;
+        if ($isExpressCheckout)
         {
             $params["confirmation_token"] = $order->getPayment()->getAdditionalInformation("confirmation_token");
-            $params["payment_method_types"] = $this->config->getECEPaymentMethodTypes();
         }
         else
         {
             $paymentMethodId = $order->getPayment()->getAdditionalInformation("token");
             $paymentMethod = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId)->getStripeObject();
 
-            $params["automatic_payment_methods"] = [ 'enabled' => 'true' ];
             $params["payment_method"] = $paymentMethod->id;
             $params["mandate_data"] = $this->getMandateData($paymentMethod);
         }
@@ -140,7 +156,7 @@ class SetupIntent
     {
         $remoteAddress = $this->remoteAddress->getRemoteAddress();
         $userAgent = $this->httpHeader->getHttpUserAgent();
-        $unsupportedMethods = ['afterpay_clearpay', 'paypal', 'blik'];
+        $unsupportedMethods = ['afterpay_clearpay', 'blik'];
 
         if (!$remoteAddress || !$userAgent || empty($paymentMethod->type) || in_array($paymentMethod->type, $unsupportedMethods))
         {

@@ -68,21 +68,17 @@ class PartialCaptureCancelBothTest extends \PHPUnit\Framework\TestCase
 
         // Payment intent checks
 
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, []);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, ['expand' => ['latest_charge']]);
         $ordersTotal = ($order1->getGrandTotal() * 100 + $order2->getGrandTotal() * 100);
 
         $this->tests->compare($paymentIntent, [
             "amount" => $ordersTotal,
             "amount_capturable" => 0,
             "capture_method" => "manual",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $ordersTotal,
-                        "amount_captured" => 2083 + 2000, // 2083 for order 2: $10 for Simple Product + $10 shipping for both products + $0.83 tax for both
-                        "amount_refunded" => $ordersTotal - 2083 - 2000
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $ordersTotal,
+                "amount_captured" => 2083 + 2000, // 2083 for order 2: $10 for Simple Product + $10 shipping for both products + $0.83 tax for both
+                "amount_refunded" => $ordersTotal - 2083 - 2000
             ],
             "status" => "succeeded"
         ]);

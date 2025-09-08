@@ -3,6 +3,7 @@
 namespace StripeIntegration\Payments\Model\Stripe;
 
 use StripeIntegration\Payments\Model\Stripe\Service\StripeObjectService;
+use StripeIntegration\Payments\Exception\Exception;
 
 trait StripeObjectTrait
 {
@@ -60,6 +61,13 @@ trait StripeObjectTrait
         return $this;
     }
 
+    public function unsetObject()
+    {
+        $this->stripeObjectService->unsetObject();
+
+        return $this;
+    }
+
     public function lookupSingle($key)
     {
         return $this->stripeObjectService->lookupSingle($key);
@@ -68,6 +76,20 @@ trait StripeObjectTrait
     public function upsert($id, $data)
     {
         return $this->stripeObjectService->upsert($id, $data);
+    }
+
+    public function update($data)
+    {
+        if (empty($data))
+        {
+            return $this->stripeObjectService->getStripeObject();
+        }
+
+        $objectId = $this->stripeObjectService->getId();
+        if (!$objectId)
+            throw new Exception("Cannot update Stripe object without an ID.");
+
+        return $this->stripeObjectService->updateObject($objectId, $data);
     }
 
     public function getStripeUrl()
@@ -93,5 +115,10 @@ trait StripeObjectTrait
     public function reset()
     {
         $this->stripeObjectService->reset();
+    }
+
+    public function reload()
+    {
+        $this->stripeObjectService->reload();
     }
 }

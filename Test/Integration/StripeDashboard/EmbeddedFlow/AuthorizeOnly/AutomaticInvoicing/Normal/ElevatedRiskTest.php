@@ -71,7 +71,7 @@ class ElevatedRiskTest extends \PHPUnit\Framework\TestCase
         ]);
 
         $paymentIntent = $this->tests->stripe()->paymentIntents->cancel($paymentIntent->id, ["cancellation_reason" => "fraudulent"]);
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent->latest_charge);
         $this->tests->event()->trigger("review.closed", $paymentIntent->review);
 
         // Refresh the order object

@@ -9,17 +9,13 @@ namespace StripeIntegration\Payments\Test\Integration\Frontend\CheckoutPage\Embe
  */
 class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
 {
-    private $objectManager;
     private $quote;
     private $tests;
-    private $paymentMethodHelper;
 
     public function setUp(): void
     {
-        $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
-        $this->paymentMethodHelper = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\PaymentMethod::class);
     }
 
     /**
@@ -55,7 +51,7 @@ class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
 
         // Now lets create a subscription using the legacy method and associate it with $order
 
-        $paymentMethod = $this->paymentMethodHelper->createPaymentMethodFromCardNumber("4242424242424242", "California");
+        $paymentMethod = $this->tests->stripe()->paymentMethods->retrieve('pm_card_visa');
 
         $customer = $this->tests->stripe()->customers->create([
             "name" => "Joyce Strother",
@@ -93,14 +89,22 @@ class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
 
         }
 
-        $plan = $this->tests->stripe()->plans->create([
-            "amount" => "1000",
-            "interval" => "month",
-            "interval_count" => "1",
-            "product" => $magentoProduct->getId(),
-            "currency" => "usd",
-            "id" => "1000usd-1MONTH-" . $magentoProduct->getId()
-        ]);
+        try
+        {
+            $plan = $this->tests->stripe()->plans->create([
+                "amount" => "1000",
+                "interval" => "month",
+                "interval_count" => "1",
+                "product" => $magentoProduct->getId(),
+                "currency" => "usd",
+                "id" => "1000usd-1MONTH-" . $magentoProduct->getId()
+            ]);
+        }
+        catch (\Stripe\Exception\InvalidRequestException $e)
+        {
+            // A plan or price with this ID already exists. Likely created from a parallel integration tests run.
+            $plan = $this->tests->stripe()->plans->retrieve("1000usd-1MONTH-" . $magentoProduct->getId());
+        }
 
         $this->tests->stripe()->paymentMethods->attach($paymentMethod->id, ['customer' => $customer->id]);
 

@@ -8,7 +8,7 @@ class Form extends \Magento\Payment\Block\Form\Cc
     private $assetRepository;
     private $formKey;
 
-    protected $_template = 'form/stripe_payments.phtml';
+    protected $_template = 'StripeIntegration_Payments::form/stripe_payments.phtml';
 
     public function __construct(
         \Magento\Framework\View\Asset\Repository $repository,

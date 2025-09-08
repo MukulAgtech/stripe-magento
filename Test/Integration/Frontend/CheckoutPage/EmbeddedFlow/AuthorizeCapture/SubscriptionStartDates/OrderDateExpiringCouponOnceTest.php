@@ -34,8 +34,7 @@ class OrderDateExpiringCouponOnceTest extends \PHPUnit\Framework\TestCase
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
             'start_date' => "2021-01-10",
-            'first_payment' => 'on_order_date',
-            'prorate_first_payment' => 0
+            'first_payment' => 'on_order_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -60,7 +59,9 @@ class OrderDateExpiringCouponOnceTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);

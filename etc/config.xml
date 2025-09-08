@@ -8,6 +8,17 @@
                 <rest_api>card,link</rest_api>
                 <graphql_api></graphql_api>
             </manual_authentication>
+
+            <!-- Instead of incrementing coupon usages before the order is placed, increment after the order is placed. Helps with certain 3DS checkout flows. -->
+            <increment_coupon_usage_after_order_placed>1</increment_coupon_usage_after_order_placed>
+
+            <!-- Enable or disable admin notification emails for missing orders -->
+            <send_missing_order_emails>1</send_missing_order_emails>
+
+            <!-- IC+ features, see https://stripe.com/resources/more/interchange-plus-vs-flat-rate-pricing-what-businesses-need-to-know -->
+            <overcapture_enabled>0</overcapture_enabled>
+            <multicapture_enabled>0</multicapture_enabled>
+            <extended_authorizations_enabled>0</extended_authorizations_enabled>
         </stripe_settings>
         <payment>
             <stripe_payments>
@@ -51,7 +62,7 @@
                 <active>1</active>
                 <model>StripePaymentsInvoiceFacade</model>
                 <title>Stripe Billing</title>
-                <payment_action>authorize_capture</payment_action>
+                <payment_action>order</payment_action>
                 <sort_order>5</sort_order>
                 <off_session>1</off_session>
                 <can_capture>1</can_capture>
@@ -89,8 +100,6 @@
                 <model>StripeSubscriptionsFacade</model>
                 <active>1</active>
                 <upgrade_downgrade>1</upgrade_downgrade>
-                <prorations_upgrades>0</prorations_upgrades>
-                <prorations_downgrades>0</prorations_downgrades>
                 <additional_info>1</additional_info>
             </stripe_payments_subscriptions>
             <stripe_payments_bank_transfers>
@@ -99,14 +108,15 @@
                 <minimum_amount>100</minimum_amount>
                 <model>StripeBankTransfersFacade</model>
                 <title>Bank transfer</title>
+                <default_eu_country>IE</default_eu_country>
                 <sort_order>10</sort_order>
 
                 <!-- Capabilities -->
-                <can_use_internal>0</can_use_internal>
+                <can_use_internal>1</can_use_internal>
                 <can_use_checkout>1</can_use_checkout>
                 <can_use_for_multishipping>0</can_use_for_multishipping>
                 <can_refund>1</can_refund>
-                <can_refund_invoice_partial>1</can_refund_invoice_partial>
+                <can_refund_partial_per_invoice>1</can_refund_partial_per_invoice>
                 <can_void>1</can_void>
                 <can_cancel>1</can_cancel>
                 <can_cancel_invoice>1</can_cancel_invoice>
@@ -121,12 +131,35 @@
                 <global_enabled>1</global_enabled>
                 <enabled>product_page,minicart,shopping_cart_page,checkout_page</enabled>
                 <button_height>50</button_height>
+                <overflow>never</overflow>
+
+                <!-- Apple Pay -->
+                <apple_pay_enabled>1</apple_pay_enabled>
                 <apple_pay_button_theme>black</apple_pay_button_theme>
-                <google_pay_button_theme>black</google_pay_button_theme>
-                <paypal_button_theme>gold</paypal_button_theme>
                 <apple_pay_button_type>plain</apple_pay_button_type>
+
+                <!-- Google Pay -->
+                <google_pay_enabled>1</google_pay_enabled>
+                <google_pay_button_theme>black</google_pay_button_theme>
                 <google_pay_button_type>buy</google_pay_button_type>
+
+                <!-- Link -->
+                <link_enabled>1</link_enabled>
+
+                <!-- PayPal -->
+                <paypal_enabled>1</paypal_enabled>
+                <paypal_button_theme>gold</paypal_button_theme>
                 <paypal_button_type>paypal</paypal_button_type>
+
+                <!-- Amazon Pay -->
+                <amazon_pay_enabled>1</amazon_pay_enabled>
+                <amazon_pay_button_theme>gold</amazon_pay_button_theme>
+                <amazon_pay_button_type>amazon_pay</amazon_pay_button_type>
+
+                <!-- Klarna -->
+                <klarna_enabled>1</klarna_enabled>
+                <klarna_button_theme>dark</klarna_button_theme>
+                <klarna_button_type>pay</klarna_button_type>
 
                 <!-- What can we do? -->
                 <is_gateway>1</is_gateway>

@@ -56,6 +56,10 @@ class StripeObjectService
     public function createObject($data)
     {
         $this->object = $this->objectSpace()->create($data);
+
+        if (!empty($this->expandParams))
+            $this->object = $this->objectSpace()->retrieve($this->object->id, ['expand' => $this->expandParams]);
+
         $this->cacheObject();
         return $this->object;
     }
@@ -178,7 +182,12 @@ class StripeObjectService
         $this->cacheObject();
     }
 
-    private function updateObject($id, $data)
+    public function unsetObject()
+    {
+        $this->object = null;
+    }
+
+    public function updateObject($id, $data)
     {
         if ($this->compare->isDifferent($this->object, $data))
         {
@@ -203,5 +212,20 @@ class StripeObjectService
             $this->requestCache->delete($key);
         }
         $this->object = null;
+    }
+
+    public function reload()
+    {
+        $id = $this->getId();
+
+        if (!$id)
+        {
+            return;
+        }
+
+        $this->reset();
+        $this->load($id);
+
+        return $this;
     }
 }

@@ -7,6 +7,7 @@ class Webhook extends \Magento\Framework\Model\AbstractModel
     private $compare;
     private $storeManager;
     private $webhooksHelper;
+    private $enabledEvents;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\Compare $compare,
@@ -14,6 +15,7 @@ class Webhook extends \Magento\Framework\Model\AbstractModel
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
         \Magento\Store\Model\StoreManagerInterface $storeManager,
+        \StripeIntegration\Payments\Model\Webhooks\EnabledEvents $enabledEvents,
         \StripeIntegration\Payments\Model\ResourceModel\Webhook $resource,
         \StripeIntegration\Payments\Model\ResourceModel\Webhook\Collection $resourceCollection,
         array $data = []
@@ -22,6 +24,7 @@ class Webhook extends \Magento\Framework\Model\AbstractModel
         $this->compare = $compare;
         $this->storeManager = $storeManager;
         $this->webhooksHelper = $webhooksHelper;
+        $this->enabledEvents = $enabledEvents;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
     }
@@ -55,7 +58,7 @@ class Webhook extends \Magento\Framework\Model\AbstractModel
         }
 
         $enabledEvents = json_decode($this->getEnabledEvents(), true);
-        if (!$this->compare->areArrayValuesTheSame($enabledEvents, \StripeIntegration\Payments\Helper\WebhooksSetup::$enabledEvents)) {
+        if (!$this->compare->areArrayValuesTheSame($enabledEvents, $this->enabledEvents->getEvents())) {
             return true;
         }
 

@@ -20,7 +20,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
-     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeys.php
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -53,7 +53,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $session->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         $ordersCount = $this->tests->getOrdersCount();
@@ -93,12 +95,19 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->tests->helper()->clearCache();
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Stripe checks
         $this->assertNotEmpty($customer->subscriptions->data[0]->latest_invoice);
-        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, [
+            'expand' => [
+                'payment_intent',
+                'payment_intent.latest_charge'
+            ]
+        ]);
         $this->tests->compare($customer->subscriptions->data[0], [
             "items" => [
                 "data" => [
@@ -136,13 +145,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "payment_intent" => [
                 "amount" => 1584,
                 "amount_received" => 1584,
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount" => 1584,
-                            "amount_captured" => 1584
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount" => 1584,
+                    "amount_captured" => 1584
                 ],
                 "description" => "Subscription order #$orderIncrementId by Flint Jerry",
                 "metadata" => [
@@ -189,15 +194,16 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->tests->refundOnline($invoice, ['simple-monthly-subscription-product' => 1], $baseShipping = 5);
 
         // Stripe checks
-        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, [
+            'expand' => [
+                'payment_intent',
+                'payment_intent.latest_charge'
+            ]
+        ]);
         $this->tests->compare($invoice, [
             "payment_intent" => [
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount_refunded" => 1584
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount_refunded" => 1584
                 ]
             ]
         ]);

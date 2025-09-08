@@ -18,6 +18,7 @@ class Session
     )
     {
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
+        $stripeObjectService->setExpandParams($this->expandParams);
         $this->setData($stripeObjectService);
     }
 

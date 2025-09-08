@@ -104,7 +104,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Payment Intent checks
 
         $paymentIntentId = $order1->getPayment()->getLastTransId();
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, []);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, [
+            'expand' => ['latest_charge']
+        ]);
 
         $expected = [
             "orders_total" => ($order1->getGrandTotal() * 100 + $order2->getGrandTotal() * 100),
@@ -121,14 +123,10 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "amount" => $expected["orders_total"],
             "amount_capturable" => $expected["orders_total"],
             "capture_method" => "manual",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "description" => $expected["description"],
-                        "metadata" => $expected["metadata"],
-                        "customer" => $expected["customer"]
-                    ]
-                ]
+            "latest_charge" => [
+                "description" => $expected["description"],
+                "metadata" => $expected["metadata"],
+                "customer" => $expected["customer"]
             ],
             "description" => $expected["description"],
             "metadata" => $expected["metadata"],
@@ -154,7 +152,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Check Stripe Payment method
         $paymentMethod = $this->tests->loadPaymentMethod($order1->getId());
-        $this->assertEquals('', $paymentMethod->getPaymentMethodType());
+        $this->assertEquals('card', $paymentMethod->getPaymentMethodType());
 
         // Check if Radar risk value is been set to the order
         $this->assertIsNumeric($order2->getStripeRadarRiskScore());
@@ -163,7 +161,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Check Stripe Payment method
         $paymentMethod = $this->tests->loadPaymentMethod($order2->getId());
-        $this->assertEquals('', $paymentMethod->getPaymentMethodType());
+        $this->assertEquals('card', $paymentMethod->getPaymentMethodType());
 
         $this->assertEquals($order1->getGrandTotal(), $order1->getTotalPaid());
         $this->assertEquals($order2->getGrandTotal(), $order2->getTotalPaid());

@@ -110,7 +110,7 @@ class Address
             'region' => $region,
             'postcode' => $data['address']['postal_code'] ?? null,
             'country_id' => $country,
-            'telephone' => $data['phone'],
+            'telephone' => $data['phone'] ?? null,
             'fax' => null,
         ];
     }
@@ -152,6 +152,10 @@ class Address
         $fullName = $this->nameParserFactory->create()->fromString($shippingAddress['name'] ?? null);
 
         $regionId = $this->getRegionIdBy($regionName = $shippingAddress['state'] ?? null, $regionCountry = $shippingAddress['country'] ?? null);
+
+        if (!$regionId && $this->isRegionRequired($shippingAddress['country'])) {
+            throw new InvalidAddressException(__("Invalid shipping address region."));
+        }
 
         return [
             'firstname' => $fullName->getFirstName(),
@@ -274,6 +278,19 @@ class Address
         return $data;
     }
 
+    public function filterAddressDataAndRemoveEmpty($data, $additionalFieldsToRemove = [])
+    {
+        $data = $this->filterAddressData($data);
+
+        foreach ($data as $key => $value)
+        {
+            if (empty($value) || in_array($key, $additionalFieldsToRemove))
+                unset($data[$key]);
+        }
+
+        return $data;
+    }
+
     public function isRegionRequired($countryCode)
     {
         return $this->directoryHelper->isRegionRequired($countryCode);
@@ -293,5 +310,58 @@ class Address
             return null;
 
         return $this->getStripeShippingAddressFromMagentoAddress($address);
+    }
+
+    public function isMagentoBillingAddressValid($billingAddress)
+    {
+        if (empty($billingAddress))
+            return false;
+
+        if (empty($billingAddress['country_id']))
+            return false;
+
+        if (empty($billingAddress['city']))
+            return false;
+
+        if (empty($billingAddress['street'][0]))
+            return false;
+
+        return true;
+    }
+
+    public function getFirstnameFromStripeAddress($stripeAddress)
+    {
+        if (empty($stripeAddress))
+            return null;
+
+        if (empty($stripeAddress['name']))
+            return null;
+
+        $payerName = $this->nameParserFactory->create()->fromString($stripeAddress['name']);
+
+        return $payerName->getFirstName();
+    }
+
+    public function getLastnameFromStripeAddress($stripeAddress)
+    {
+        if (empty($stripeAddress))
+            return null;
+
+        if (empty($stripeAddress['name']))
+            return null;
+
+        $payerName = $this->nameParserFactory->create()->fromString($stripeAddress['name']);
+
+        return $payerName->getLastName();
+    }
+
+    public function getPhoneFromStripeAddress($stripeAddress)
+    {
+        return $stripeAddress['phone'] ?? null;
+    }
+
+    public function getEmailFromStripeAddress($stripeAddress)
+    {
+        return $stripeAddress['email'] ?? null;
     }
 }

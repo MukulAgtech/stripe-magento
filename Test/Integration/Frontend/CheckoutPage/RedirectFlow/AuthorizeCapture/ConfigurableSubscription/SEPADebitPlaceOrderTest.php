@@ -24,6 +24,7 @@ class SEPADebitPlaceOrderTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -61,7 +62,9 @@ class SEPADebitPlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Reset

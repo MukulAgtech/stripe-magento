@@ -49,24 +49,28 @@ class ReviewClosed
                 ['order' => $order, 'object' => $object]
             );
 
+            if ($order->canUnhold())
+                $order->unhold();
+
             if ($object['reason'] == "approved")
             {
-                if ($order->canUnhold())
-                    $order->unhold();
-
                 $comment = __("The payment has been approved via Stripe.");
                 $order->addStatusToHistory(false, $comment, $isCustomerNotified = false);
                 $this->orderHelper->saveOrder($order);
             }
             else if ($object['reason'] == "refunded_as_fraud")
             {
-                if ($order->canUnhold())
-                    $order->unhold();
-
                 $comment = __("The payment has been rejected as fraudulent via Stripe.");
                 $order->setState($order::STATE_PAYMENT_REVIEW);
                 $order->addStatusToHistory($order::STATUS_FRAUD, $comment, $isCustomerNotified = false);
                 $this->orderHelper->saveOrder($order);
+            }
+            else if ($object['reason'] == "canceled")
+            {
+                // Case for manually canceling uncaptured payments; the order will be closed
+                $comment = __("The payment has been canceled via Stripe after a manual review.");
+                $order->addStatusToHistory(false, $comment, $isCustomerNotified = false);
+                $this->helper->cancelOrCloseOrder($order);
             }
             else
             {

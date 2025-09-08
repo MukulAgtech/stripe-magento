@@ -80,21 +80,19 @@ class PartialRefundsTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $paymentIntentId = $this->tokenHelper->cleanToken($order->getPayment()->getLastTransId());
-        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId);
+        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId, [
+            'expand' => ['latest_charge']
+        ]);
         $this->compare->object($paymentIntent, [
             "amount" => $stripeGrandTotal,
             "amount_capturable" => 0,
             "amount_received" => $stripeGrandTotal,
             "status" => "succeeded",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $stripeGrandTotal,
-                        "amount_captured" => $stripeGrandTotal,
-                        "amount_refunded" => 2083,
-                        "status" => "succeeded"
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $stripeGrandTotal,
+                "amount_captured" => $stripeGrandTotal,
+                "amount_refunded" => 2083,
+                "status" => "succeeded"
             ]
         ]);
 
@@ -123,21 +121,19 @@ class PartialRefundsTest extends \PHPUnit\Framework\TestCase
         $this->assertFalse($order->canCreditmemo());
 
         // Stripe checks
-        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId);
+        $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntentId, [
+            'expand' => ['latest_charge']
+        ]);
         $this->compare->object($paymentIntent, [
             "amount" => $stripeGrandTotal,
             "amount_capturable" => 0,
             "amount_received" => $stripeGrandTotal,
             "status" => "succeeded",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $stripeGrandTotal,
-                        "amount_captured" => $stripeGrandTotal,
-                        "amount_refunded" => $stripeGrandTotal,
-                        "status" => "succeeded"
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $stripeGrandTotal,
+                "amount_captured" => $stripeGrandTotal,
+                "amount_refunded" => $stripeGrandTotal,
+                "status" => "succeeded"
             ]
         ]);
     }

@@ -9,7 +9,7 @@ class RefundCommand implements CommandInterface
     private $refundsHelper;
 
     public function __construct(
-        \StripeIntegration\Payments\Helper\Refunds $refundsHelper,
+        \StripeIntegration\Payments\Helper\Refunds $refundsHelper
     ) {
         $this->refundsHelper = $refundsHelper;
     }

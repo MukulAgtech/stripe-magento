@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace StripeIntegration\Payments\Model\Subscription;
 
 use StripeIntegration\Payments\Exception\GenericException;
@@ -8,7 +10,6 @@ class StartDate
 {
     private $startDateTimestamp = null;
     private $firstPayment = null;
-    private $prorateFirstPayment = null;
     private $profile = null;
 
     public function fromProfile($profile): StartDate
@@ -26,24 +27,31 @@ class StartDate
 
         // Bring the start date to the future
         $startDateTimestamp = strtotime($profile['start_date']);
-        $minutesSinceMidnight = time() - strtotime('today');
-        $startDateTimestamp += $minutesSinceMidnight;
+        $today = strtotime('today');
+        $timeSinceMidnight = time() - $today;
+        $startDateTimestamp += $timeSinceMidnight;
         $intervalCount = $profile['interval_count'];
         $intervalUnit = $profile['interval'];
         if ($intervalCount > 1)
         {
             $intervalUnit .= 's';
         }
-        $now = time();
 
-        while ($startDateTimestamp < $now)
+        while ($startDateTimestamp < $today)
         {
             $startDateTimestamp = strtotime("+{$intervalCount} {$intervalUnit}", $startDateTimestamp);
         }
 
+        // If startDateTimestamp is a timestamp within today's date, return
+        if ($startDateTimestamp < strtotime('tomorrow') && $startDateTimestamp >= strtotime('today'))
+        {
+            $this->startDateTimestamp = $startDateTimestamp;
+
+            return $this;
+        }
+
         $this->startDateTimestamp = $startDateTimestamp;
         $this->firstPayment = $profile['first_payment'];
-        $this->prorateFirstPayment = $profile['prorate_first_payment'];
         $this->profile = $profile;
 
         return $this;
@@ -54,7 +62,6 @@ class StartDate
         return is_numeric($this->startDateTimestamp)
             && $this->startDateTimestamp >= strtotime("today")
             && in_array($this->firstPayment, ['on_order_date', 'on_start_date'])
-            && in_array($this->prorateFirstPayment, [0, 1])
             && $this->profile;
     }
 
@@ -89,21 +96,7 @@ class StartDate
         if (!$this->isValid())
             return $params;
 
-        if ($this->firstPayment == 'on_order_date')
-        {
-            if ($this->prorateFirstPayment)
-            {
-                $params['billing_cycle_anchor'] = $this->startDateTimestamp;
-                $params['proration_behavior'] = 'create_prorations';
-            }
-            else
-            {
-                // In the case of collecting the first payment on the order date, and the second payment
-                // on the start date, we create the subscription on order date, and set the billing_cycle_anchor
-                // after the first payment is collected.
-            }
-        }
-        else // on_start_date
+        if ($this->firstPayment != 'on_order_date')
         {
             if (!$hasOneTimePayment)
             {
@@ -175,8 +168,7 @@ class StartDate
 
     public function hasPhases()
     {
-        return ($this->isValid() &&
-            ($this->firstPayment == 'on_order_date' && !$this->prorateFirstPayment));
+        return ($this->isValid() && $this->firstPayment == 'on_order_date');
     }
 
     public function getStartDateTimestamp()

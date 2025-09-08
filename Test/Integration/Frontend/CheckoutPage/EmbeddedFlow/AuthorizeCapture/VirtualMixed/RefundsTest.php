@@ -58,7 +58,9 @@ class RefundsTest extends \PHPUnit\Framework\TestCase
         // Stripe checks
         $stripe = $this->tests->stripe();
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $stripe->customers->retrieve($customerId);
+        $customer = $stripe->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertEquals(1, count($customer->subscriptions->data));
 
         // Invoice checks

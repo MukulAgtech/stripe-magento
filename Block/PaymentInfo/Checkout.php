@@ -21,21 +21,29 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
     private $paymentIntent;
     private $paymentMethod;
     private $tokenHelper;
+    private $request;
+    private $areaCodeHelper;
+    private $currencyHelper;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
         \Magento\Payment\Gateway\ConfigInterface $config,
+        \Magento\Framework\App\RequestInterface $request,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptions,
         \StripeIntegration\Payments\Helper\Api $api,
         \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
         \StripeIntegration\Payments\Model\Config $paymentsConfig,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodFactory,
         array $data = []
     ) {
         parent::__construct($context, $config, $data);
 
+        $this->request = $request;
+        $this->areaCodeHelper = $areaCodeHelper;
         $this->helper = $helper;
         $this->subscriptions = $subscriptions;
         $this->api = $api;
@@ -43,6 +51,7 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
         $this->paymentMethodHelper = $paymentMethodHelper;
         $this->tokenHelper = $tokenHelper;
+        $this->currencyHelper = $currencyHelper;
     }
 
     public function getTemplate()
@@ -52,10 +61,26 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         if (!$this->paymentsConfig->getStripeClient())
             return null;
 
-        if ($info && $info->getAdditionalInformation("is_subscription_update"))
-            return 'paymentInfo/subscription_update.phtml';
+        if (!$this->isAllowedAction())
+            return 'StripeIntegration_Payments::paymentInfo/generic.phtml';
 
-        return 'paymentInfo/checkout.phtml';
+        if ($info && $info->getAdditionalInformation("is_subscription_update"))
+            return 'StripeIntegration_Payments::paymentInfo/subscription_update.phtml';
+
+        return 'StripeIntegration_Payments::paymentInfo/checkout.phtml';
+    }
+
+    public function isAllowedAction()
+    {
+        if (!$this->areaCodeHelper->isAdmin())
+            return true;
+
+        $allowedAdminActions = ["view", "new", "email"];
+        $action = $this->request->getActionName();
+        if (in_array($action, $allowedAdminActions))
+            return true;
+
+        return false;
     }
 
     public function getFormattedAmount()
@@ -65,7 +90,7 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         if (empty($checkoutSession->amount_total))
             return '';
 
-        return $this->helper->formatStripePrice($checkoutSession->amount_total, $checkoutSession->currency);
+        return $this->currencyHelper->formatStripePrice($checkoutSession->amount_total, $checkoutSession->currency);
     }
 
     public function getFormattedSubscriptionAmount()
@@ -230,7 +255,7 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         {
             try
             {
-                return $this->paymentsConfig->getStripeClient()->paymentIntents->retrieve($paymentIntent, ['expand' => ['payment_method']]);
+                return $this->paymentsConfig->getStripeClient()->paymentIntents->retrieve($paymentIntent, ['expand' => ['payment_method', 'latest_charge']]);
             }
             catch (\Exception $e)
             {
@@ -296,18 +321,18 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
             case "requires_capture":
                 return "uncaptured";
             case "canceled":
-                if (empty($paymentIntent->charges->data[0]))
+                if (empty($paymentIntent->latest_charge))
                     return 'canceled';
                 /** @var \Stripe\Charge $charge */
-                $charge = $paymentIntent->charges->data[0];
+                $charge = $paymentIntent->latest_charge;
                 if (!empty($charge->failure_code))
                     return "failed";
                 else
                     return "canceled";
             case "succeeded":
-                if (!empty($paymentIntent->charges->data[0]->refunded))
+                if (!empty($paymentIntent->latest_charge->refunded))
                     return "refunded";
-                else if (!empty($paymentIntent->charges->data[0]->amount_refunded))
+                else if (!empty($paymentIntent->latest_charge->amount_refunded))
                     return "partial_refund";
                 else
                     return "succeeded";
@@ -322,16 +347,6 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
 
         if (!empty($checkoutSession->subscription))
             return $checkoutSession->subscription;
-
-        return null;
-    }
-
-    public function getCard()
-    {
-        $method = $this->getPaymentMethod();
-
-        if (!empty($method->card))
-            return $method->card;
 
         return null;
     }
@@ -362,38 +377,14 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         return ucfirst(str_replace("_", " ", $risk));
     }
 
-    public function isStripeMethod()
-    {
-        $method = $this->getMethod()->getMethod();
-
-        if (strpos($method, "stripe_payments") !== 0 || $method == "stripe_payments_invoice")
-            return false;
-
-        return true;
-    }
-
     public function getCharge()
     {
         $paymentIntent = $this->getPaymentIntent();
 
-        if (!empty($paymentIntent->charges->data[0]))
-            return $paymentIntent->charges->data[0];
+        if (!empty($paymentIntent->latest_charge))
+            return $paymentIntent->latest_charge;
 
         return null;
-    }
-
-    public function retrieveCharge($chargeId)
-    {
-        try
-        {
-            $token = $this->tokenHelper->cleanToken($chargeId);
-
-            return $this->api->retrieveCharge($token);
-        }
-        catch (\Exception $e)
-        {
-            return null;
-        }
     }
 
     public function getCustomerId()
@@ -443,8 +434,18 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
         return $this->getMethod()->getTitle();
     }
 
-    public function getOXXOVoucherLink()
+    public function getVoucherLink()
     {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (!empty($paymentIntent->next_action->type))
+        {
+            $type = $paymentIntent->next_action->type;
+
+            if (!empty($paymentIntent->next_action->$type->hosted_voucher_url))
+                return $paymentIntent->next_action->$type->hosted_voucher_url;
+        }
+
         return null;
     }
 
@@ -455,6 +456,11 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
 
         if (!empty($setupIntent->next_action->type) && $setupIntent->next_action->type == "verify_with_microdeposits")
             return $setupIntent->next_action->verify_with_microdeposits->hosted_verification_url;
+
+        /** @var ?\Stripe\PaymentIntent $paymentIntent */
+        $paymentIntent = $this->getPaymentIntent();
+        if (!empty($paymentIntent->next_action->type) && $paymentIntent->next_action->type == "verify_with_microdeposits")
+            return $paymentIntent->next_action->verify_with_microdeposits->hosted_verification_url;
 
         return null;
     }
@@ -475,5 +481,31 @@ class Checkout extends \Magento\Payment\Block\ConfigurableInfo
             return true;
 
         return false;
+    }
+
+    public function getLatestCharge()
+    {
+        $paymentIntent = $this->getPaymentIntent();
+
+        if (!empty($paymentIntent->latest_charge))
+            return $paymentIntent->latest_charge;
+
+        return null;
+    }
+
+    public function getExpiryDate()
+    {
+        $charge = $this->getLatestCharge();
+
+        $date = $charge->payment_method_details->card->capture_before ?? null;
+
+        if ($date)
+        {
+            // Format is 2nd Jan 2023
+            $date = date("jS M Y", $date);
+            return $date;
+        }
+
+        return null;
     }
 }

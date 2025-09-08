@@ -59,18 +59,16 @@ class MulticurrencyRefundsTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $this->assertEquals(round($creditMemo->getGrandTotal(), 4), $order->getGrandTotal());
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, [
+            "expand" => ["latest_charge"]
+        ]);
 
         $grandTotal = round(floatval($order->getGrandTotal()) * 100);
 
         $this->tests->compare($paymentIntent, [
             "amount" => $grandTotal,
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount_refunded" => $grandTotal
-                    ]
-                ]
+            "latest_charge" => [
+                "amount_refunded" => $grandTotal
             ],
             "description" => "Subscription order #$orderIncrementId by Joyce Strother"
         ]);

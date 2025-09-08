@@ -7,6 +7,9 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 
+/**
+ * @codeCoverageIgnore
+ */
 class ConfigureSubscriptionProductCommand extends Command
 {
     private $areaCodeFactory;
@@ -55,13 +58,8 @@ class ConfigureSubscriptionProductCommand extends Command
         $subscriptionOptions->setSubInitialFee(0);
         $subscriptionOptions->setStartOnSpecificDate(false);
         $subscriptionOptions->setFirstPayment("on_start_date");
-        $subscriptionOptions->setProrateFirstPayment(false);
         $subscriptionOptions->setUpgradesDowngrades(true);
         $subscriptionOptions->setUpgradesDowngradesUseConfig(1);
-        $subscriptionOptions->setProrateUpgrades(false);
-        $subscriptionOptions->setProrateUpgradesUseConfig(1);
-        $subscriptionOptions->setProrateDowngrades(false);
-        $subscriptionOptions->setProrateDowngradesUseConfig(1);
 
         if ($configuration == "SimpleMonthlySubscription")
         {

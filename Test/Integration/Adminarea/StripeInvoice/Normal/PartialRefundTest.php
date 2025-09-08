@@ -16,7 +16,13 @@ class PartialRefundTest extends \PHPUnit\Framework\TestCase
 
     public function setUp(): void
     {
-        $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
+        /** @var \Magento\TestFramework\ObjectManager $objectManager */
+        $objectManager = $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
+
+        $invoiceMock = $this->createMock(\StripeIntegration\Payments\Helper\Stripe\Invoice::class);
+        $invoiceMock->method('getStripeInvoiceParams')->willReturn([]);
+        $objectManager->addSharedInstance($invoiceMock, \StripeIntegration\Payments\Helper\Stripe\Invoice::class);
+
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
         $this->paymentMethodBlock = $this->objectManager->get(\StripeIntegration\Payments\Block\Adminhtml\SelectPaymentMethod::class);

@@ -6,6 +6,9 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * @codeCoverageIgnore
+ */
 class ProcessEventsDateRangeCommand extends Command
 {
     private $areaCodeFactory;
@@ -34,7 +37,7 @@ class ProcessEventsDateRangeCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new \Symfony\Component\Console\Style\SymfonyStyle($input, $output);
         $fromDate = strtotime($input->getArgument("from_date"));

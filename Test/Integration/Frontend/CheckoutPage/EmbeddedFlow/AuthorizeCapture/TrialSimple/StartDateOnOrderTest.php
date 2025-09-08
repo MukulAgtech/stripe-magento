@@ -33,8 +33,7 @@ class StartDateOnOrderTest extends \PHPUnit\Framework\TestCase
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
             'start_date' => "2021-01-10",
-            'first_payment' => 'on_order_date',
-            'prorate_first_payment' => 0
+            'first_payment' => 'on_order_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -51,13 +50,17 @@ class StartDateOnOrderTest extends \PHPUnit\Framework\TestCase
             ->setPaymentMethod("SuccessCard");
 
         $order = $this->quote->placeOrder();
+        $expectedChargeAmount = 31.65;
+        $this->assertEquals($expectedChargeAmount, $order->getGrandTotal());
         $subscription = $this->tests->confirmSubscription($order);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
@@ -121,7 +124,7 @@ class StartDateOnOrderTest extends \PHPUnit\Framework\TestCase
         // Make sure that the new order amount is the same
         $recurringOrder = $this->tests->getLastOrder();
         $this->tests->compare($recurringOrder->getData(), [
-            'grand_total' => $order->getGrandTotal()
+            'grand_total' => $expectedChargeAmount
         ]);
     }
 }

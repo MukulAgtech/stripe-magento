@@ -84,8 +84,8 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
         $paymentIntentId = $order->getPayment()->getLastTransId();
         $paymentIntentId = $this->tokenHelper->cleanToken($paymentIntentId);
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId);
-        $charge = $paymentIntent->charges->data[0];
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, ['expand' => ['latest_charge']]);
+        $charge = $paymentIntent->latest_charge;
 
         // Trigger webhooks
         $this->tests->event()->trigger("charge.captured", $charge);
@@ -116,5 +116,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
                 "txn_type" => $txnType
             ]);
         }
+
+        // Switch to the admin area
+        $this->objectManager->get(\Magento\Framework\App\State::class)->setAreaCode('adminhtml');
+        $order = $this->tests->refreshOrder($order);
+
+        // Create the payment info block for $order
+        $this->assertNotEmpty($this->tests->renderPaymentInfoBlock(\StripeIntegration\Payments\Block\PaymentInfo\Element::class, $order));
     }
 }

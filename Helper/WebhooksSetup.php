@@ -11,36 +11,6 @@ class WebhooksSetup
 {
     public const VERSION = 12;
 
-    public static $enabledEvents = [
-        "charge.captured",
-        "charge.refunded",
-        "charge.succeeded",
-        "checkout.session.expired",
-        "checkout.session.completed",
-        "customer.subscription.created",
-        "customer.subscription.updated",
-        "customer.subscription.deleted",
-        "invoice.upcoming",
-        "payment_intent.succeeded",
-        "payment_intent.canceled",
-        "payment_intent.partially_funded",
-        "payment_intent.processing",
-        "payment_intent.payment_failed",
-        "payment_method.attached",
-        "review.closed",
-        "setup_intent.succeeded",
-        "setup_intent.canceled",
-        "setup_intent.setup_failed",
-        "source.chargeable",
-        "source.canceled",
-        "source.failed",
-        "invoice.paid",
-        "invoice.payment_succeeded",
-        "invoice.payment_failed",
-        "invoice.voided",
-        "product.created" // This is a dummy event for setting up webhooks
-    ];
-
     public $configurations = null;
     public $errorMessages = [];
     public $successMessages = [];
@@ -110,8 +80,6 @@ class WebhooksSetup
         if (!$this->config->canInitialize($error)) {
             $this->error($error);
             return;
-        } else {
-            $this->config->setAppInfo();
         }
 
         $keys = $this->getAllActiveAPIKeys();
@@ -129,8 +97,9 @@ class WebhooksSetup
             try {
                 $webhookEndpoint = $account->configureWebhooks($url);
                 $this->info("Configured webhook endpoint " . $webhookEndpoint->getName() . " for account " . $account->getName() . "");
-            } catch (GenericException $e) {
+            } catch (\Exception $e) {
                 $this->error("Could not configure webhooks for account " . $account->getName() . ": " . $e->getMessage());
+                continue;
             }
 
             try {
@@ -139,8 +108,9 @@ class WebhooksSetup
                     $ids = implode(", ", $deleted);
                     $this->info("Deleted duplicate webhook endpoint $url ($ids) for account " . $account->getName());
                 }
-            } catch (GenericException $e) {
+            } catch (\Exception $e) {
                 $this->error("Could not delete duplicate webhook endpoint $url - " . $e->getMessage());
+                continue;
             }
         }
 
@@ -158,8 +128,6 @@ class WebhooksSetup
         if (!$this->config->canInitialize($error)) {
             $output->writeln("<error>$error</error>");
             return;
-        } else {
-            $this->config->setAppInfo();
         }
 
         $keys = $this->getAllActiveAPIKeys();
@@ -361,8 +329,7 @@ class WebhooksSetup
         if (!$this->config->canInitialize($error)) {
             $this->error($error);
             throw new SilentException($error);
-        } else
-            $this->config->setAppInfo();
+        }
 
         $keys = $this->getAllActiveAPIKeys();
         foreach ($keys as $secretKey => $publishableKey) {

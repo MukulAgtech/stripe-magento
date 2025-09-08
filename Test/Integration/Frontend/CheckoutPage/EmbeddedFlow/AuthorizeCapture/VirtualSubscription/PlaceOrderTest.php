@@ -56,7 +56,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertEquals(1, count($customer->subscriptions->data));
         $subscription = $customer->subscriptions->data[0];
         $this->assertNotEmpty($subscription->latest_invoice);

@@ -4,7 +4,7 @@
 
 <script type="application/javascript">
   // Not the best place to have this, but it offers a performance benefit (one less API call). The template is non-cacheable.
-  window.initParams = <?= $block->getInitParams(); //phpcs:ignore ?>;
+  window.initParams = <?= /* @noEscape */ $block->getInitParams(); ?>;
 
   require([ 'uiLayout' ], function (layout)
   {

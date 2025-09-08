@@ -3,6 +3,7 @@
 namespace StripeIntegration\Payments\Model;
 
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Framework\Exception\NoSuchEntityException;
 use StripeIntegration\Payments\Exception\GenericException;
 
 class Subscription extends \Magento\Framework\Model\AbstractModel
@@ -22,6 +23,9 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
     private $resourceModel;
     private $quoteHelper;
     private $orderHelper;
+    private $productHelper;
+    private $dateTimeHelper;
+    private $cartInfo;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Config $config,
@@ -30,17 +34,20 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\Product $productHelper,
+        \StripeIntegration\Payments\Helper\DateTime $dateTimeHelper,
+        \StripeIntegration\Payments\Helper\Data $dataHelper,
+        \StripeIntegration\Payments\Model\Cart\Info $cartInfo,
         \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory,
         \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $stripeSubscriptionFactory,
-        \StripeIntegration\Payments\Helper\Data $dataHelper,
         \StripeIntegration\Payments\Model\SubscriptionFactory $subscriptionFactory,
         \StripeIntegration\Payments\Model\SubscriptionReactivationFactory $subscriptionReactivationFactory,
-        \Magento\Customer\Model\Session $session,
         \StripeIntegration\Payments\Model\ResourceModel\Subscription $resourceModel,
+        \Magento\Customer\Model\Session $session,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+        ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+        ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
         array $data = []
     ) {
         $this->config = $config;
@@ -54,12 +61,15 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
         $this->subscriptionProductFactory = $subscriptionProductFactory;
         $this->stripeSubscriptionFactory = $stripeSubscriptionFactory;
         $this->dataHelper = $dataHelper;
+        $this->cartInfo = $cartInfo;
         $this->subscriptionFactory = $subscriptionFactory;
         $this->session = $session;
         $this->subscriptionReactivationFactory = $subscriptionReactivationFactory;
         $this->resourceModel = $resourceModel;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
+        $this->productHelper = $productHelper;
+        $this->dateTimeHelper = $dateTimeHelper;
     }
 
     protected function _construct()
@@ -74,7 +84,7 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
         if (empty($this->getId()) || empty($this->getOrderIncrementId()))
         {
             $this->stripeSubscriptionModel = $this->stripeSubscriptionFactory->create();
-            $this->stripeSubscriptionModel->expandParams = ['plan.product'];
+            $this->stripeSubscriptionModel->setExpandParams(['plan.product']);
             $this->stripeSubscriptionModel->fromSubscriptionId($subscriptionId);
             $subscription = $this->stripeSubscriptionModel->getStripeObject();
             $this->initFrom($subscription);
@@ -97,15 +107,6 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
 
     public function initFrom($subscription, $order = null)
     {
-        if (isset($subscription->plan->currency))
-            $currency = $subscription->plan->currency;
-        else if (isset($subscription->items->data[0]->plan->currency))
-            $currency = $subscription->items->data[0]->plan->currency;
-        else if ($order)
-            $currency = strtolower($order->getOrderCurrencyCode());
-        else
-            $currency = "usd";
-
         if (!$order && !empty($subscription->metadata->{'Order #'}))
         {
             $order = $this->orderHelper->loadOrderByIncrementId($subscription->metadata->{'Order #'});
@@ -118,16 +119,19 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
             "stripe_customer_id" => $subscription->customer,
             "payment_method_id" => $subscription->default_payment_method,
             "quantity" => $subscription->quantity,
-            "currency" => $currency,
+            "currency" => $subscription->plan->currency ?? null, // Versions 2.x of the module may not have this set
             "status" => $subscription->status,
             "name" => $this->subscriptionsHelper->generateSubscriptionName($subscription),
+            "plan_amount" => $subscription->plan->amount ?? null,
+            "plan_interval" => $subscription->plan->interval ?? null,
+            "plan_interval_count" => $subscription->plan->interval_count ?? null,
         ];
 
         $productIds = $this->subscriptionsHelper->getSubscriptionProductIDs($subscription);
         if (!empty($productIds))
             $data["product_id"] = array_shift($productIds);
 
-        if ($order && $order->getId())
+        if ($order)
         {
             $data["store_id"] = $order->getStoreId();
             $data["order_increment_id"] = $order->getIncrementId();
@@ -135,13 +139,27 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
             $data["grand_total"] = $order->getGrandTotal();
         }
 
+        // cartInfo is only populated during the initial order placement
+        if (!empty($subscription->trial_end))
+        {
+            $data["trial_end"] = $subscription->trial_end;
+        }
+        else if ($subscription->billing_cycle_anchor && $subscription->billing_cycle_anchor > $subscription->start_date)
+        {
+            $data["start_date"] = $subscription->billing_cycle_anchor;
+        }
+
         $this->addData($data);
 
         return $this;
     }
 
-    public function cancel($subscriptionId)
+    public function cancel()
     {
+        $subscription = $this->getStripeSubscriptionModel()->getStripeObject();
+
+        $subscriptionId = $subscription->id;
+
         $this->config->getStripeClient()->subscriptions->cancel($subscriptionId, []);
 
         $this->resourceModel->load($this, $subscriptionId, "subscription_id");
@@ -161,64 +179,72 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
         }
     }
 
+    public function getStripeObject()
+    {
+        return $this->getStripeSubscriptionModel()->getStripeObject();
+    }
+
     public function reactivate()
     {
-        try {
-            if (!$this->getId())
-                throw new GenericException(__("The subscription could not be loaded."));
+        if (!$this->getId())
+            throw new GenericException(__("The subscription could not be loaded."));
 
-            $subscription = $this->getStripeSubscriptionModel()->getStripeObject();
+        $subscription = $this->getStripeSubscriptionModel()->getStripeObject();
 
-            $params['customer'] = $subscription->customer;
-            $params['items'] = [];
+        $params['customer'] = $subscription->customer;
+        $params['items'] = [];
 
-            if (isset($subscription->items) && isset($subscription->items->data)) {
-                foreach ($subscription->items->data as $subItems) {
+        if (isset($subscription->items) && isset($subscription->items->data)) {
+            foreach ($subscription->items->data as $subItems) {
 
-                    $subItemData = [];
-                    $subItemData['price'] = $subItems->price->id;
-                    $subItemData['quantity'] = $subItems->quantity;
-                    $subItemData['metadata'] = json_decode(json_encode($subItems->metadata), true);
-                    $params['items'][] = $subItemData;
-                }
+                $subItemData = [];
+                $subItemData['price'] = $subItems->price->id;
+                $subItemData['quantity'] = $subItems->quantity;
+                $subItemData['metadata'] = json_decode(json_encode($subItems->metadata), true);
+                $params['items'][] = $subItemData;
             }
+        }
 
-            $params['metadata'] = json_decode(json_encode($subscription->metadata), true);
-            $params['description'] = $subscription->description?: "Subscription";
-            $params['currency'] = $subscription->currency;
-            $params['collection_method'] = $subscription->collection_method;
+        $params['metadata'] = json_decode(json_encode($subscription->metadata), true);
+        $params['description'] = $subscription->description?: "Subscription";
+        $params['currency'] = $subscription->currency;
+        $params['collection_method'] = $subscription->collection_method;
 
-            if (is_numeric($subscription->trial_end) && $subscription->trial_end > time())
-            {
-                $params['trial_end'] = $subscription->trial_end;
-            }
+        // If the subscription had a trial, and is still within the trial period, set it on the reactivated subscription
+        if (is_numeric($subscription->trial_end) && $subscription->trial_end > time())
+        {
+            $params['trial_end'] = $subscription->trial_end;
+        }
+        // If the subscription had a billing anchor date which is still in the future, set it on the reactivated subscription
+        else if (is_numeric($subscription->billing_cycle_anchor) && $subscription->billing_cycle_anchor > time())
+        {
+            $params['billing_cycle_anchor'] = $subscription->billing_cycle_anchor;
+            $params['proration_behavior'] = 'none';
+        }
+        // If the subscription's current period invoice is paid, set the billing cycle anchor to the next billing date
+        else if ($this->isLatestInvoicePaid($subscription) && $subscription->current_period_end > time())
+        {
+            $params['billing_cycle_anchor'] = $subscription->current_period_end;
+            $params['proration_behavior'] = 'none';
+        }
 
-            $nextStartDate = $this->getNextStartDate($subscription->current_period_end);
+        if (isset($subscription->payment_settings) && isset($subscription->payment_settings->save_default_payment_method)) {
+            $params['payment_settings']['save_default_payment_method'] = $subscription->payment_settings->save_default_payment_method;
+        }
 
-            if ($nextStartDate && empty($params['trial_end'])) {
-                $params['billing_cycle_anchor'] = $nextStartDate;
-                $params['proration_behavior'] = 'none';
-            }
+        $reactivationModel = $this->subscriptionReactivationFactory->create();
+        $reactivationModel->load($this->getOrderIncrementId(), 'order_increment_id');
+        $reactivationModel->setOrderIncrementId($this->getOrderIncrementId());
+        $reactivationModel->setReactivatedAt(date('Y-m-d H:i:s'));
+        $reactivationModel->save();
 
-            if (isset($subscription->payment_settings) && isset($subscription->payment_settings->save_default_payment_method)) {
-                $params['payment_settings']['save_default_payment_method'] = $subscription->payment_settings->save_default_payment_method;
-            }
+        if (!empty($subscription->default_payment_method))
+        {
+            $params['default_payment_method'] = $subscription->default_payment_method;
+        }
 
-            $reactivationModel = $this->subscriptionReactivationFactory->create();
-            $reactivationModel->load($this->getOrderIncrementId(), 'order_increment_id');
-            $reactivationModel->setOrderIncrementId($this->getOrderIncrementId());
-            $reactivationModel->setReactivatedAt(date('Y-m-d H:i:s'));
-            $reactivationModel->save();
-
-            if ($this->paymentMethodDeleted())
-            {
-                return $this->reactivateWithNewPaymentMethod($subscription, $params);
-            }
-            else
-            {
-                $params['default_payment_method'] = $this->getPaymentMethodId();
-            }
-
+        try
+        {
             $reactivatedSubscription = $this->config->getStripeClient()->subscriptions->create($params);
             $this->setStatus('reactivated');
             $this->resourceModel->save($this);
@@ -237,25 +263,30 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
             ];
             $this->subscriptionFactory->create($subscriptionData)->save();
 
-            $this->helper->addSuccess(__("The subscription has been reactivated."));
-
-            return 'stripe/customer/subscriptions';
-        } catch (\Exception $e) {
-            $this->helper->logError("Unable to reactivate the subscription: " . $e->getMessage(), $e->getTraceAsString());
-            throw new GenericException(__("Sorry, unable to reactivate the subscription."));
+            return null;
+        }
+        catch (\Exception $e)
+        {
+            if (isset($params['default_payment_method']))
+            {
+                unset($params['default_payment_method']);
+                return $this->reactivateWithNewPaymentMethod($subscription, $params);
+            }
+            else
+            {
+                throw $e;
+            }
         }
     }
 
-    protected function getNextStartDate($currentPeriodEnd)
+    private function isLatestInvoicePaid($subscription)
     {
-        $activationTime = time();
-        $nextBillingDate = '';
+        $invoice = $subscription->latest_invoice;
+        if (!$invoice)
+            return false;
 
-        if ($activationTime <= $currentPeriodEnd) {
-            $nextBillingDate = $currentPeriodEnd;
-        }
-
-        return $nextBillingDate;
+        $invoice = $this->config->getStripeClient()->invoices->retrieve($invoice, []);
+        return $invoice->status == "paid";
     }
 
     protected function setSubscriptionReactivateDetails($subscription, $createSubParams)
@@ -281,11 +312,8 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
             if (!$order)
                 throw new LocalizedException(__("Could not load order for this subscription."));
 
-            $quote = $this->quoteHelper->getQuote();
-            $quote->removeAllItems();
-            $quote->removeAllAddresses();
-            $extensionAttributes = $quote->getExtensionAttributes();
-            $extensionAttributes->setShippingAssignments([]);
+            $this->quoteHelper->deactivateCurrentQuote();
+            $quote = $this->quoteHelper->createFreshQuote();
 
             $productIds = $this->subscriptionsHelper->getSubscriptionProductIDs($subscription);
             $items = $order->getItemsCollection();
@@ -294,9 +322,8 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
                 $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromOrderItem($item);
 
                 if ($subscriptionProductModel->isSubscriptionProduct() &&
-                    $subscriptionProductModel->getProduct() &&
-                    $subscriptionProductModel->getProduct()->isSaleable() &&
-                    in_array($subscriptionProductModel->getProduct()->getId(), $productIds)
+                    $subscriptionProductModel->getIsSalable() &&
+                    in_array($subscriptionProductModel->getProductId(), $productIds)
                 )
                 {
                     $product = $subscriptionProductModel->getProduct();
@@ -304,10 +331,20 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
                     if ($item->getParentItem() && $item->getParentItem()->getProductType() == "configurable")
                     {
                         $item = $item->getParentItem();
-                        $product = $this->helper->loadProductById($item->getProductId());
 
-                        if (!$product || !$product->isSaleable())
-                            continue;
+                        try
+                        {
+                            $product = $this->productHelper->getProduct($item->getProductId());
+
+                            if (!$product->getIsSalable())
+                            {
+                                throw new LocalizedException(__("Sorry, this subscription product is currently unavailable."));
+                            }
+                        }
+                        catch (NoSuchEntityException $e)
+                        {
+                            throw new LocalizedException(__("Sorry, this subscription product is currently unavailable."));
+                        }
                     }
 
                     $request = $this->dataHelper->getBuyRequest($item);
@@ -354,15 +391,29 @@ class Subscription extends \Magento\Framework\Model\AbstractModel
         }
     }
 
-    public function paymentMethodDeleted()
+    public function isNewSubscription()
     {
-        $savedPaymentMethods = $this->stripeCustomer->getSavedPaymentMethods(\StripeIntegration\Payments\Helper\PaymentMethod::SUPPORTS_SUBSCRIPTIONS, true);
-        $savedPaymentMethodsArray = [];
-        foreach ($savedPaymentMethods as $savedPaymentMethod)
-        {
-            $savedPaymentMethodsArray[$savedPaymentMethod['id']] = $savedPaymentMethod['id'];
-        }
+        $subscription = $this->getStripeSubscriptionModel()->getStripeObject();
 
-        return !in_array($this->getPaymentMethodId(), $savedPaymentMethodsArray);
+        // Fetch the subscription's invoices
+        $invoices = $this->config->getStripeClient()->invoices->all([
+            'subscription' => $subscription->id,
+            'limit' => 3
+        ]);
+
+        // If there are multiple invoices, its not a new subscription
+        if (count($invoices->data) > 1)
+            return false;
+
+        // Subscriptions with start dates will have no invoices
+        if (empty($invoices->data))
+            return true;
+
+        // If it has a single invoice, check if it was created within a minute of the subscription creation time.
+        $invoice = $invoices->data[0];
+        $subscriptionCreated = $subscription->created;
+        $invoiceCreated = $invoice->created;
+
+        return ($invoiceCreated - $subscriptionCreated) < 60;
     }
 }

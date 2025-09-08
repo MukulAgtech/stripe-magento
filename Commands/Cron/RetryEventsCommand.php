@@ -11,13 +11,16 @@ class RetryEventsCommand extends Command
 {
     private $areaCodeFactory;
     private $webhookEventCollectionFactory;
+    private $enabledEvents;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\AreaCodeFactory $areaCodeFactory,
+        \StripeIntegration\Payments\Model\Webhooks\EnabledEvents $enabledEvents,
         \StripeIntegration\Payments\Model\ResourceModel\WebhookEvent\CollectionFactory $webhookEventCollectionFactory
     )
     {
         $this->areaCodeFactory = $areaCodeFactory;
+        $this->enabledEvents = $enabledEvents;
         $this->webhookEventCollectionFactory = $webhookEventCollectionFactory;
 
         parent::__construct();
@@ -35,7 +38,7 @@ class RetryEventsCommand extends Command
     {
         $type = $input->getArgument("type");
 
-        if (!in_array($type, \StripeIntegration\Payments\Helper\WebhooksSetup::$enabledEvents))
+        if (!in_array($type, $this->enabledEvents->getEvents()))
         {
             throw new GenericException("Invalid event type: $type");
         }

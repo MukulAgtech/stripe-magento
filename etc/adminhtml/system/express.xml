@@ -34,16 +34,31 @@
       <comment>
         <![CDATA[You can override this to specify a custom button height in the range of 40px-55px.]]>
       </comment>
+      <depends>
+        <field id="global_enabled">1</field>
+      </depends>
+    </field>
+    <field id="overflow" translate="label" type="select" sortOrder="25" showInDefault="1" showInWebsite="1" showInStore="1">
+      <label>Overflow</label>
+      <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Express\Overflow</source_model>
+      <config_path>payment/stripe_payments_express/overflow</config_path>
+      <depends>
+        <field id="global_enabled">1</field>
+      </depends>
     </field>
     <field id="sort_order" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
       <label>Sort order</label>
       <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\Express\SortOrder</source_model>
       <config_path>payment/stripe_payments_express/sort_order</config_path>
+      <depends>
+        <field id="global_enabled">1</field>
+      </depends>
     </field>
     <include path="StripeIntegration_Payments::system/express/apple_pay.xml" />
     <include path="StripeIntegration_Payments::system/express/google_pay.xml" />
     <include path="StripeIntegration_Payments::system/express/link.xml" />
-    <!-- PayPal and Amazon Pay do not currently support deferred intents. Will enable once they are generally available. -->
-    <!-- <include path="StripeIntegration_Payments::system/express/paypal.xml" /> -->
+    <include path="StripeIntegration_Payments::system/express/paypal.xml" />
+    <include path="StripeIntegration_Payments::system/express/amazon_pay.xml" />
+    <include path="StripeIntegration_Payments::system/express/klarna.xml" />
  </group>
 </include>

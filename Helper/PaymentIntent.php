@@ -26,6 +26,7 @@ class PaymentIntent
     private $stripePaymentMethodFactory;
     private $areaCodeHelper;
     private $urlHelper;
+    private $paymentMethodOptionsService;
     private $config;
 
     public function __construct(
@@ -36,7 +37,8 @@ class PaymentIntent
         \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
         \StripeIntegration\Payments\Helper\Url $urlHelper,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodFactory,
-        \StripeIntegration\Payments\Model\Config $config
+        \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Service\PaymentMethodOptionsService $paymentMethodOptionsService
     )
     {
         $this->remoteAddress = $remoteAddress;
@@ -47,6 +49,7 @@ class PaymentIntent
         $this->urlHelper = $urlHelper;
         $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
         $this->config = $config;
+        $this->paymentMethodOptionsService = $paymentMethodOptionsService;
     }
 
     public function getConfirmParams($order, $paymentIntent, $includeCvcToken = false, $savePaymentMethod = null)
@@ -57,6 +60,7 @@ class PaymentIntent
 
         $savePaymentMethod = null;
         $paymentMethod = null;
+        $isPaymentMethodSaved = false;
         if ($order->getPayment()->getAdditionalInformation("token"))
         {
             // We are using a saved payment method token
@@ -66,6 +70,7 @@ class PaymentIntent
             if (!empty($paymentMethod->customer))
             {
                 $savePaymentMethod = false;
+                $isPaymentMethodSaved = true;
             }
         }
         else if ($order->getPayment()->getAdditionalInformation("confirmation_token"))
@@ -73,11 +78,14 @@ class PaymentIntent
             $confirmParams["confirmation_token"] = $order->getPayment()->getAdditionalInformation("confirmation_token");
         }
 
-        if (!empty($paymentIntent->automatic_payment_methods->enabled))
-            $confirmParams["return_url"] = $this->urlHelper->getUrl('stripe/payment/index');
+        $confirmParams["return_url"] = $this->urlHelper->getUrl('stripe/payment/index');
 
         $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
-        $options = $this->getPaymentMethodOptions($quote, $savePaymentMethod);
+        $options = $this->paymentMethodOptionsService
+            ->setQuote($quote)
+            ->setSavePaymentMethod($savePaymentMethod)
+            ->getPaymentMethodOptions();
+
         if (!empty($options))
         {
             $confirmParams["payment_method_options"] = $options;
@@ -85,18 +93,22 @@ class PaymentIntent
 
         if ($this->areaCodeHelper->isAdmin())
         {
+            if ($order->getPayment()->getAdditionalInformation("save_payment_method") && !$isPaymentMethodSaved)
+            {
+                // Override the existing value
+                $confirmParams["payment_method_options"]["card"]["setup_future_usage"] = "off_session";
+            }
+
             if (!$this->cache->load("no_moto_gate"))
             {
                 $confirmParams["payment_method_options"]["card"]["moto"] = "true";
-                if ($order->getPayment()->getAdditionalInformation("save_payment_method"))
-                {
-                    // Override the existing value
-                    $confirmParams["payment_method_options"]["card"]["setup_future_usage"] = "off_session";
-                }
             }
             else
             {
-                $confirmParams["off_session"] = true;
+                if (!$this->quoteHelper->hasSubscriptions($quote))
+                {
+                    $confirmParams["off_session"] = true;
+                }
             }
         }
 
@@ -112,6 +124,35 @@ class PaymentIntent
         }
 
         return $confirmParams;
+    }
+
+    public function getAdminConfirmParams($order, $paymentIntent)
+    {
+        $params = $this->getConfirmParams($order, $paymentIntent);
+
+        $paymentMethod = $this->stripePaymentMethodFactory->create()->fromPaymentMethodId($params['payment_method'])->getStripeObject();
+        $isCard = in_array($paymentMethod->type, ["card", "link"]);
+        $moto = isset($params['payment_method_options']['card']['moto']) ? $params['payment_method_options']['card']['moto'] : false;
+
+        if (isset($params['payment_method_options']))
+        {
+            // We don't want to authorize only and we don't want to setup future usage, but we want to keep the moto parameter
+            unset($params["payment_method_options"]);
+        }
+
+        if ($isCard && $moto)
+        {
+            $params['payment_method_options']['card']['moto'] = $moto;
+        }
+        else
+        {
+            $params['off_session'] = true;
+        }
+
+        if (isset($params['use_stripe_sdk']))
+            unset($params['use_stripe_sdk']);
+
+        return $params;
     }
 
     public function getMultishippingConfirmParams($paymentMethodId, $paymentIntent)
@@ -155,70 +196,6 @@ class PaymentIntent
         return $confirmParams;
     }
 
-    protected function getPaymentMethodOptions($quote, $savePaymentMethod = null)
-    {
-        $sfuOptions = $captureOptions = [];
-
-        if ($this->areaCodeHelper->isAdmin() && $savePaymentMethod)
-        {
-            $setupFutureUsage = "on_session";
-        }
-        else if ($savePaymentMethod === false)
-        {
-            $setupFutureUsage = "none";
-        }
-        else
-        {
-            // Get the default setting
-            $setupFutureUsage = $this->config->getSetupFutureUsage($quote);
-        }
-
-        if ($setupFutureUsage)
-        {
-            $value = ["setup_future_usage" => $setupFutureUsage];
-
-            $sfuOptions['card'] = $value;
-
-            // For APMs, we can't use MOTO, so we switch them to off_session.
-            if ($setupFutureUsage == "on_session" && $this->config->isAuthorizeOnly() && $this->config->retryWithSavedCard())
-                $value = ["setup_future_usage" =>  "off_session"];
-
-            $canBeSavedOnSession = \StripeIntegration\Payments\Helper\PaymentMethod::CAN_BE_SAVED_ON_SESSION;
-            foreach ($canBeSavedOnSession as $code)
-            {
-                if (isset($sfuOptions[$code]))
-                    continue;
-
-                $sfuOptions[$code] = $value;
-            }
-
-            // The following methods do not display if we request an on_session setup
-            $value = ["setup_future_usage" => "off_session"];
-            $canBeSavedOffSession = \StripeIntegration\Payments\Helper\PaymentMethod::CAN_BE_SAVED_OFF_SESSION;
-            foreach ($canBeSavedOffSession as $code)
-            {
-                if (isset($sfuOptions[$code]))
-                    continue;
-
-                $sfuOptions[$code] = $value;
-            }
-        }
-
-        if ($this->config->isAuthorizeOnly())
-        {
-            $value = [ "capture_method" => "manual" ];
-
-            foreach (\StripeIntegration\Payments\Helper\PaymentMethod::CAN_AUTHORIZE_ONLY as $pmCode)
-            {
-                $captureOptions[$pmCode] = $value;
-            }
-        }
-
-        $wechatOptions["wechat_pay"]["client"] = $this->getWechatClient();
-
-        return array_merge_recursive($sfuOptions, $captureOptions, $wechatOptions);
-    }
-
     public function isSuccessful($paymentIntent)
     {
         if ($paymentIntent->status == "processing" && !$this->isAsyncProcessing($paymentIntent))
@@ -234,28 +211,57 @@ class PaymentIntent
         return false;
     }
 
+    // For payment methods which are synchronous such as cards and link, this will return false event if they are in Processing status
+    // https://stripe.com/docs/payments/paymentintents/lifecycle#intent-statuses
     public function isAsyncProcessing($paymentIntent)
     {
         if ($paymentIntent->status == "processing" && (empty($paymentIntent->processing->type) || $paymentIntent->processing->type != "card"))
         {
-            // https://stripe.com/docs/payments/paymentintents/lifecycle#intent-statuses
             return true;
         }
 
         return false;
     }
 
+    public function isSyncProcessing($paymentIntent)
+    {
+        return $paymentIntent->status == "processing" && !$this->isAsyncProcessing($paymentIntent);
+    }
+
+    public function isProcessing($paymentIntent)
+    {
+        return $paymentIntent->status == "processing";
+    }
+
     public function requiresOfflineAction($paymentIntent)
     {
-        if ($paymentIntent->status == "requires_action"
-            && !empty($paymentIntent->next_action->type)
-            && !in_array($paymentIntent->next_action->type, self::ONLINE_ACTIONS)
+        if ($paymentIntent->status == "requires_action" && !$this->requiresOnlineAction($paymentIntent))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function requiresOnlineAction($paymentIntent)
+    {
+        if ($paymentIntent->status == "requires_action" &&
+            !empty($paymentIntent->next_action->type) && (
+                in_array($paymentIntent->next_action->type, self::ONLINE_ACTIONS) ||
+                strpos($paymentIntent->next_action->type, "_handle_redirect") !== false ||
+                strpos($paymentIntent->next_action->type, "_display_qr_code") !== false
+            )
         )
         {
             return true;
         }
 
         return false;
+    }
+
+    public function isUnconfirmed($paymentIntent)
+    {
+        return in_array($paymentIntent->status, ["requires_confirmation", "requires_payment_method"]);
     }
 
     public function canCancel($paymentIntent)
@@ -283,7 +289,7 @@ class PaymentIntent
             return false;
 
         if (is_string($paymentIntent->invoice))
-            $invoice = \Stripe\Invoice::retrieve($paymentIntent->invoice);
+            $invoice = $this->config->getStripeClient()->invoices->retrieve($paymentIntent->invoice);
         else
             $invoice = $paymentIntent->invoice;
 
@@ -364,7 +370,15 @@ class PaymentIntent
         $params = [];
         $remoteAddress = $this->remoteAddress->getRemoteAddress();
         $userAgent = $this->httpHeader->getHttpUserAgent();
-        $unsupportedMethods = ['afterpay_clearpay', 'paypal', 'blik'];
+        $unsupportedMethods = [
+            'afterpay_clearpay',
+            'blik',
+            'kr_card',
+            'kakao_pay',
+            'samsung_pay',
+            'naver_pay',
+            'payco'
+        ];
 
         if (!$remoteAddress || !$userAgent || empty($paymentMethod->type) || in_array($paymentMethod->type, $unsupportedMethods))
         {
@@ -380,20 +394,5 @@ class PaymentIntent
         ];
 
         return $params;
-    }
-
-    public function getWechatClient()
-    {
-        $userAgent = $this->httpHeader->getHttpUserAgent();
-
-        if(strpos($userAgent, 'Android') !== false) {
-            return 'android';
-        }
-
-        if(strpos($userAgent, 'iPhone') !== false || strpos($userAgent, 'iPad') !== false || strpos($userAgent, 'iPod') !== false) {
-            return 'ios';
-        }
-
-        return 'web';
     }
 }

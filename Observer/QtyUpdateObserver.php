@@ -30,12 +30,12 @@ class QtyUpdateObserver implements ObserverInterface
             return;
 
         $items = $observer->getCart()->getQuote()->getItems();
+        if (empty($items))
+            return;
+
         foreach ($items as $item)
         {
-            if (!empty($item->getQtyOptions()))
-                $additionalOptions = $this->helper->getAdditionalOptionsForChildrenOf($item);
-            else
-                $additionalOptions = $this->helper->getAdditionalOptionsForProductId($item->getProductId(), $item);
+            $additionalOptions = $this->helper->getAdditionalOptionsForQuoteItem($item);
 
             if (!empty($additionalOptions))
             {

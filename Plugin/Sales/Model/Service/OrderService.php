@@ -5,38 +5,42 @@ namespace StripeIntegration\Payments\Plugin\Sales\Model\Service;
 class OrderService
 {
     private $helper;
-    private $subscriptionsHelper;
     private $config;
-    private $creditmemoHelper;
     private $helperFactory;
     private $quoteHelper;
-    private $subscriptionsFactory;
     private $webhookEventCollectionFactory;
     private $paymentMethodHelper;
     private $loggerHelper;
     private $orderHelper;
+    private $updateCouponUsages;
+    private $paymentState;
+    private $checkoutCrashHelper;
+    private $radarHelper;
 
     public function __construct(
+        \Magento\SalesRule\Model\Coupon\Quote\UpdateCouponUsages $updateCouponUsages,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Helper\GenericFactory $helperFactory,
-        \StripeIntegration\Payments\Helper\SubscriptionsFactory $subscriptionsFactory,
-        \StripeIntegration\Payments\Helper\Creditmemo $creditmemoHelper,
         \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
         \StripeIntegration\Payments\Helper\Logger $loggerHelper,
+        \StripeIntegration\Payments\Helper\CheckoutCrash $checkoutCrashHelper,
+        \StripeIntegration\Payments\Helper\Radar $radarHelper,
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Order\PaymentState $paymentState,
         \StripeIntegration\Payments\Model\ResourceModel\WebhookEvent\CollectionFactory $webhookEventCollectionFactory
-
     ) {
+        $this->updateCouponUsages = $updateCouponUsages;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
         $this->helperFactory = $helperFactory;
-        $this->subscriptionsFactory = $subscriptionsFactory;
-        $this->creditmemoHelper = $creditmemoHelper;
         $this->paymentMethodHelper = $paymentMethodHelper;
         $this->loggerHelper = $loggerHelper;
+        $this->checkoutCrashHelper = $checkoutCrashHelper;
         $this->config = $config;
+        $this->paymentState = $paymentState;
         $this->webhookEventCollectionFactory = $webhookEventCollectionFactory;
+        $this->radarHelper = $radarHelper;
     }
 
     public function aroundPlace($subject, \Closure $proceed, $order)
@@ -46,10 +50,16 @@ class OrderService
             if (!empty($order) && !empty($order->getQuoteId()))
             {
                 $this->quoteHelper->quoteId = $order->getQuoteId();
+                $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
+            }
+            else
+            {
+                $quote = $this->quoteHelper->getQuote();
             }
 
             $savedOrder = $proceed($order);
 
+            $this->incrementCouponUsages($quote);
             return $this->postProcess($savedOrder);
         }
         catch (\Exception $e)
@@ -58,20 +68,70 @@ class OrderService
             $msg = $e->getMessage();
 
             if ($this->loggerHelper->isAuthenticationRequiredMessage($msg))
+            {
                 throw $e;
+            }
             else
-                $helper->throwError($e->getMessage(), $e);
+            {
+                if ($this->paymentState->isPaid() && empty($savedOrder))
+                {
+                    $this->checkoutCrashHelper->log($this->paymentState, $e)
+                        ->notifyAdmin($this->paymentState, $e)
+                        ->deactivateCart();
+
+                    $helper->logError($e->getMessage(), $e->getTraceAsString());
+
+                    throw $e;
+                }
+
+                // Payment failed errors
+                return $helper->throwError($e->getMessage(), $e);
+            }
+        }
+    }
+
+    public function incrementCouponUsages($quote)
+    {
+        if (!$quote->getCouponCode())
+        {
+            return;
+        }
+
+        if ($this->config->incrementCouponUsageAfterOrderPlacement($quote) && !$quote->getCouponUsageIncremented())
+        {
+            $this->updateCouponUsages->execute($quote, true);
+            $quote->setCouponUsageIncremented(true);
         }
     }
 
     public function postProcess($order)
     {
+        if (strstr($order->getPayment()->getMethod(), "stripe_") !== false)
+        {
+            try
+            {
+                $this->paymentMethodHelper->saveOrderPaymentMethodById($order, $order->getPayment()->getAdditionalInformation("token"));
+            }
+            catch (\Exception $e)
+            {
+                $this->loggerHelper->logError("Failed to save order payment method: " . $e->getMessage(), $e->getTraceAsString());
+            }
+
+            try
+            {
+                $this->radarHelper->setOrderRiskData($order);
+            }
+            catch (\Exception $e)
+            {
+                $this->loggerHelper->logError("Failed to save order risk data: " . $e->getMessage(), $e->getTraceAsString());
+            }
+
+            $this->orderHelper->saveOrder($order);
+        }
+
         $helper = $this->getHelper();
         switch ($order->getPayment()->getMethod())
         {
-            case "stripe_payments_bank_transfers":
-                $this->paymentMethodHelper->savePaymentMethod($order->getId(), "customer_balance", null);
-                break;
             case "stripe_payments_invoice":
                 $comment = __("A payment is pending for this order.");
                 $helper->setOrderState($order, \Magento\Sales\Model\Order::STATE_PENDING_PAYMENT, $comment);
@@ -85,7 +145,8 @@ class OrderService
                     // Process webhook events which have arrived before the order was saved
                     $events = $this->webhookEventCollectionFactory->create()->getEarlyEventsForPaymentIntentId($transactionId, [
                         'charge.succeeded', // Regular orders
-                        'invoice.payment_succeeded' // Subscriptions
+                        'invoice.payment_succeeded', // Subscriptions
+                        'setup_intent.succeeded' // Trial subscriptions
                     ]);
 
                     foreach ($events as $eventModel)
@@ -98,28 +159,6 @@ class OrderService
                         {
                             $eventModel->refresh()->setLastErrorFromException($e);
                         }
-                    }
-                }
-
-                if ($order->getPayment()->getAdditionalInformation("is_trial_subscription_setup"))
-                {
-                    $this->creditmemoHelper->refundUnderchargedOrder($order, $paid = 0, $currency = strtolower($order->getOrderCurrencyCode()));
-                }
-
-                if ($order->getPayment()->getAdditionalInformation("is_subscription_update"))
-                {
-                    if ($order->getPayment()->getIsTransactionPending())
-                    {
-                        // Prorated downgrade, no price change, or upgrade with credit balance
-                        $this->getHelper()->cancelOrCloseOrder($order);
-                    }
-                    else if ($order->getPayment()->getTransactionId())
-                    {
-                        // Prorated upgrade
-                        $this->getHelper()->invoiceOrder($order, $order->getPayment()->getTransactionId(), \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE, null, true);
-                        $amountPaid = $order->getPayment()->getAdditionalInformation("stripe_invoice_amount_paid");
-                        $currency = $order->getPayment()->getAdditionalInformation("stripe_invoice_currency");
-                        $this->creditmemoHelper->refundUnderchargedOrder($order, $amountPaid, $currency, true);
                     }
                 }
 
@@ -139,15 +178,5 @@ class OrderService
         }
 
         return $this->helper;
-    }
-
-    protected function getSubscriptionsHelper()
-    {
-        if (!isset($this->subscriptionsHelper))
-        {
-            $this->subscriptionsHelper = $this->subscriptionsFactory->create();
-        }
-
-        return $this->subscriptionsHelper;
     }
 }

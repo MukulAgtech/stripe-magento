@@ -21,6 +21,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoConfigFixture current_store payment/stripe_payments/payment_action authorize
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -52,7 +53,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $session->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Trigger webhooks
@@ -90,11 +93,17 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "description" => "Subscription order #$orderIncrementId by Flint Jerry"
         ]);
 
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         $this->assertNotEmpty($customer->subscriptions->data[0]->latest_invoice);
-        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, [
+            'expand' => [
+                'payment_intent.latest_charge'
+            ]
+        ]);
         $this->tests->compare($customer->subscriptions->data[0], [
             "items" => [
                 "data" => [
@@ -132,13 +141,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "payment_intent" => [
                 "amount" => 6986,
                 "amount_received" => 6986,
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount" => 6986,
-                            "amount_captured" => 6986
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount" => 6986,
+                    "amount_captured" => 6986
                 ],
                 "description" => "Subscription order #$orderIncrementId by Flint Jerry",
                 "metadata" => [

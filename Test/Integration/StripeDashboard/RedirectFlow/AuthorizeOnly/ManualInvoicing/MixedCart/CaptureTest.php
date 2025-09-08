@@ -21,6 +21,7 @@ class CaptureTest extends \PHPUnit\Framework\TestCase
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoConfigFixture current_store payment/stripe_payments/payment_action authorize
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPartialCapture()
     {
@@ -46,7 +47,9 @@ class CaptureTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $session->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Trigger webhooks

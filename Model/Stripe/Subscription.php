@@ -3,7 +3,6 @@
 namespace StripeIntegration\Payments\Model\Stripe;
 
 use Magento\Framework\Exception\LocalizedException;
-use StripeIntegration\Payments\Helper\Data as DataHelper;
 use StripeIntegration\Payments\Exception\GenericException;
 
 class Subscription
@@ -13,7 +12,6 @@ class Subscription
     private $objectSpace = 'subscriptions';
     private $canUpgradeDowngrade;
     private $canChangeShipping;
-    private $useProrations;
     private $orderItems = [];
     private $subscriptionProductModels = [];
     private $order;
@@ -26,6 +24,8 @@ class Subscription
     private $dataHelper;
     private $quoteHelper;
     private $orderHelper;
+    private $currencyHelper;
+    private $dateTimeHelper;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
@@ -37,7 +37,9 @@ class Subscription
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Data $dataHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
-        \StripeIntegration\Payments\Helper\Order $orderHelper
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\DateTime $dateTimeHelper
     )
     {
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
@@ -52,6 +54,8 @@ class Subscription
         $this->dataHelper = $dataHelper;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
+        $this->currencyHelper = $currencyHelper;
+        $this->dateTimeHelper = $dateTimeHelper;
     }
 
     public function fromSubscriptionId($subscriptionId)
@@ -125,6 +129,10 @@ class Subscription
         if ($this->getStripeObject()->status != "active")
             return $this->canUpgradeDowngrade = false;
 
+        // If the subscription is starting in the future, it cannot be changed, only canceled
+        if (empty($this->getStripeObject()->latest_invoice))
+            return $this->canUpgradeDowngrade = false;
+
         if ($this->isCompositeSubscription())
             return $this->canUpgradeDowngrade = false;
 
@@ -163,11 +171,6 @@ class Subscription
         return null;
     }
 
-    public function editUrl()
-    {
-        return $this->helper->getUrl('stripe/customer/subscriptions', ['edit' => $this->getStripeObject()->id]);
-    }
-
     public function canChangeShipping()
     {
         if (isset($this->canChangeShipping))
@@ -194,62 +197,6 @@ class Subscription
     {
         $oldStripeAmount = $this->getStripeAmount();
         return ($newStripeAmount - $oldStripeAmount);
-    }
-
-    public function useProrations(float $newStripeAmount, array $newProductIds)
-    {
-        if (isset($this->useProrations))
-        {
-            return $this->useProrations;
-        }
-
-        if (!$this->config->isSubscriptionsEnabled())
-        {
-            return $this->useProrations = false;
-        }
-
-        $priceChange = $this->getPriceChange($newStripeAmount);
-
-        if ($priceChange == 0)
-        {
-            return $this->useProrations = false;
-        }
-        else if ($priceChange < 0)
-        {
-            $isUpgrade = false;
-            $isDowngrade = true;
-        }
-        else
-        {
-            $isUpgrade = true;
-            $isDowngrade = false;
-        }
-
-        $result = null;
-        foreach ($this->subscriptionProductModels as $subscriptionProduct)
-        {
-            $useProrationsForUpgrades = $subscriptionProduct->useProrationsForUpgrades();
-            $useProrationsForDowngrades = $subscriptionProduct->useProrationsForDowngrades();
-
-            if (($isUpgrade && $useProrationsForUpgrades) || ($isDowngrade && $useProrationsForDowngrades))
-            {
-                $useProrations = true;
-            }
-            else
-            {
-                $useProrations = false;
-            }
-
-            if ($result !== null && $useProrations !== $result)
-            {
-                // Two products in the cart have different proration configurations. In this case disable prorations.
-                return $this->useProrations = false;
-            }
-
-            $result = $useProrations;
-        }
-
-        return $this->useProrations = (bool)$result;
     }
 
     public function getProductIDs()
@@ -311,7 +258,7 @@ class Subscription
         return (count($productIDs) > 1);
     }
 
-    public function getUpcomingInvoiceAfterUpdate($prorationTimestamp)
+    public function getUpcomingInvoiceAfterUpdate()
     {
         if (!$this->getStripeObject())
             throw new GenericException("No subscription specified.");
@@ -325,17 +272,12 @@ class Subscription
         // The subscription update will happen based on the quote items
         $quote = $this->quoteHelper->getQuote();
         $subscriptionDetails = $this->subscriptionsHelper->getSubscriptionFromQuote($quote);
-        $subscriptionItems = $this->subscriptionsHelper->getSubscriptionItemsFromQuote($quote, $subscriptionDetails);
+        $subscriptionItems = $this->subscriptionsHelper->getSubscriptionItemsFromSubscriptionDetails($subscriptionDetails);
 
         $oldPriceId = $subscription->plan->id;
         $newPriceId = $subscriptionItems[0]['price'];
 
-        $profile = $subscriptionDetails['profile'];
-        $magentoAmount = $this->subscriptionsHelper->getSubscriptionTotalWithDiscountAdjustmentFromProfile($profile);
-        $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($magentoAmount, $profile["currency"]);
-        $newProductIds = explode(",", $subscriptionItems[0]["metadata"]["SubscriptionProductIDs"]);
-
-        // See what the next invoice would look like with a price switch and proration set:
+        // See what the next invoice would look like with a price switch:
         /** @var \Stripe\SubscriptionItem $subscriptionItem */
         $subscriptionItem = $subscription->items->data[0];
         $items = [
@@ -348,20 +290,11 @@ class Subscription
         $params = [
           'customer' => $subscription->customer,
           'subscription' => $subscription->id,
-          'subscription_items' => $items
+          'subscription_items' => $items,
+          'subscription_proration_behavior' => 'none',
         ];
 
-        if ($this->useProrations($stripeAmount, $newProductIds))
-        {
-            $params['subscription_proration_date'] = $prorationTimestamp;
-            $params['subscription_proration_behavior'] = "always_invoice";
-        }
-        else
-        {
-            $params['subscription_proration_behavior'] = "none";
-        }
-
-        $invoice = \Stripe\Invoice::upcoming($params);
+        $invoice = $this->config->getStripeClient()->invoices->upcoming($params);
         $invoice->oldPriceId = $oldPriceId;
         $invoice->newPriceId = $newPriceId;
 
@@ -391,8 +324,8 @@ class Subscription
         $order = $payment->getOrder();
 
         $quote = $this->quoteHelper->getQuote();
-        $subscriptionDetails = $this->subscriptionsHelper->getSubscriptionFromQuote($quote);
-        $subscriptionItems = $this->subscriptionsHelper->getSubscriptionItemsFromQuote($quote, $subscriptionDetails, $order);
+        $subscriptionDetails = $this->subscriptionsHelper->getSubscriptionFromOrder($order);
+        $subscriptionItems = $this->subscriptionsHelper->getSubscriptionItemsFromSubscriptionDetails($subscriptionDetails);
 
         if (count($subscriptionItems) > 1)
         {
@@ -406,39 +339,17 @@ class Subscription
             "metadata" => $subscriptionItems[0]['metadata'] // There is only one item for the entire order,
         ];
 
-        $metadata = $this->subscriptionsHelper->collectMetadataForSubscription($quote, $subscriptionDetails, $order);
+        $metadata = $this->subscriptionsHelper->collectMetadataForSubscription($subscriptionDetails['profile']);
         $params["description"] = $this->orderHelper->getOrderDescription($order);
         $params["metadata"] = $metadata;
+        $params["proration_behavior"] = "none";
 
         $profile = $subscriptionDetails['profile'];
-        $magentoAmount = $this->subscriptionsHelper->getSubscriptionTotalWithDiscountAdjustmentFromProfile($profile);
-        $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($magentoAmount, $profile["currency"]);
-        $newProductIds = explode(",", $subscriptionItems[0]["metadata"]["SubscriptionProductIDs"]);
 
-        if ($this->useProrations($stripeAmount, $newProductIds))
+        if ($this->changingPlanIntervals($subscription, $profile['interval'], $profile['interval_count']))
         {
-            $checkoutSession = $this->helper->getCheckoutSession();
-            $subscriptionUpdateDetails = $checkoutSession->getSubscriptionUpdateDetails();
-
-            if (!empty($subscriptionUpdateDetails['_data']['proration_timestamp']))
-                $prorationTimestamp = $subscriptionUpdateDetails['_data']['proration_timestamp'];
-            else
-                $prorationTimestamp = time();
-
-            $params["proration_behavior"] = "always_invoice";
-            $params["proration_date"] = $prorationTimestamp;
+            $params["trial_end"] = $subscription->current_period_end;
         }
-        else
-        {
-            $params["proration_behavior"] = "none";
-
-            if ($this->changingPlanIntervals($subscription, $profile['interval'], $profile['interval_count']))
-            {
-                $params["trial_end"] = $subscription->current_period_end;
-            }
-        }
-
-        $newPriceId = $subscriptionItems[0]['price'];
 
         try
         {
@@ -455,7 +366,7 @@ class Subscription
         {
             $subscriptionModel = $this->subscriptionsHelper->loadSubscriptionModelBySubscriptionId($updatedSubscription->id);
             $subscriptionModel->initFrom($updatedSubscription, $order);
-            $subscriptionModel->setLastUpdated($this->dataHelper->dbTime());
+            $subscriptionModel->setLastUpdated($this->dateTimeHelper->dbTimestamp());
             if (!$payment)
             {
                 $subscriptionModel->setReorderFromQuoteId($quote->getId());
@@ -510,7 +421,16 @@ class Subscription
             $subscription->plan->interval_count,
             $subscription->plan->interval
         );
+        $newSubscriptionAmount = $this->subscriptionsHelper->formatInterval(
+            $updatedSubscription->plan->amount,
+            $updatedSubscription->plan->currency,
+            $updatedSubscription->plan->interval_count,
+            $updatedSubscription->plan->interval
+        );
         $originalOrder->getPayment()->setAdditionalInformation("previous_subscription_amount", (string)$previousSubscriptionAmount);
+        $originalOrder->getPayment()->setAdditionalInformation("new_subscription_amount", (string)$newSubscriptionAmount);
+        $payment->setAdditionalInformation("previous_subscription_amount", (string)$previousSubscriptionAmount);
+        $payment->setAdditionalInformation("new_subscription_amount", (string)$newSubscriptionAmount);
         $this->orderHelper->saveOrder($originalOrder);
 
         $this->helper->getCheckoutSession()->unsSubscriptionUpdateDetails();
@@ -518,7 +438,7 @@ class Subscription
         if (!empty($invoice->customer->balance) && $invoice->customer->balance < 0)
         {
             $balance = abs($invoice->customer->balance);
-            $message = __("Your account has a total credit of %1, which will be used to offset future subscription payments.", $this->helper->formatStripePrice($balance, $invoice->currency));
+            $message = __("Your account has a total credit of %1, which will be used to offset future subscription payments.", $this->currencyHelper->formatStripePrice($balance, $invoice->currency));
             $payment->setAdditionalInformation("stripe_balance", $balance);
 
             // Also add a note to the order
@@ -532,7 +452,7 @@ class Subscription
     {
         $subscription = $this->getStripeObject();
 
-        return $this->helper->formatStripePrice($subscription->plan->amount, $subscription->plan->currency);
+        return $this->currencyHelper->formatStripePrice($subscription->plan->amount, $subscription->plan->currency);
     }
 
     public function getFormattedBilling()

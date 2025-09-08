@@ -26,6 +26,7 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testGuestNormalCapture()
     {
@@ -37,11 +38,9 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $methods = $this->quote->getAvailablePaymentMethods();
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
+        $this->tests->assertCheckoutSessionsCountEquals(1);
 
         // Confirm the payment
         $method = "SuccessCard";
@@ -87,6 +86,7 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testGuestNormalAuthorize()
     {
@@ -98,11 +98,9 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $methods = $this->quote->getAvailablePaymentMethods();
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
+        $this->tests->assertCheckoutSessionsCountEquals(1);
 
         // Confirm the payment
         $method = "SuccessCard";
@@ -151,6 +149,7 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/default EUR
      *
      * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Customer.php
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testLoggedInNormalCapture()
     {
@@ -162,11 +161,9 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $methods = $this->quote->getAvailablePaymentMethods();
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
+        $this->tests->assertCheckoutSessionsCountEquals(1);
 
         // Confirm the payment
         $method = "SuccessCard";
@@ -221,6 +218,7 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/default EUR
      *
      * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Customer.php
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testLoggedInNormalAuthorize()
     {
@@ -232,11 +230,9 @@ class SavePaymentMethodTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $methods = $this->quote->getAvailablePaymentMethods();
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
+        $this->tests->assertCheckoutSessionsCountEquals(1);
 
         // Confirm the payment
         $method = "SuccessCard";

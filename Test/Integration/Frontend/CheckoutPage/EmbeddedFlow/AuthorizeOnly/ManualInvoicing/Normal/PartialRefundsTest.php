@@ -86,10 +86,10 @@ class PartialRefundsTest extends \PHPUnit\Framework\TestCase
 
         // Partially refund the order
         $this->tests->refundOnline($invoice1, ['simple-product' => 2], $baseShipping = 10);
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent1->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent1->latest_charge);
 
         $this->tests->refundOnline($invoice2, ['virtual-product' => 2]);
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent2->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent2->latest_charge);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);

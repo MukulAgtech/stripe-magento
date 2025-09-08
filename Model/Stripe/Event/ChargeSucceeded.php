@@ -20,6 +20,11 @@ class ChargeSucceeded
     private $orderHelper;
     private $quoteHelper;
     private $multishippingHelper;
+    private $json;
+    private $currencyHelper;
+    private $convert;
+    private $addressHelper;
+    private $stripeChargeModelFactory;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
@@ -33,7 +38,12 @@ class ChargeSucceeded
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
-        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper
+        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\Convert $convert,
+        \StripeIntegration\Payments\Helper\Address $addressHelper,
+        \StripeIntegration\Payments\Model\Stripe\ChargeFactory $stripeChargeModelFactory,
+        \Magento\Framework\Serialize\Serializer\Json $json
     )
     {
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService('events');
@@ -50,6 +60,11 @@ class ChargeSucceeded
         $this->orderHelper = $orderHelper;
         $this->quoteHelper = $quoteHelper;
         $this->multishippingHelper = $multishippingHelper;
+        $this->json = $json;
+        $this->currencyHelper = $currencyHelper;
+        $this->convert = $convert;
+        $this->addressHelper = $addressHelper;
+        $this->stripeChargeModelFactory = $stripeChargeModelFactory;
     }
 
     public function process($arrEvent, $object)
@@ -73,11 +88,14 @@ class ChargeSucceeded
             return;
 
         $order = $this->webhooksHelper->loadOrderFromEvent($arrEvent);
-        $hasSubscriptions = $this->orderHelper->hasSubscriptionsIn($order->getAllItems());
 
-        // Set Stripe payment method
-        $this->orderHelper->setRiskDataFrom($object, $order);
-        $this->paymentMethodHelper->insertPaymentMethods($object, $order, true, true);
+        // Set the risk score and level
+        $stripeChargeModel = $this->stripeChargeModelFactory->create()->fromChargeId($object['id']);
+        $order->setStripeRadarRiskScore($stripeChargeModel->getRiskScore());
+        $order->setStripeRadarRiskLevel($stripeChargeModel->getRiskLevel());
+
+        // Set the Stripe payment method
+        $this->paymentMethodHelper->saveOrderPaymentMethodById($order, $object['payment_method']);
 
         $stripeInvoice = null;
         if (!empty($object['invoice']))
@@ -94,18 +112,13 @@ class ChargeSucceeded
             }
         }
 
-        if (!$order->getEmailSent())
-        {
-            $wasTransactionPending = $order->getPayment()->getAdditionalInformation("is_transaction_pending");
-
-            if ($wasTransactionPending)
-            {
-                $this->orderHelper->sendNewOrderEmailFor($order);
-            }
-        }
-
         if (empty($object['payment_intent']))
             throw new WebhookException("This charge was not created by a payment intent.");
+
+        $this->quoteHelper->deactivateQuoteById($order->getQuoteId());
+        $this->updateOrderAddresses($order, $object);
+
+        $wasTransactionPending = $order->getPayment()->getAdditionalInformation("is_transaction_pending");
 
         $transactionId = $object['payment_intent'];
 
@@ -117,6 +130,11 @@ class ChargeSucceeded
             ->setIsTransactionClosed(0)
             ->setIsFraudDetected(false)
             ->save();
+
+        if (!$order->getEmailSent() && $wasTransactionPending)
+        {
+            $this->orderHelper->sendNewOrderEmailFor($order);
+        }
 
         $amountCaptured = ($object["captured"] ? $object['amount_captured'] : 0);
 
@@ -133,33 +151,13 @@ class ChargeSucceeded
 
         if ($amountCaptured > 0)
         {
-            // We intentionally do not pass $params in order to avoid multi-currency rounding errors.
-            // For example, if $order->getGrandTotal() == $16.2125, Stripe will charge $16.2100. If we
-            // invoice for $16.2100, then there will be an order total due for 0.0075 which will cause problems.
-            // $params = [
-            //     "amount" => $amountCaptured,
-            //     "currency" => $object['currency']
-            // ];
-            $this->helper->invoiceOrder($order, $transactionId, \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE, $params = null, true);
-        }
-        else if ($amountCaptured == 0) // Authorize Only mode
-        {
-            if ($hasSubscriptions)
-            {
-                // If it has trial subscriptions, we want a Paid invoice which will partially refund
-                $this->helper->invoiceOrder($order, $transactionId, \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE, null, true);
-            }
+            $this->helper->invoiceOrder($order, $transactionId, \Magento\Sales\Model\Order\Invoice::CAPTURE_OFFLINE, true);
         }
 
         if ($this->config->isStripeRadarEnabled() && !empty($object['outcome']['type']) && $object['outcome']['type'] == "manual_review")
             $this->orderHelper->holdOrder($order);
 
         $order = $this->orderHelper->saveOrder($order);
-
-        if (!empty($stripeInvoice) && $stripeInvoice->status == "paid")
-        {
-            $this->creditmemoHelper->refundUnderchargedOrder($order, $stripeInvoice->amount_paid, $stripeInvoice->currency);
-        }
 
         // Update the payment intents table, because the payment method was created after the order was placed
         $paymentIntentModel = $this->paymentIntentFactory->create()->load($object['payment_intent'], 'pi_id');
@@ -197,7 +195,7 @@ class ChargeSucceeded
             }
             $action = __("Authorized");
             $transactionType = \Magento\Sales\Model\Order\Payment\Transaction::TYPE_AUTH;
-            $transactionAmount = $this->helper->convertStripeAmountToOrderAmount($object['amount'], $object['currency'], $order);
+            $transactionAmount = $this->convert->stripeAmountToOrderAmount($object['amount'], $object['currency'], $order);
         }
         else
         {
@@ -208,7 +206,7 @@ class ChargeSucceeded
             }
             $action = __("Captured");
             $transactionType = \Magento\Sales\Model\Order\Payment\Transaction::TYPE_CAPTURE;
-            $transactionAmount = $this->helper->convertStripeAmountToOrderAmount($object['amount_captured'], $object['currency'], $order);
+            $transactionAmount = $this->convert->stripeAmountToOrderAmount($object['amount_captured'], $object['currency'], $order);
         }
 
         $transaction = $order->getPayment()->addTransaction($transactionType, null, false);
@@ -216,10 +214,76 @@ class ChargeSucceeded
         $transaction->setAdditionalInformation("currency", $object['currency']);
         $transaction->save();
 
+        if ($order->getState() == "canceled")
+        {
+            $this->orderHelper->addOrderComment(__("The order was unexpectedly in a canceled state when a payment was collected. Attempting to re-open the order."), $order);
+            $this->resetItemQuantities($order);
+        }
+
         $state = \Magento\Sales\Model\Order::STATE_PROCESSING;
         $status = $order->getConfig()->getStateDefaultStatus($state);
-        $humanReadableAmount = $this->helper->addCurrencySymbol($transactionAmount, $object['currency']);
+        $humanReadableAmount = $this->currencyHelper->addCurrencySymbol($transactionAmount, $object['currency']);
         $comment = __("%1 amount of %2 via Stripe. Transaction ID: %3", $action, $humanReadableAmount, $transactionId);
         $order->setState($state)->addStatusToHistory($status, $comment, $isCustomerNotified = false);
+    }
+
+    public function resetItemQuantities($order)
+    {
+        foreach ($order->getAllItems() as $item)
+        {
+            // Check if the item is cancelable
+            if ($item->getQtyCanceled() > 0) {
+                $item->setQtyCanceled(0);
+            }
+
+            // Set quantity to invoice
+            $item->setQtyToInvoice($item->getQtyOrdered() - $item->getQtyInvoiced());
+        }
+    }
+
+    // Wallets hide personal data for data privacy reasons. We only get these data after the payment is completed.
+    private function updateOrderAddresses($order, $object)
+    {
+        if (!$this->isWalletPayment($object))
+        {
+            return;
+        }
+
+        if (!empty($object['billing_details']))
+        {
+            $telephoneHasPlaceholder = $order->getBillingAddress()->getTelephone() === '0000000000';
+            $firstname = $this->addressHelper->getFirstnameFromStripeAddress($object['billing_details']);
+            $lastname = $this->addressHelper->getLastnameFromStripeAddress($object['billing_details']);
+            $phone = $this->addressHelper->getPhoneFromStripeAddress($object['billing_details']);
+            $email = $this->addressHelper->getEmailFromStripeAddress($object['billing_details']);
+            $firstname && empty($order->getBillingAddress()->getFirstname()) ? $order->getBillingAddress()->setFirstname($firstname) : null;
+            $lastname && empty($order->getBillingAddress()->getLastname()) ? $order->getBillingAddress()->setLastname($lastname) : null;
+            $phone && (empty($order->getBillingAddress()->getTelephone()) || $telephoneHasPlaceholder) ? $order->getBillingAddress()->setTelephone($phone) : null;
+            $email && empty($order->getBillingAddress()->getEmail()) ? $order->getBillingAddress()->setEmail($email) : null;
+        }
+
+        if (!empty($object['shipping']) && !$order->getIsVirtual())
+        {
+            $telephoneHasPlaceholder = $order->getShippingAddress()->getTelephone() === '0000000000';
+            $firstname = $this->addressHelper->getFirstnameFromStripeAddress($object['shipping']);
+            $lastname = $this->addressHelper->getLastnameFromStripeAddress($object['shipping']);
+            $phone = $this->addressHelper->getPhoneFromStripeAddress($object['shipping']);
+            $email = $this->addressHelper->getEmailFromStripeAddress($object['shipping']);
+            $firstname && empty($order->getShippingAddress()->getFirstname()) ? $order->getShippingAddress()->setFirstname($firstname) : null;
+            $lastname && empty($order->getShippingAddress()->getLastname()) ? $order->getShippingAddress()->setLastname($lastname) : null;
+            $phone && (empty($order->getShippingAddress()->getTelephone()) || $telephoneHasPlaceholder) ? $order->getShippingAddress()->setTelephone($phone) : null;
+            $email && empty($order->getShippingAddress()->getEmail()) ? $order->getShippingAddress()->setEmail($email) : null;
+        }
+    }
+
+    private function isWalletPayment($object)
+    {
+        if (isset($object['payment_method_details']['type']))
+        {
+            $type = $object['payment_method_details']['type'];
+            return !empty($object['payment_method_details'][$type]['wallet']['type']);
+        }
+
+        return false;
     }
 }

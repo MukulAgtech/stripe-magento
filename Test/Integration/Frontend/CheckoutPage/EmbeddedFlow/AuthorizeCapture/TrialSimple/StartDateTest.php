@@ -29,14 +29,19 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
      */
     public function testPlaceOrder()
     {
+        $day = "10";
+        if (date("d") == $day)
+        {
+            $day = "20";
+        }
+
         // If a trial subscription is suddenly configured with a start date, it should not be set up as a trial subscription.
         // Start dates take precedence over trial periods.
         $product = $this->tests->getProduct('simple-trial-monthly-subscription-product');
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
-            'start_date' => "2021-01-10",
-            'first_payment' => 'on_start_date',
-            'prorate_first_payment' => 0
+            'start_date' => "2021-01-$day",
+            'first_payment' => 'on_start_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -61,7 +66,9 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
@@ -75,7 +82,7 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
         $subscriptionStartDate = $subscription->billing_cycle_anchor;
 
         // The subscription start date should be the 10th of the month
-        $this->assertEquals("10", date("d", $subscriptionStartDate));
+        $this->assertEquals($day, date("d", $subscriptionStartDate));
 
         $this->compare->object($subscription, [
             "items" => [

@@ -79,8 +79,8 @@ class PartialCapturesTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals("processing", $order->getStatus());
 
         // Trigger webhooks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id);
-        $this->tests->event()->trigger("charge.captured", $paymentIntent->charges->data[0]);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, ['expand' => ['latest_charge']]);
+        $this->tests->event()->trigger("charge.captured", $paymentIntent->latest_charge);
         $this->tests->event()->trigger("payment_intent.succeeded", $paymentIntent);
 
         // Stripe checks
@@ -127,8 +127,8 @@ class PartialCapturesTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
 
         // Stripe checks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($invoice->getTransactionId());
-        $charge = $paymentIntent->charges->data[0];
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($invoice->getTransactionId(), ['expand' => ['latest_charge']]);
+        $charge = $paymentIntent->latest_charge;
         $orderIncrementId = $order->getIncrementId();
         $this->tests->compare($charge, [
             "amount" => 2165,

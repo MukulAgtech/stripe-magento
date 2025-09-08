@@ -24,9 +24,17 @@
       <config_path>payment/stripe_payments_bank_transfers/minimum_amount</config_path>
     </field>
 
+    <!-- Default EU Country dropdown -->
+    <field id="default_eu_country" translate="label" type="select" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
+      <label>Default EU Country</label>
+      <comment><![CDATA[If the customer lives in an EU country which is not supported, use this country instead.]]></comment>
+      <source_model>StripeIntegration\Payments\Model\Adminhtml\Source\DefaultEUCountry</source_model>
+      <config_path>payment/stripe_payments_bank_transfers/default_eu_country</config_path>
+    </field>
+
     <field id="sort_order" translate="label" type="text" sortOrder="200" showInDefault="1" showInWebsite="1" showInStore="1">
      <label>Sort order</label>
-     <comment>Adjust this to move the payment method above or below other payment methods</comment>
+     <comment><![CDATA[Adjust this to move the payment method above or below other payment methods.]]></comment>
      <frontend_class>validate-number</frontend_class>
      <config_path>payment/stripe_payments_bank_transfers/sort_order</config_path>
    </field>

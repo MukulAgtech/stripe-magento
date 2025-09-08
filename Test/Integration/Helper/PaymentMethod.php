@@ -25,7 +25,7 @@ class PaymentMethod
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethodFromCardNumber('4242424242424242')->id
+                        "payment_method" => $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_visa')->id
                     ]
                 ];
                 break;
@@ -34,7 +34,7 @@ class PaymentMethod
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethodFromCardNumber('4000000000000002')->id
+                        "payment_method" => $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_visa_chargeDeclined')->id
                     ]
                 ];
                 break;
@@ -43,7 +43,7 @@ class PaymentMethod
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethodFromCardNumber('4000000000009995')->id
+                        "payment_method" => $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_visa_chargeDeclinedInsufficientFunds')->id
                     ]
                 ];
                 break;
@@ -52,7 +52,7 @@ class PaymentMethod
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethodFromCardNumber('4000002760003184')->id
+                        "payment_method" => $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_authenticationRequired')->id
                     ]
                 ];
                 break;
@@ -61,16 +61,16 @@ class PaymentMethod
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethodFromCardNumber('4000000000009235')->id
+                        "payment_method" => $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_riskLevelElevated')->id
                     ]
                 ];
                 break;
 
-            case 'SOFORT':
+            case 'RedirectBasedMethod':
                 $data = [
                     'method' => 'stripe_payments',
                     'additional_data' => [
-                        "payment_method" => $this->createPaymentMethod('sofort', $billingAddressIdentifier)->id
+                        "payment_method" => $this->createPaymentMethod('bancontact', $billingAddressIdentifier)->id
                     ]
                 ];
                 break;
@@ -87,6 +87,15 @@ class PaymentMethod
                     'method' => 'stripe_payments_bank_transfers',
                     'additional_data' => [
                         "payment_method" => $paymentMethod->id
+                    ]
+                ];
+                break;
+
+            case 'BankTransferAdmin':
+                $data = [
+                    'method' => 'stripe_payments_bank_transfers',
+                    'additional_data' => [
+                        "days_due" => 30,
                     ]
                 ];
                 break;
@@ -144,19 +153,11 @@ class PaymentMethod
         switch ($type)
         {
             case "SuccessCard":
-                $params['type'] = 'card';
             case "card":
-                $params['card'] = [
-                    'number' => '4242424242424242',
-                    'exp_month' => 7,
-                    'exp_year' => date("Y", time()) + 1,
-                    'cvc' => '314',
-                ];
-                break;
-            case "sofort":
-                $params["sofort"] = [
-                    'country' => $params["billing_details"]["address"]["country"]
-                ];
+                $pm = $this->stripeConfig->getStripeClient()->paymentMethods->retrieve('pm_card_visa');
+                return $pm;
+            case "bancontact":
+                $params["bancontact"] = [];
                 break;
             case "sepa_debit":
                 $params["sepa_debit"] = [
@@ -186,8 +187,11 @@ class PaymentMethod
             case "klarna":
                 $params["klarna"] = [];
                 break;
-            default:
+            case "customer_balance":
                 break;
+            default:
+                $pm = $this->stripeConfig->getStripeClient()->paymentMethods->retrieve($type);
+                return $pm;
         }
 
         return $stripe->paymentMethods->create($params);

@@ -46,7 +46,9 @@ class RecurringOrdersExpiredQuoteTest extends \PHPUnit\Framework\TestCase
 
         // Trigger webhook events for recurring order
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId, []);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $invoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice);
         $invoice->amount = $subscriptionTotal; // Remove the initial fee from the next invoice
         $invoice->amount_paid = $subscriptionTotal;

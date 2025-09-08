@@ -254,8 +254,6 @@ ul#payment_form_stripe_payments {
 }
 
 /* Product Edit page  */
-body.catalog-product-edit div[data-index="upgrades_downgrades"],
-body.catalog-product-edit div[data-index="prorate_upgrades"],
-body.catalog-product-edit div[data-index="prorate_downgrades"] {
+body.catalog-product-edit div[data-index="upgrades_downgrades"] {
     margin-bottom: 0;
 }

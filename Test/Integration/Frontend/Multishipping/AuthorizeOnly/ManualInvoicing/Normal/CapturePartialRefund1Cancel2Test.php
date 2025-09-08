@@ -63,7 +63,7 @@ class CapturePartialRefund1Cancel2Test extends \PHPUnit\Framework\TestCase
 
         // Payment intent checks
 
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, []);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, ['expand' => ['latest_charge']]);
         $ordersTotal = ($order1->getGrandTotal() * 100 + $order2->getGrandTotal() * 100);
         $expectedCaptureAmount = ($order1->getGrandTotal() - 10) * 100;
 
@@ -71,14 +71,10 @@ class CapturePartialRefund1Cancel2Test extends \PHPUnit\Framework\TestCase
             "amount" => $ordersTotal,
             "amount_capturable" => 0,
             "capture_method" => "manual",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $ordersTotal,
-                        "amount_captured" => $expectedCaptureAmount,
-                        "amount_refunded" => $ordersTotal - $expectedCaptureAmount
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $ordersTotal,
+                "amount_captured" => $expectedCaptureAmount,
+                "amount_refunded" => $ordersTotal - $expectedCaptureAmount
             ],
             "status" => "succeeded"
         ]);

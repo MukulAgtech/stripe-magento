@@ -26,6 +26,9 @@ class Multishipping
     private $paymentIntentCollection;
     private $quoteHelper;
     private $orderHelper;
+    private $currencyHelper;
+    private $convert;
+    private $stripeChargeModelFactory;
 
     public function __construct(
         \Magento\Multishipping\Model\Checkout\Type\Multishipping\State $state,
@@ -37,12 +40,15 @@ class Multishipping
         \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\Convert $convert,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
         \StripeIntegration\Payments\Model\Multishipping\Quote $multishippingQuote,
         \StripeIntegration\Payments\Model\Multishipping\OrderFactory $multishippingOrderFactory,
         \StripeIntegration\Payments\Model\ResourceModel\Multishipping\Order\Collection $multishippingOrderCollection,
-        \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\Collection $paymentIntentCollection
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\Collection $paymentIntentCollection,
+        \StripeIntegration\Payments\Model\Stripe\ChargeFactory $stripeChargeModelFactory
     )
     {
         $this->state = $state;
@@ -60,6 +66,9 @@ class Multishipping
         $this->multishippingOrderFactory = $multishippingOrderFactory;
         $this->multishippingOrderCollection = $multishippingOrderCollection;
         $this->paymentIntentCollection = $paymentIntentCollection;
+        $this->currencyHelper = $currencyHelper;
+        $this->convert = $convert;
+        $this->stripeChargeModelFactory = $stripeChargeModelFactory;
     }
 
     protected function getCheckout()
@@ -97,7 +106,7 @@ class Multishipping
         }
     }
 
-    protected function getFinalRedirectUrl($quoteId)
+    public function getFinalRedirectUrl($quoteId)
     {
         $checkout = $this->getCheckout();
 
@@ -117,7 +126,8 @@ class Multishipping
             $this->state->setActiveStep(State::STEP_SUCCESS);
             $this->checkoutSession->clearQuote();
             $this->checkoutSession->setDisplaySuccess(true);
-            $checkout->deactivateQuote($checkout->getQuote());
+            $this->checkoutSession->setLastQuoteId($checkout->getQuote()->getId());
+            $this->quoteHelper->deactivateQuote($checkout->getQuote());
             return $this->helper->getUrl('multishipping/checkout/success');
         }
         else
@@ -301,20 +311,16 @@ class Multishipping
     {
         $multishippingQuoteModel = $this->multishippingQuote->load($quoteId, 'quote_id');
         if (!$multishippingQuoteModel->getManualCapture())
+        {
             $multishippingQuoteModel->setCaptured(true)->save();
+        }
 
         if (!$paymentIntent)
-            $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($multishippingQuoteModel->getPaymentIntentId());
-
-        $riskScore = '';
-        $riskLevel = 'NA';
-        if ($paymentIntent && isset($paymentIntent->charges->data[0])) {
-            if (isset($paymentIntent->charges->data[0]->outcome->risk_score) && $paymentIntent->charges->data[0]->outcome->risk_score >= 0) {
-                $riskScore = $paymentIntent->charges->data[0]->outcome->risk_score;
-            }
-            if (isset($paymentIntent->charges->data[0]->outcome->risk_level)) {
-                $riskLevel = $paymentIntent->charges->data[0]->outcome->risk_level;
-            }
+        {
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve(
+                $multishippingQuoteModel->getPaymentIntentId(),
+                ['expand' => ['latest_charge']]
+            );
         }
 
         foreach ($successfulOrders as $order)
@@ -324,7 +330,9 @@ class Multishipping
             if ($this->config->isAuthorizeOnly())
             {
                 if ($this->config->isAutomaticInvoicingEnabled())
-                    $this->helper->invoicePendingOrder($order, $paymentIntent->id);
+                {
+                    $this->helper->invoiceOrder($order, $paymentIntent->id, \Magento\Sales\Model\Order\Invoice::NOT_CAPTURE, true);
+                }
             }
             else
             {
@@ -342,16 +350,27 @@ class Multishipping
                 $this->helper->setProcessingState($order, __("Payment succeeded."));
             }
 
-            $charge = $paymentIntent->charges->data[0];
+            $charge = $paymentIntent->latest_charge;
 
             if ($this->config->isStripeRadarEnabled() && !empty($charge->outcome->type) && $charge->outcome->type == "manual_review")
+            {
                 $this->orderHelper->holdOrder($order);
-
-            //Risk Data to sales_order table
-            if ($riskScore >= 0) {
-                $order->setStripeRadarRiskScore($riskScore);
             }
-            $order->setStripeRadarRiskLevel($riskLevel);
+
+            // Set the risk score and level
+            if (!empty($paymentIntent->latest_charge))
+            {
+                if (is_string($paymentIntent->latest_charge))
+                {
+                    $stripeChargeModel = $this->stripeChargeModelFactory->create()->fromChargeId($paymentIntent->latest_charge);
+                }
+                else
+                {
+                    $stripeChargeModel = $this->stripeChargeModelFactory->create()->fromObject($paymentIntent->latest_charge);
+                }
+                $order->setStripeRadarRiskScore($stripeChargeModel->getRiskScore());
+                $order->setStripeRadarRiskLevel($stripeChargeModel->getRiskLevel());
+            }
 
             $this->orderHelper->saveOrder($order);
             $transaction = $this->helper->addTransaction($order, $paymentIntent->id, $transactionType);
@@ -400,6 +419,27 @@ class Multishipping
         return $orders;
     }
 
+    public function cancelOrdersForQuoteId($quoteId, $errorMessage)
+    {
+        $orderModels = $this->multishippingOrderCollection->getByQuoteId($quoteId);
+        foreach ($orderModels as $orderModel)
+        {
+            if ($orderModel->getOrderId())
+            {
+                $order = $this->orderHelper->loadOrderById($orderModel->getOrderId());
+                if ($order && $order->getId())
+                {
+                    $this->orderHelper->addOrderComment($errorMessage, $order, true);
+                    $this->helper->cancelOrCloseOrder($order, true, true);
+                    $this->orderHelper->saveOrder($order);
+                }
+            }
+        }
+
+        // Also delete the order references from the multishipping table
+        $this->multishippingOrderCollection->deleteByQuoteId($quoteId);
+    }
+
     public function captureOrdersFromAdminArea($orders, $paymentIntentId, $payment, $baseAmount, $retryAuthorization)
     {
         try
@@ -433,11 +473,11 @@ class Multishipping
 
         $order = $payment->getOrder();
 
-        $humanReadableOrdersTotal = $this->helper->addCurrencySymbol($ordersTotal, $paymentIntent->currency);
+        $humanReadableOrdersTotal = $this->currencyHelper->addCurrencySymbol($ordersTotal, $paymentIntent->currency);
 
         if ($this->areOrdersFullyProcessed($orders, $order, $baseAmount))
         {
-            $authorizedAmount = $this->helper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $order);
+            $authorizedAmount = $this->currencyHelper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $order);
             $magentoAmount = $this->getFinalAmountWithCapture($orders, $order, $baseAmount, $paymentIntent->currency);
             $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($magentoAmount, $paymentIntent->currency);
             $finalAmount = $stripeAmount;
@@ -455,13 +495,14 @@ class Multishipping
             try
             {
                 $this->config->getStripeClient()->paymentIntents->capture($paymentIntent->id, ['amount_to_capture' => $finalAmount]);
+                $charge = $this->config->getStripeClient()->charges->retrieve($paymentIntent->latest_charge, []);
             }
             catch (\Exception $e)
             {
                 return $this->helper->throwError($e->getMessage());
             }
 
-            $humanReadableAmount = $this->helper->getFormattedStripeAmount($finalAmount, $paymentIntent->currency, $order);
+            $humanReadableAmount = $this->currencyHelper->getFormattedStripeAmount($finalAmount, $paymentIntent->currency, $order);
             if ($magentoAmount < $ordersTotal)
             {
                 $msg = __("Partially captured %1 online. This amount is part of %2 multishipping orders totaling %3, and does not include cancelations and refunds.", $humanReadableAmount, count($orders), $humanReadableOrdersTotal);
@@ -475,13 +516,11 @@ class Multishipping
 
             $riskScore = '';
             $riskLevel = 'NA';
-            if ($paymentIntent && isset($paymentIntent->charges->data[0])) {
-                if (isset($paymentIntent->charges->data[0]->outcome->risk_score) && $paymentIntent->charges->data[0]->outcome->risk_score >= 0) {
-                    $riskScore = $paymentIntent->charges->data[0]->outcome->risk_score;
-                }
-                if (isset($paymentIntent->charges->data[0]->outcome->risk_level)) {
-                    $riskLevel = $paymentIntent->charges->data[0]->outcome->risk_level;
-                }
+            if (isset($charge->outcome->risk_score) && $charge->outcome->risk_score >= 0) {
+                $riskScore = $charge->outcome->risk_score;
+            }
+            if (isset($charge->outcome->risk_level)) {
+                $riskLevel = $charge->outcome->risk_level;
             }
 
             // Process all other related orders
@@ -509,8 +548,8 @@ class Multishipping
         }
         else
         {
-            $finalAmount = $this->helper->convertBaseAmountToOrderAmount($baseAmount, $order, $paymentIntent->currency, 2);
-            $humanReadableAmount = $this->helper->addCurrencySymbol($finalAmount, $paymentIntent->currency);
+            $finalAmount = $this->convert->baseAmountToCurrencyAmount($baseAmount, $paymentIntent->currency, $order);
+            $humanReadableAmount = $this->currencyHelper->addCurrencySymbol($finalAmount, $paymentIntent->currency);
             $humanReadableDate = $this->getFormattedCaptureDate($order);
 
             $msg = __("Scheduled %1 to be captured via cron on %5. This amount is part of %2 multishipping orders totaling %3. To capture now instead, invoice or cancel all multishipping orders (%4). ", $humanReadableAmount, count($orders), $humanReadableOrdersTotal, implode(", ", $incrementIds), $humanReadableDate);
@@ -553,9 +592,9 @@ class Multishipping
         foreach ($orders as $relatedOrder)
             $ordersTotal += $relatedOrder->getGrandTotal();
 
-        $humanReadableOrdersTotal = $this->helper->addCurrencySymbol($ordersTotal, $paymentIntent->currency);
+        $humanReadableOrdersTotal = $this->currencyHelper->addCurrencySymbol($ordersTotal, $paymentIntent->currency);
 
-        $authorizedAmount = $this->helper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $exampleOrder);
+        $authorizedAmount = $this->currencyHelper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $exampleOrder);
         $magentoAmount = $this->getFinalAmountWithCapture($orders, null, null, $paymentIntent->currency);
         $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($magentoAmount, $paymentIntent->currency);
         $finalAmount = $stripeAmount;
@@ -574,7 +613,7 @@ class Multishipping
 
         $this->config->getStripeClient()->paymentIntents->capture($paymentIntent->id, ['amount_to_capture' => $finalAmount]);
 
-        $humanReadableAmount = $this->helper->getFormattedStripeAmount($finalAmount, $paymentIntent->currency, $exampleOrder);
+        $humanReadableAmount = $this->currencyHelper->getFormattedStripeAmount($finalAmount, $paymentIntent->currency, $exampleOrder);
         if ($magentoAmount < $ordersTotal)
         {
             $msg = __("Cron: Partially captured %1 online. This amount is part of %2 multishipping orders totaling %3, and does not include cancelations and refunds. Transaction ID: %4", $humanReadableAmount, count($orders), $humanReadableOrdersTotal, $paymentIntentId);
@@ -625,7 +664,7 @@ class Multishipping
             $processed += ($order->getTotalPaid() + $order->getTotalCanceled());
 
             if ($currentOrder && $order->getId() == $currentOrder->getId())
-                $processed += $this->helper->convertBaseAmountToOrderAmount($baseCaptureAmount, $order, $order->getOrderCurrencyCode());
+                $processed += $this->convert->baseAmountToCurrencyAmount($baseCaptureAmount, $order->getOrderCurrencyCode(), $order);
         }
 
         return ($processed >= $total);
@@ -637,12 +676,13 @@ class Multishipping
 
         foreach ($orders as $order)
         {
-            $total += round(floatval($order->getGrandTotal()), 2);
-            $total -= round(floatval($order->getTotalRefunded()), 2);
-            $total -= round(floatval($order->getTotalCanceled()), 2);
+            $currencyPrecision = $this->convert->getCurrencyPrecision($order->getOrderCurrencyCode());
+            $total += round(floatval($order->getGrandTotal()), $currencyPrecision);
+            $total -= round(floatval($order->getTotalRefunded()), $currencyPrecision);
+            $total -= round(floatval($order->getTotalCanceled()), $currencyPrecision);
 
             if ($currentOrder && $order->getId() == $currentOrder->getId())
-                $total += round($this->helper->convertBaseAmountToOrderAmount($baseCaptureAmount, $currentOrder, $currency), 2);
+                $total += $this->convert->baseAmountToCurrencyAmount($baseCaptureAmount, $currency, $currentOrder);
         }
 
         return $total;
@@ -667,12 +707,11 @@ class Multishipping
         return true;
     }
 
-    public function isMultishippingQuote($quoteId)
+    public function isMultishippingQuote($quoteId, $quote = null)
     {
-        if (empty($quoteId))
-            return false;
+        if (!$quote && is_numeric($quoteId))
+            $quote = $this->quoteHelper->loadQuoteById($quoteId);
 
-        $quote = $this->quoteHelper->loadQuoteById($quoteId);
         if (!$quote || !$quote->getId())
             return false;
 

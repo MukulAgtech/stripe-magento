@@ -45,15 +45,9 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $customer = $this->tests->getStripeCustomer();
         $this->assertEmpty($customer);
 
+        $this->tests->log($lastCheckoutSession);
         $this->tests->compare($lastCheckoutSession, [
             "amount_total" => $order->getGrandTotal() * 100,
-            "payment_intent" => [
-                "amount" => $order->getGrandTotal() * 100,
-                "capture_method" => "automatic",
-                "description" => "Order #" . $order->getIncrementId() . " by Declan Kidman",
-                "setup_future_usage" => "unset",
-                "customer" => "unset"
-            ],
             "customer_email" => "declan@example.com",
             "submit_type" => "pay"
         ]);
@@ -69,8 +63,19 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $response = $this->tests->checkout()->confirm($session, $order, "au_becs_debit", "Australia");
         $this->tests->checkout()->authenticate($response->payment_intent, "au_becs_debit");
 
+        // Check payment intent data
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id, [
+            "expand" => ["latest_charge"]
+        ]);
+        $this->tests->compare($paymentIntent, [
+            "amount" => $order->getGrandTotal() * 100,
+            "capture_method" => "automatic",
+            "description" => "Order #" . $order->getIncrementId() . " by Declan Kidman",
+            "setup_future_usage" => "unset",
+            "customer" => "unset"
+        ]);
+
         // Trigger webhooks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id);
         $this->tests->event()->triggerPaymentIntentEvents($paymentIntent);
 
         // Stripe checks
@@ -81,25 +86,21 @@ class BECSTest extends \PHPUnit\Framework\TestCase
             "amount" => $order->getGrandTotal() * 100,
             "amount_capturable" => 0,
             "capture_method" => "automatic",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $order->getGrandTotal() * 100,
-                        "amount_captured" => $order->getGrandTotal() * 100,
-                        "amount_refunded" => 0,
-                        "billing_details" => $billingAddress,
-                        "captured" => 1,
-                        "currency" => "aud",
-                        "description" => "Order #$orderIncrementId by Declan Kidman",
-                        "metadata" => [
-                            "Order #" => "$orderIncrementId",
-                        ],
-                        "payment_method_details" => [
-                            "type" => "au_becs_debit",
-                        ],
-                        "shipping" => $shippingAddress,
-                    ],
+            "latest_charge" => [
+                "amount" => $order->getGrandTotal() * 100,
+                "amount_captured" => $order->getGrandTotal() * 100,
+                "amount_refunded" => 0,
+                "billing_details" => $billingAddress,
+                "captured" => 1,
+                "currency" => "aud",
+                "description" => "Order #$orderIncrementId by Declan Kidman",
+                "metadata" => [
+                    "Order #" => "$orderIncrementId",
                 ],
+                "payment_method_details" => [
+                    "type" => "au_becs_debit",
+                ],
+                "shipping" => $shippingAddress,
             ],
             "confirmation_method" => "automatic",
             "currency" => "aud",
@@ -133,7 +134,7 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $this->tests->refundOnline($invoice, ['simple-product' => 1], $baseShipping = 5);
 
         // Trigger webhooks
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent->latest_charge);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);
@@ -162,22 +163,20 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals("processing", $order->getStatus());
 
         // Stripe checks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id, [
+            "expand" => ["latest_charge.refunds"]
+        ]);
         $this->tests->compare($paymentIntent, [
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => 6800,
-                        "amount_captured" => 6800,
-                        "amount_refunded" => 2040,
-                        "refunds" => [
-                            "data" => [
-                                0 => [
-                                    "amount" => 2040,
-                                    "currency" => "aud",
-                                    "status" => "pending"
-                                ]
-                            ]
+            "latest_charge" => [
+                "amount" => 6800,
+                "amount_captured" => 6800,
+                "amount_refunded" => 2040,
+                "refunds" => [
+                    "data" => [
+                        0 => [
+                            "amount" => 2040,
+                            "currency" => "aud",
+                            "status" => "pending"
                         ]
                     ]
                 ]
@@ -190,7 +189,7 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $this->tests->refundOnline($invoice, ['simple-product' => 1, 'virtual-product' => 2], $baseShipping = 5);
 
         // Trigger webhooks
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent->latest_charge);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);
@@ -215,16 +214,14 @@ class BECSTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals("closed", $order->getStatus());
 
         // Stripe checks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id, [
+            "expand" => ["latest_charge"]
+        ]);
         $this->tests->compare($paymentIntent, [
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => 6800,
-                        "amount_captured" => 6800,
-                        "amount_refunded" => 6800
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => 6800,
+                "amount_captured" => 6800,
+                "amount_refunded" => 6800
             ]
         ]);
     }

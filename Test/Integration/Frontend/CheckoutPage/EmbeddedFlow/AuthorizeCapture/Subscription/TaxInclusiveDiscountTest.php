@@ -48,12 +48,14 @@ class TaxInclusiveDiscountTest extends \PHPUnit\Framework\TestCase
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
-        //Customer has one subscription
+        // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
 
-        //The subscription setup is correct.
+        // The subscription setup is correct.
         $subscription = $customer->subscriptions->data[0];
         $this->compare->object($subscription, [
             "items" => [

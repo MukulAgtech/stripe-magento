@@ -99,7 +99,8 @@ class ConfigChangedObserver implements ObserverInterface
             'payment/stripe_payments_basic/stripe_mode',
             'payment/stripe_payments_basic/stripe_test_pk',
             'payment/stripe_payments_basic/stripe_live_pk',
-            'payment/stripe_payments/payments/payment_method_configuration',
+            'payment/stripe_payments/pmc_all_carts',
+            'payment/stripe_payments/pmc_virtual_carts',
         ];
 
         $isChanged = false;
@@ -113,29 +114,33 @@ class ConfigChangedObserver implements ObserverInterface
         }
 
         // If any field has changed, reset the payment method configuration
-        if ($isChanged) {
-            $currentValue = $this->scopeConfig->getValue(
-                'payment/stripe_payments/payments/payment_method_configuration',
-                $scope,
-                $scopeId
-            );
-
-            try
+        if ($isChanged)
+        {
+            foreach (['payment/stripe_payments/pmc_all_carts', 'payment/stripe_payments/pmc_virtual_carts'] as $path)
             {
-                $config = $this->getStripeConfig();
-                $config->initStripe();
-                $paymentMethodConfiguration = $config->getStripeClient()->paymentMethodConfigurations->retrieve($currentValue);
-
-                if (!$paymentMethodConfiguration->active)
-                    throw new GenericException("The payment method configuration is no longer active.");
-            }
-            catch (\Exception $e)
-            {
-                $this->configWriter->delete(
-                    'payment/stripe_payments/payments/payment_method_configuration',
+                $currentValue = $this->scopeConfig->getValue(
+                    $path,
                     $scope,
                     $scopeId
                 );
+
+                try
+                {
+                    $config = $this->getStripeConfig();
+                    $config->initStripe();
+                    $paymentMethodConfiguration = $config->getStripeClient()->paymentMethodConfigurations->retrieve($currentValue);
+
+                    if (!$paymentMethodConfiguration->active)
+                        throw new GenericException("The payment method configuration is no longer active.");
+                }
+                catch (\Exception $e)
+                {
+                    $this->configWriter->delete(
+                        $path,
+                        $scope,
+                        $scopeId
+                    );
+                }
             }
         }
     }

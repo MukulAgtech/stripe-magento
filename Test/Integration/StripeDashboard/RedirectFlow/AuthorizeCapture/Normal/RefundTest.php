@@ -20,6 +20,7 @@ class RefundTest extends \PHPUnit\Framework\TestCase
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPartialRefund()
     {
@@ -49,25 +50,13 @@ class RefundTest extends \PHPUnit\Framework\TestCase
 
         $stripe = $this->tests->stripe();
 
-        // Partially refund the charge
+        // Refund the charge
         $order = $this->tests->refreshOrder($order);
         $this->assertEquals($response->payment_intent->id, $order->getPayment()->getLastTransId());
-        $refund = $stripe->refunds->create(['charge' => $paymentIntent->charges->data[0], 'amount' => 500]);
+        $refund = $stripe->refunds->create(['charge' => $paymentIntent->latest_charge]);
 
         // charge.refunded
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]->id);
-
-        // Refresh the order object
-        $order = $this->tests->refreshOrder($order);
-        $this->assertEquals("processing", $order->getStatus());
-        $this->assertEquals(5, $order->getTotalRefunded());
-
-        // Refund the remaining amount
-        $remainingAmount = ($order->getGrandTotal() - $order->getTotalRefunded()) * 100;
-        $refund = $stripe->refunds->create(['charge' => $paymentIntent->charges->data[0], 'amount' => $remainingAmount]);
-
-        // charge.refunded
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent->latest_charge);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);

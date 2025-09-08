@@ -5,7 +5,7 @@ use Magento\Framework\Escaper;
 use Magento\Ui\Component\Listing\Columns\Column;
 use Magento\Framework\View\Element\UiComponent\ContextInterface;
 use Magento\Framework\View\Element\UiComponentFactory;
-use StripeIntegration\Payments\Helper\Data as StripeHelperData;
+use StripeIntegration\Payments\Helper\Radar as RadarHelper;
 
 class Radar extends Column
 {
@@ -15,15 +15,15 @@ class Radar extends Column
     private $escaper;
 
     /**
-     * @var StripeHelperData
+     * @var RadarHelper
      */
-    private $stripeHelperData;
+    private $radarHelper;
 
     /**
      * @param ContextInterface $context
      * @param UiComponentFactory $uiComponentFactory
      * @param Escaper $escaper
-     * @param StripeHelperData $stripeHelperData
+     * @param RadarHelper $radarHelper
      * @param array $components
      * @param array $data
      */
@@ -31,12 +31,12 @@ class Radar extends Column
         ContextInterface $context,
         UiComponentFactory $uiComponentFactory,
         Escaper $escaper,
-        StripeHelperData $stripeHelperData,
+        RadarHelper $radarHelper,
         array $components = [],
         array $data = []
     ) {
         $this->escaper = $escaper;
-        $this->stripeHelperData = $stripeHelperData;
+        $this->radarHelper = $radarHelper;
         parent::__construct($context, $uiComponentFactory, $components, $data);
     }
 
@@ -51,22 +51,22 @@ class Radar extends Column
         if (isset($dataSource['data']['items'])) {
             foreach ($dataSource['data']['items'] as & $item) {
                 $riskScore = null;
-                if (isset($item[StripeHelperData::RISK_SCORE_COLUMN_NAME]) && ($item[StripeHelperData::RISK_SCORE_COLUMN_NAME] !== null)) {
-                    $riskScore = $item[StripeHelperData::RISK_SCORE_COLUMN_NAME];
+                if (isset($item[RadarHelper::RISK_SCORE_COLUMN_NAME]) && ($item[RadarHelper::RISK_SCORE_COLUMN_NAME] !== null)) {
+                    $riskScore = $item[RadarHelper::RISK_SCORE_COLUMN_NAME];
                 }
 
                 $riskLevel = 'NA';
-                if (isset($item[StripeHelperData::RISK_LEVEL_COLUMN_NAME]) && ($item[StripeHelperData::RISK_LEVEL_COLUMN_NAME] !== 'NA')) {
-                    $riskLevel = $item[StripeHelperData::RISK_LEVEL_COLUMN_NAME];
+                if (isset($item[RadarHelper::RISK_LEVEL_COLUMN_NAME]) && ($item[RadarHelper::RISK_LEVEL_COLUMN_NAME] !== 'NA')) {
+                    $riskLevel = $item[RadarHelper::RISK_LEVEL_COLUMN_NAME];
                 }
 
-                $radarElementClass = $this->stripeHelperData->getRiskElementClass($riskScore, $riskLevel);
+                $radarElementClass = $this->radarHelper->getRiskElementClass($riskScore, $riskLevel);
 
-                $returnHtml = '<div class="admin__stripe-radar stripe-payment-risk-'.$radarElementClass.'"'.$item[StripeHelperData::RISK_SCORE_COLUMN_NAME].'>';
+                $returnHtml = '<div class="admin__stripe-radar stripe-payment-risk-'.$radarElementClass.'"'.$item[RadarHelper::RISK_SCORE_COLUMN_NAME].'>';
                 if ($riskScore !== null) {
                     $returnHtml .= '<span class="stripe-payment-risk-score"><span class="score-value">'.$this->escaper->escapeHtml($riskScore).'</span></span>';
                 } else {
-                    $returnHtml .= '<span class="stripe-payment-risk-score"><span class="score-value"><img src="'.$this->escaper->escapeHtmlAttr($this->stripeHelperData->getNoRiskIcon()).'" width="16px" /></span></span>';
+                    $returnHtml .= '<span class="stripe-payment-risk-score"><span class="score-value"><img src="'.$this->escaper->escapeHtmlAttr($this->radarHelper->getNoRiskIcon()).'" width="16px" /></span></span>';
                 }
                 $returnHtml .= '</div>';
 

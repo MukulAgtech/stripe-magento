@@ -14,7 +14,7 @@
             <group value="cart_normal"/>
             <group value="card_success"/>
             <group value="embedded_flow"/>
-            <group value="stripe"/>
+            <!-- <group value="stripe"/> -->
         </annotations>
 
         <before>

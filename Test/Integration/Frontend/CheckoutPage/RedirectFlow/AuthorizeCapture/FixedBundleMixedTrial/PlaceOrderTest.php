@@ -11,7 +11,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 {
     private $objectManager;
     private $quote;
-    private $subscriptions;
     private $tests;
 
     public function setUp(): void
@@ -19,17 +18,14 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
-
-        $this->subscriptions = $this->objectManager->get(\StripeIntegration\Payments\Helper\Subscriptions::class);
     }
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testFixedBundleMixedTrialCart()
     {
-        $this->markTestIncomplete("Bundled subscriptions not fully supported yet");
-
         $this->quote->create()
             ->setCustomer('Guest')
             ->setCart("FixedBundleMixedTrial")
@@ -40,31 +36,15 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         $quote = $this->quote->getQuote();
 
-        // Checkout totals should be correct
-        $trialSubscriptionsConfig = $this->subscriptions->getTrialingSubscriptionsAmounts($quote);
-
-        $this->assertEquals(80, $trialSubscriptionsConfig["subscriptions_total"], "Subtotal");
-        $this->assertEquals(80, $trialSubscriptionsConfig["base_subscriptions_total"], "Base Subtotal");
-
-        $this->assertEquals(20, $trialSubscriptionsConfig["shipping_total"], "Shipping");
-        $this->assertEquals(20, $trialSubscriptionsConfig["base_shipping_total"], "Base Shipping");
-
-        $this->assertEquals(0, $trialSubscriptionsConfig["discount_total"], "Discount");
-        $this->assertEquals(0, $trialSubscriptionsConfig["base_discount_total"], "Base Discount");
-
-        $this->assertEquals(6.6, $trialSubscriptionsConfig["tax_total"], "Tax");
-        $this->assertEquals(6.6, $trialSubscriptionsConfig["tax_total"], "Base Tax");
-
         // Place the order
         $order = $this->quote->placeOrder();
 
+        // 96.60 for the bundled trial subscription + 31.65 for the regular products
+        $this->assertEquals(31.65, $order->getGrandTotal());
+
         $orderIncrementId = $order->getIncrementId();
         $currency = $order->getOrderCurrencyCode();
-        $expectedChargeAmount = $order->getGrandTotal()
-            - $trialSubscriptionsConfig["subscriptions_total"]
-            - $trialSubscriptionsConfig["shipping_total"]
-            + $trialSubscriptionsConfig["discount_total"]
-            - $trialSubscriptionsConfig["tax_total"];
+        $expectedChargeAmount = 31.65;
 
         $expectedChargeAmount = $this->tests->helper()->convertMagentoAmountToStripeAmount($expectedChargeAmount, $currency);
 
@@ -75,6 +55,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $stripe = $this->tests->stripe();
         $session = $stripe->checkout->sessions->retrieve($checkoutSessionId);
 
+        $this->tests->log($session);
         $this->assertEquals($expectedChargeAmount, $session->amount_total);
 
         // Confirm the payment
@@ -85,26 +66,30 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id);
 
         // Assert order status, amount due, invoices
-        $this->assertEquals("new", $order->getState());
-        $this->assertEquals("pending", $order->getStatus());
+        $this->assertEquals("pending_payment", $order->getState());
+        $this->assertEquals("pending_payment", $order->getStatus());
         $this->assertEquals(0, $order->getInvoiceCollection()->count());
 
         // Stripe subscription checks
-        $customer = $stripe->customers->retrieve($session->customer);
+        $customer = $stripe->customers->retrieve($session->customer, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->assertEquals("trialing", $subscription->status);
-        $this->assertEquals(10660, $subscription->items->data[0]->price->unit_amount);
+        $this->tests->log($subscription);
+        $this->assertEquals(9660, $subscription->items->data[0]->price->unit_amount);
 
         $subscriptionId = $subscription->id;
 
         // Process the charge.succeeded event
-        $charge =  $paymentIntent->charges->data[0];
-        $this->tests->event()->trigger("charge.succeeded", $charge);
+        $this->tests->event()->trigger("charge.succeeded", $paymentIntent->latest_charge);
 
         // Process invoice.payment_succeeded event
         $ordersCount = $this->objectManager->get('Magento\Sales\Model\Order')->getCollection()->count();
-        $customer = $stripe->customers->retrieve($session->customer);
+        $customer = $stripe->customers->retrieve($session->customer, [
+            'expand' => ['subscriptions']
+        ]);
         $invoiceId = $customer->subscriptions->data[0]->latest_invoice;
         $this->tests->event()->trigger("invoice.payment_succeeded", $invoiceId);
 
@@ -118,65 +103,32 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Assert order status, amount due, invoices, invoice items, invoice totals
         $this->assertEquals("processing", $order->getState());
         $this->assertEquals("processing", $order->getStatus());
-        $this->assertEquals(106.6, $order->getTotalDue());
+        $this->assertEquals(0, $order->getTotalDue());
         $this->assertEquals(1, $order->getInvoiceCollection()->count());
 
+        $ordersCount = $this->tests->getOrdersCount();
+
         // End the trial
-        $stripe->subscriptions->update($subscriptionId, ['trial_end' => "now"]);
-        $subscription = $stripe->subscriptions->retrieve($subscriptionId, ['expand' => ['latest_invoice']]);
-
-        $ordersCount = $this->objectManager->get('Magento\Sales\Model\Order')->getCollection()->count();
-
-        // Trigger webhook events for the trial end
-        $this->tests->event()->trigger("charge.succeeded", $subscription->latest_invoice->charge);
-
-        $this->tests->event()->trigger("invoice.payment_succeeded", $subscription->latest_invoice->id);
-
-        // Check that the order invoice was marked as paid
-        $order = $this->tests->refreshOrder($order);
-        $this->assertEquals(128.25, $order->getTotalPaid());
-        $this->assertEquals(0, $order->getTotalDue());
-        $invoicesCollection = $order->getInvoiceCollection();
-        $invoice = $invoicesCollection->getFirstItem();
-        $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
-        $this->assertEquals($paymentIntent->id, $invoice->getTransactionId());
-
-        // Check that the transaction IDs have been associated with the order
-        $transactions = $this->tests->helper()->getOrderTransactions($order);
-        $this->assertEquals(2, count($transactions));
-        foreach ($transactions as $key => $transaction)
-        {
-            if ($transaction->getTxnId() == $subscription->latest_invoice->payment_intent)
-            {
-                $this->assertEquals("capture", $transaction->getTxnType());
-                $this->assertEquals(106.6, $transaction->getAdditionalInformation("amount"));
-            }
-            else
-            {
-                $this->assertEquals($paymentIntent->id, $transaction->getTxnId());
-                $this->assertEquals("capture", $transaction->getTxnType());
-                $this->assertEquals(21.65, $transaction->getAdditionalInformation("amount"));
-            }
-        }
+        $this->tests->endTrialSubscription($subscriptionId);
 
         // Ensure that a new order was created
-        $newOrdersCount = $this->objectManager->get('Magento\Sales\Model\Order')->getCollection()->count();
+        $newOrdersCount = $this->tests->getOrdersCount();
         $this->assertEquals($ordersCount + 1, $newOrdersCount);
 
         // Check the newly created order
-        $newOrder = $this->objectManager->get('Magento\Sales\Model\Order')->getCollection()->setOrder('increment_id','DESC')->getFirstItem();
+        $newOrder = $this->tests->getLastOrder();
         $this->assertNotEquals($order->getIncrementId(), $newOrder->getIncrementId());
         $this->assertEquals("processing", $newOrder->getState());
         $this->assertEquals("processing", $newOrder->getStatus());
-        $this->assertEquals(106.6, $newOrder->getGrandTotal());
-        $this->assertEquals(106.6, $newOrder->getTotalPaid());
+        $this->assertEquals(96.60, $newOrder->getGrandTotal());
+        $this->assertEquals(96.60, $newOrder->getTotalPaid());
         $this->assertEquals(1, $newOrder->getInvoiceCollection()->getSize());
 
         // Process a recurring subscription billing webhook
         $this->tests->event()->trigger("invoice.payment_succeeded", $invoiceId);
 
         // Get the newly created order
-        $newOrder = $this->objectManager->get('Magento\Sales\Model\Order')->getCollection()->setOrder('entity_id','DESC')->getFirstItem();
+        $newOrder = $this->tests->getLastOrder();
 
         // Assert new order, invoices, invoice items, invoice totals
         $this->assertNotEquals($order->getIncrementId(), $newOrder->getIncrementId());

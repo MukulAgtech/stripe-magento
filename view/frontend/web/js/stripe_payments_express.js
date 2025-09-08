@@ -99,12 +99,12 @@ define(
                 // Only one express element is allowed per page
                 if (locationDetails.location == 'minicart')
                 {
-                    if (document.body.classList.contains('catalog-product-view') // We are on the product page
-                        && locationDetails.activeLocations.indexOf('product_page') >= 0) // ECE is enabled on the product page
+                    if (document.body.classList.contains('catalog-product-view') && // We are on the product page
+                        locationDetails.activeLocations.indexOf('product_page') >= 0) // ECE is enabled on the product page
                         return;
 
-                    if (document.body.classList.contains('checkout-cart-index') // We are on the cart page
-                        && locationDetails.activeLocations.indexOf('shopping_cart_cart') >= 0) // ECE is enabled on the cart page
+                    if (document.body.classList.contains('checkout-cart-index') && // We are on the cart page
+                        locationDetails.activeLocations.indexOf('shopping_cart_page') >= 0) // ECE is enabled on the cart page
                         return;
                 }
 
@@ -161,18 +161,19 @@ define(
                 if (!this.debug)
                     return;
 
-                console.log(...arguments);
+                console.log.apply(console, arguments);
             },
 
             initElements: function(elementsOptions)
             {
-                this.log('initElements', elementsOptions);
                 if (!this.elements)
                 {
+                    this.log('initElements', elementsOptions);
                     this.elements = stripe.stripeJs.elements(elementsOptions);
                 }
                 else
                 {
+                    this.log('updateElements', elementsOptions);
                     this.elements.update(elementsOptions);
                 }
             },
@@ -203,6 +204,7 @@ define(
                     if (typeof expressCheckoutOptions === 'string')
                         expressCheckoutOptions = JSON.parse(expressCheckoutOptions);
 
+                    this.log('initExpressCheckoutElement', expressCheckoutOptions);
                     this.expressCheckoutElement = this.elements.create('expressCheckout', expressCheckoutOptions);
                 }
                 catch (e)
@@ -210,9 +212,6 @@ define(
                     console.warn(e.message);
                     return;
                 }
-
-                if (document.getElementById(elementId.substr(1)))
-                    this.expressCheckoutElement.mount(elementId);
 
                 this.expressCheckoutElement.on('ready', function (result)
                 {
@@ -226,6 +225,9 @@ define(
                         DOMElement.hide();
                     }
                 });
+
+                if (document.getElementById(elementId.substr(1)))
+                    this.expressCheckoutElement.mount(elementId);
             },
 
             getClientSecretFromResponse: function(response)
@@ -270,22 +272,24 @@ define(
 
                         if (clientSecret)
                         {
+                            // The order was not placed because manual_authentication is enabled and 3D Secure authentication is required.
                             return stripe.authenticateCustomer(clientSecret, function(err)
                             {
                                 if (err)
-                                    return callback(err, { message: err }, result);
+                                    return callback(err, { message: err });
 
                                 self.placeOrder(result, location, callback);
                             });
                         }
                         else
-                            callback(response.message, response, result);
+                            callback(response.message, response);
                     }
                     catch (e)
                     {
                         return self.showError(xhr.responseText);
                     }
-                }).done(function (response) { // @todo - this should be success, we dont want to callback() on failure
+                }).done(function (response) {
+                    // The order was placed successfully
                     if (typeof response === 'string')
                     {
                         try
@@ -298,7 +302,18 @@ define(
                         }
                     }
 
-                    callback(null, response, result);
+                    if (response.client_secret && response.client_secret.length > 0)
+                    {
+                        return stripe.authenticateCustomer(response.client_secret, function(err)
+                        {
+                            if (err)
+                                return callback(err, response);
+
+                            return callback(null, response);
+                        });
+                    }
+
+                    return callback(null, response);
                 });
             },
 
@@ -470,17 +485,18 @@ define(
                 {
                     if (total > 0)
                     {
-                        this.log('Updating total to ' + total + ' cents & resolving event with delay', resolvePayload, total);
+                        this.log('Updating total to ' + total + ' cents');
                         var promise = self.elements.update({amount: total});
                     }
                     else
                     {
-                        this.log('Will not update total to 0 cents', resolvePayload, total);
+                        this.log('Will not update total to ' + total + ' cents');
                         delete resolvePayload.lineItems;
                     }
 
                     // We need this until a promise is implemented by Stripe
                     setTimeout(function() {
+                        self.log('Resolving event with delay ', resolvePayload);
                         event.resolve(resolvePayload);
                     }, 1000);
                 }
@@ -595,7 +611,7 @@ define(
                     });
                 }).catch(function(error) {
                     return showError(error.message);
-                });;
+                });
 
             },
 
@@ -731,11 +747,11 @@ define(
             onPaymentMethodCreated: function(result, location)
             {
                 var self = this;
-                this.placeOrder(result, location, function (err, response, result)
+                this.placeOrder(result, location, function (err, response)
                 {
                     if (err)
                     {
-                        self.showError(response.message);
+                        self.showError(err);
                     }
                     else if (response.hasOwnProperty('redirect'))
                     {

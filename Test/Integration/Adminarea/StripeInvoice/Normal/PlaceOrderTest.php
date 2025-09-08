@@ -16,7 +16,13 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 
     public function setUp(): void
     {
-        $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
+        /** @var \Magento\TestFramework\ObjectManager $objectManager */
+        $objectManager = $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
+
+        $invoiceMock = $this->createMock(\StripeIntegration\Payments\Helper\Stripe\Invoice::class);
+        $invoiceMock->method('getStripeInvoiceParams')->willReturn([]);
+        $objectManager->addSharedInstance($invoiceMock, \StripeIntegration\Payments\Helper\Stripe\Invoice::class);
+
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
         $this->paymentMethodBlock = $this->objectManager->get(\StripeIntegration\Payments\Block\Adminhtml\SelectPaymentMethod::class);
@@ -105,5 +111,8 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "total_due" => 0,
             "total_paid" => $order->getGrandTotal()
         ]);
+
+        // Create the payment info block for $order
+        $this->assertNotEmpty($this->tests->renderPaymentInfoBlock(\StripeIntegration\Payments\Block\PaymentInfo\Invoice::class, $order));
     }
 }

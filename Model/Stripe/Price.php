@@ -9,18 +9,24 @@ class Price
     private $objectSpace = 'prices';
     private $subscriptionsHelper;
     private $helper;
+    private $currencyHelper;
+    private $config;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
+        \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
-        \StripeIntegration\Payments\Helper\Generic $helper
+        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper
     )
     {
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
         $this->setData($stripeObjectService);
 
+        $this->config = $config;
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->helper = $helper;
+        $this->currencyHelper = $currencyHelper;
     }
 
     public function generateNickname($stripeAmount, $currency, $interval, $intervalCount)
@@ -30,7 +36,7 @@ class Price
             return $this->subscriptionsHelper->formatInterval($stripeAmount, $currency, $intervalCount, $interval);
         }
 
-        return $this->helper->formatStripePrice($stripeAmount, $currency);
+        return $this->currencyHelper->formatStripePrice($stripeAmount, $currency);
     }
 
     public function generateId($stripeProductId, $stripeUnitAmount, $currency, $interval, $intervalCount)
@@ -93,7 +99,14 @@ class Price
     public function fromOrderItem($item, $order, $stripeProduct)
     {
         $stripeProductId = $stripeProduct->id;
-        $stripeUnitAmount = $this->helper->convertMagentoAmountToStripeAmount($item->getPrice(), $order->getOrderCurrencyCode());
+        if ($this->config->priceIncludesTax($order->getStoreId()))
+        {
+            $stripeUnitAmount = $this->helper->convertMagentoAmountToStripeAmount($item->getPriceInclTax(), $order->getOrderCurrencyCode());
+        }
+        else
+        {
+            $stripeUnitAmount = $this->helper->convertMagentoAmountToStripeAmount($item->getPrice(), $order->getOrderCurrencyCode());
+        }
         $currency = strtoupper($order->getOrderCurrencyCode());
         $interval = null;
         $intervalCount = null;

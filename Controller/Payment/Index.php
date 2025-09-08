@@ -10,10 +10,9 @@ use Magento\Framework\Message\ManagerInterface;
 class Index implements ActionInterface
 {
     private $checkoutSession;
-    private $orderFactory;
     private $helper;
     private $paymentIntentHelper;
-    private $checkoutSessionFactory;
+    private $multishippingHelper;
     private $config;
     private $paymentElement;
     private $request;
@@ -21,35 +20,41 @@ class Index implements ActionInterface
     private $messageManager;
     private $quoteHelper;
     private $orderHelper;
+    private $checkoutSessionCollection;
+    private $tokenHelper;
+    private $stripePaymentIntentFactory;
 
     public function __construct(
         \Magento\Checkout\Model\Session $checkoutSession,
-        \Magento\Sales\Model\OrderFactory $orderFactory,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Helper\PaymentIntent $paymentIntentHelper,
-        \StripeIntegration\Payments\Model\CheckoutSessionFactory $checkoutSessionFactory,
+        \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\PaymentElement $paymentElement,
+        \StripeIntegration\Payments\Model\ResourceModel\CheckoutSession\Collection $checkoutSessionCollection,
+        \StripeIntegration\Payments\Model\Stripe\PaymentIntentFactory $stripePaymentIntentFactory,
         RequestInterface $request,
         ResultFactory $resultFactory,
         ManagerInterface $messageManager
     )
     {
         $this->checkoutSession = $checkoutSession;
-        $this->orderFactory = $orderFactory;
-
         $this->helper = $helper;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
         $this->paymentIntentHelper = $paymentIntentHelper;
-        $this->checkoutSessionFactory = $checkoutSessionFactory;
+        $this->multishippingHelper = $multishippingHelper;
         $this->config = $config;
         $this->paymentElement = $paymentElement;
+        $this->checkoutSessionCollection = $checkoutSessionCollection;
         $this->resultFactory = $resultFactory;
         $this->request = $request;
         $this->messageManager = $messageManager;
+        $this->tokenHelper = $tokenHelper;
+        $this->stripePaymentIntentFactory = $stripePaymentIntentFactory;
     }
 
     public function execute()
@@ -64,13 +69,19 @@ class Index implements ActionInterface
 
     private function error($message, $order = null)
     {
+        if ($order && $this->isPaid($order))
+        {
+            return $this->success($order);
+        }
+
         $this->checkoutSession->restoreQuote();
 
         if ($order)
         {
             $this->checkoutSession->setLastRealOrderId($order->getIncrementId());
-            $order->addStatusHistoryComment($message);
+            $this->orderHelper->removeTransactions($order);
             $this->helper->cancelOrCloseOrder($order, true, true);
+            $order->addStatusHistoryComment($message);
             $this->orderHelper->saveOrder($order);
         }
 
@@ -78,90 +89,139 @@ class Index implements ActionInterface
         return $this->redirect('checkout/cart');
     }
 
+    private function isPaid($order)
+    {
+        $transactionId = $order->getPayment()->getLastTransId();
+        $transactionId = $this->tokenHelper->cleanToken($transactionId);
+        if (!$this->tokenHelper->isPaymentIntentToken($transactionId))
+            return false;
+
+        $stripePaymentIntent = $this->stripePaymentIntentFactory->create()->fromPaymentIntentId($transactionId);
+        if ($stripePaymentIntent->wasSuccessfullyAuthorized())
+            return true;
+
+        return false;
+    }
+
     private function returnFromPaymentElement()
     {
         $paymentIntentId = $this->request->getParam('payment_intent');
+        $setupIntentId = $this->request->getParam('setup_intent');
 
-        if (empty($paymentIntentId))
+        if ($paymentIntentId)
+        {
+            $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId, []);
+            $setupIntent = null;
+        }
+        else if ($setupIntentId)
+        {
+            $paymentIntent = null;
+            $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($setupIntentId, []);
+        }
+        else
         {
             // The customer was redirected here right from the checkout page, rather than an external URL.
             // This can happen when 3DS was performed on the checkout page, and the redirect is necessary to de-activate the quote.
             return $this->success();
         }
 
-        $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId, []);
+        $quote = $this->checkoutSession->getQuote();
 
-        $this->paymentElement->load($paymentIntentId, 'payment_intent_id');
-        $orderIncrementId = $this->paymentElement->getOrderIncrementId();
-
-        // This should also never happen, but we are gracefully handling the case if it does.
-        if (empty($orderIncrementId))
-            return $this->success();
-
-        $order = $this->orderFactory->create()->loadByIncrementId($orderIncrementId);
-        if (!$order->getId())
-            return $this->error(__("Your order #%1 could not be placed. Please contact us for assistance.", $orderIncrementId));
-
-        if ($this->paymentIntentHelper->isSuccessful($paymentIntent) ||
-            $this->paymentIntentHelper->requiresOfflineAction($paymentIntent) ||
-            $this->paymentIntentHelper->isAsyncProcessing($paymentIntent))
+        if ($this->multishippingHelper->isMultishippingQuote(null, $quote))
         {
-            return $this->success($order);
+            if ($this->paymentIntentHelper->isSuccessful($paymentIntent ?? $setupIntent) ||
+                $this->paymentIntentHelper->requiresOfflineAction($paymentIntent ?? $setupIntent) ||
+                $this->paymentIntentHelper->isAsyncProcessing($paymentIntent ?? $setupIntent))
+            {
+                $redirectUrl = $this->multishippingHelper->getFinalRedirectUrl($quote->getId());
+                return $this->redirect($redirectUrl);
+            }
+            else
+            {
+                $message = __('Payment failed. Please try placing the order again.');
+                $this->multishippingHelper->setAddressErrorForRemainingOrders($quote, $message);
+                $redirectUrl = $this->multishippingHelper->getFinalRedirectUrl($quote->getId());
+                $this->multishippingHelper->cancelOrdersForQuoteId($quote->getId(), $message);
+                return $this->redirect($redirectUrl);
+            }
         }
         else
         {
-            return $this->error(__('Payment failed. Please try placing the order again.'), $order);
+            if ($paymentIntentId)
+                $this->paymentElement->load($paymentIntentId, 'payment_intent_id');
+            else
+                $this->paymentElement->load($setupIntentId, 'setup_intent_id');
+
+            $orderIncrementId = $this->paymentElement->getOrderIncrementId();
+
+            if (!$orderIncrementId)
+            {
+                // If this ever hits, there is a bug with saving the order increment ID in the payment element table.
+                $orderIncrementId = $this->checkoutSession->getLastRealOrderId();
+            }
+
+            // This hits on the multishipping checkout when a redirect-based payment method like PayPal is used.
+            if (empty($orderIncrementId))
+                return $this->success();
+
+            $order = $this->orderHelper->loadOrderByIncrementId($orderIncrementId);
+            if (!$order)
+                return $this->error(__("Your order #%1 could not be placed. Please contact us for assistance.", $orderIncrementId));
+
+            $redirectStatus = $this->request->getParam('redirect_status');
+            if ($redirectStatus == 'failed')
+            {
+                return $this->error(__('Payment failed. Please try placing the order again.'), $order);
+            }
+            else
+            {
+                return $this->success($order);
+            }
         }
     }
 
     private function returnFromStripeCheckout()
     {
-        $sessionId = $this->checkoutSession->getStripePaymentsCheckoutSessionId();
-        if (empty($sessionId))
+        $checkoutSessionId = $this->checkoutSession->getStripePaymentsCheckoutSessionId();
+        if (empty($checkoutSessionId))
             return $this->error(__("Your order was placed successfully, but your browser session has expired. Please check your email for an order confirmation."));
 
-        $checkoutSessionModel = $this->checkoutSessionFactory->create()->load($sessionId, "checkout_session_id");
+        $checkoutSessionModel = $this->checkoutSessionCollection->getByCheckoutSessionId($checkoutSessionId);
         $incrementId = $checkoutSessionModel->getOrderIncrementId();
         if (empty($incrementId))
             return $this->error(__("Cannot resume checkout session. Please contact us for help."));
 
-        $order = $this->orderFactory->create()->loadByIncrementId($incrementId);
+        $order = $checkoutSessionModel->getOrder();
         if (!$order->getId())
             return $this->error(__("Your order #%1 could not be placed. Please contact us for assistance.", $incrementId));
 
-        // Retrieve payment intent
         try
         {
             /** @var \Stripe\Checkout\Session $session */
-            $session = $this->config->getStripeClient()->checkout->sessions->retrieve($sessionId, ['expand' => ['payment_intent', 'subscription.latest_invoice']]);
-
-            if (empty($session->id))
-                return $this->error(__('The checkout session for order #%1 could not be retrieved from Stripe', $incrementId), $order);
+            $session = $this->config->getStripeClient()->checkout->sessions->retrieve($checkoutSessionId, ['expand' => ['payment_intent', 'setup_intent']]);
 
             if ($session->status == "complete")
             {
-                // Paid subscriptions and normal orders
-                return $this->stripeCheckoutSuccess($session, $order);
+                return $this->success($order);
             }
-            else if (!empty($session->payment_intent))
+            else if ($session->status == "expired")
             {
-                // Regular orders
-                switch ($session->payment_intent->status) {
-                    case 'succeeded':
-                    case 'processing':
-                    case 'requires_capture': // Authorize Only mode
-                        return $this->stripeCheckoutSuccess($session, $order);
-                    default:
-                        break;
-                }
+                return $this->error(__("The payment session has expired. Please try placing the order again."), $order);
             }
 
             if (!empty($session->payment_intent->last_payment_error->message))
-                $error = __('Payment failed: %1. Please try placing the order again.', trim($session->payment_intent->last_payment_error->message, "."));
+            {
+                return $this->error(__($session->payment_intent->last_payment_error->message), $order);
+            }
+            else if (!empty($session->setup_intent->last_setup_error->message))
+            {
+                return $this->error(__($session->setup_intent->last_setup_error->message), $order);
+            }
             else
-                $error = __('Payment failed. Please try placing the order again.');
-
-            return $this->error($error, $order);
+            {
+                $this->checkoutSession->restoreQuote();
+                return $this->redirect('checkout');
+            }
         }
         catch (\Exception $e)
         {
@@ -170,27 +230,11 @@ class Index implements ActionInterface
         }
     }
 
-    protected function stripeCheckoutSuccess($session, $order)
-    {
-        if (!empty($session->subscription->latest_invoice->payment_intent))
-        {
-            $this->config->getStripeClient()->paymentIntents->update($session->subscription->latest_invoice->payment_intent,
-              ['description' => $this->orderHelper->getOrderDescription($order)]
-            );
-        }
-
-        return $this->success($order);
-    }
-
     protected function success($order = null)
     {
         $quote = $this->checkoutSession->getQuote();
 
-        if ($quote && $quote->getId())
-        {
-            $quote->setIsActive(false);
-            $this->quoteHelper->saveQuote($quote);
-        }
+        $this->quoteHelper->deactivateQuote($quote);
 
         if (!$this->checkoutSession->getLastRealOrderId() && $order)
             $this->checkoutSession->setLastRealOrderId($order->getIncrementId());

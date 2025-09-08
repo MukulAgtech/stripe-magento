@@ -6,7 +6,7 @@ use Magento\Payment\Block\ConfigurableInfo;
 
 class Invoice extends ConfigurableInfo
 {
-    protected $_template = 'form/invoice.phtml';
+    protected $_template = 'StripeIntegration_Payments::form/invoice.phtml';
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,

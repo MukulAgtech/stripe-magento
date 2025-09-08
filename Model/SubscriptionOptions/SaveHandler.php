@@ -29,8 +29,6 @@ class SaveHandler implements ExtensionInterface
     {
         if (!empty($entity->getSubscriptionOptions()) && is_array($entity->getSubscriptionOptions()))
         {
-            $attributes = $entity->getExtensionAttributes() ?: $this->productExtensionFactory->create();
-
             $input = $entity->getSubscriptionOptions();
 
             $subscriptionOptionsModel = $this->subscriptionOptionsModelFactory->create()->load($entity->getId());
@@ -38,15 +36,9 @@ class SaveHandler implements ExtensionInterface
 
             $subscriptionOptionsModel->addData($input);
 
-            $firstPayment = 'on_start_date';
-            if (isset($input['first_payment']) && $input['first_payment']) {
-                $firstPayment = $input['first_payment'];
-            }
-
-            $subscriptionOptionsModel->setProrateFirstPayment($firstPayment == 'on_order_date' ? $input['prorate_first_payment'] : 0);
             $subscriptionOptionsModel->save();
 
-            $extensionAttributes = $entity->getExtensionAttributes();
+            $extensionAttributes = $entity->getExtensionAttributes() ?? $this->productExtensionFactory->create();
             if (method_exists($extensionAttributes, 'setSubscriptionOptions'))
             {
                 $extensionAttributes->setSubscriptionOptions($subscriptionOptionsModel);

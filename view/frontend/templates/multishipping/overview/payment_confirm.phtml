@@ -3,7 +3,7 @@
   <script type="application/javascript">
     window.checkoutConfig = window.checkoutConfig || {};
 
-    window.checkoutConfig.storeCode = window.checkoutConfig.storeCode || '<?= $block->getStoreCode(); //phpcs:ignore ?>';
+    window.checkoutConfig.storeCode = window.checkoutConfig.storeCode || '<?= $block->escapeJs($block->getStoreCode()); ?>';
     require([
         'uiLayout',
         'jquery',
@@ -21,9 +21,9 @@
             window.history.back();
         }
 
-        if (!<?= $block->hasPaymentMethod() //phpcs:ignore ?>)
+        if (!<?= /* @noEscape */ $block->hasPaymentMethod() ?>)
         {
-            $.mage.redirect("<?= $block->getUrl('multishipping/checkout/billing'); //phpcs:ignore ?>");
+            $.mage.redirect("<?= $block->escapeJs($block->getUrl('multishipping/checkout/billing')); ?>");
         }
 
         var onComplete = function()
@@ -37,7 +37,7 @@
             stripe.authenticateCustomer(clientSecret, finalizeOrder);
         };
 
-        var params = <?= $block->getStripeParams(); //phpcs:ignore ?>;
+        var params = <?= /* @noEscape */ $block->getStripeParams(); ?>;
         stripe.initStripe(params, function(err)
         {
             if (err)

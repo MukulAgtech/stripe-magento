@@ -3,24 +3,20 @@
 namespace StripeIntegration\Payments\Controller\Payment;
 
 use Magento\Framework\App\ActionInterface;
-use Magento\Framework\App\RequestInterface;
 use Magento\Framework\Controller\ResultFactory;
 use Magento\Framework\Controller\ResultInterface;
 
 class Cancel implements ActionInterface
 {
     private $checkoutSession;
-    private $request;
     private $resultFactory;
 
     public function __construct(
         \Magento\Checkout\Model\Session $checkoutSession,
-        RequestInterface $request,
         ResultFactory $resultFactory
     )
     {
         $this->checkoutSession = $checkoutSession;
-        $this->request = $request;
         $this->resultFactory = $resultFactory;
     }
 
@@ -29,17 +25,10 @@ class Cancel implements ActionInterface
      */
     public function execute()
     {
-        $paymentMethodType = $this->request->getParam('payment_method');
         $lastRealOrderId = $this->checkoutSession->getLastRealOrderId();
-
-        switch ($paymentMethodType) {
-            case 'stripe_checkout':
-                $this->checkoutSession->restoreQuote();
-                $this->checkoutSession->setLastRealOrderId($lastRealOrderId);
-                return $this->redirect('checkout');
-            default:
-                return $this->redirect('checkout/cart');
-        }
+        $this->checkoutSession->restoreQuote();
+        $this->checkoutSession->setLastRealOrderId($lastRealOrderId);
+        return $this->redirect('checkout');
     }
 
     public function redirect($url, array $params = [])

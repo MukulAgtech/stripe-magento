@@ -4,6 +4,7 @@ namespace StripeIntegration\Payments\Model\Method;
 
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Payment\Model\InfoInterface;
+use StripeIntegration\Payments\Exception\AmountMismatchException;
 use StripeIntegration\Payments\Exception\GenericException;
 
 class Invoice extends \Magento\Payment\Model\Method\Adapter
@@ -11,14 +12,19 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
     public const METHOD_CODE = 'stripe_payments_invoice';
 
     private $customer;
-    private $invoiceItemFactory;
-    private $invoiceFactory;
+    private $stripeInvoiceItemModelFactory;
+    private $stripeInvoiceModelFactory;
     private $orderInvoiceFactory;
     private $cache;
     private $config;
     private $helper;
     private $tokenHelper;
     private $convert;
+    private $stripePaymentIntentFactory;
+    private $orderHelper;
+    private $areaCodeHelper;
+    private $warningsLogger;
+    private $stripeInvoiceHelper;
 
     public function __construct(
         \Magento\Framework\Event\ManagerInterface $eventManager,
@@ -31,19 +37,29 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Token $tokenHelper,
         \StripeIntegration\Payments\Helper\Convert $convert,
-        \StripeIntegration\Payments\Model\Stripe\InvoiceItemFactory $invoiceItemFactory,
-        \StripeIntegration\Payments\Model\Stripe\InvoiceFactory $invoiceFactory,
+        \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
+        \StripeIntegration\Payments\Helper\Stripe\Invoice $stripeInvoiceHelper,
+        \StripeIntegration\Payments\Logger\Warnings\Logger $warningsLogger,
+        \StripeIntegration\Payments\Model\Stripe\InvoiceItemFactory $stripeInvoiceItemModelFactory,
+        \StripeIntegration\Payments\Model\Stripe\InvoiceFactory $stripeInvoiceModelFactory,
+        \StripeIntegration\Payments\Model\Stripe\PaymentIntentFactory $stripePaymentIntentFactory,
         \StripeIntegration\Payments\Model\InvoiceFactory $orderInvoiceFactory,
         \Magento\Framework\App\CacheInterface $cache,
-        \Magento\Payment\Gateway\Command\CommandPoolInterface $commandPool = null,
-        \Magento\Payment\Gateway\Validator\ValidatorPoolInterface $validatorPool = null
+        ?\Magento\Payment\Gateway\Command\CommandPoolInterface $commandPool = null,
+        ?\Magento\Payment\Gateway\Validator\ValidatorPoolInterface $validatorPool = null
     ) {
         $this->config = $config;
         $this->helper = $helper;
         $this->convert = $convert;
+        $this->orderHelper = $orderHelper;
+        $this->areaCodeHelper = $areaCodeHelper;
+        $this->stripeInvoiceHelper = $stripeInvoiceHelper;
+        $this->warningsLogger = $warningsLogger;
         $this->customer = $helper->getCustomerModel();
-        $this->invoiceItemFactory = $invoiceItemFactory;
-        $this->invoiceFactory = $invoiceFactory;
+        $this->stripeInvoiceItemModelFactory = $stripeInvoiceItemModelFactory;
+        $this->stripeInvoiceModelFactory = $stripeInvoiceModelFactory;
+        $this->stripePaymentIntentFactory = $stripePaymentIntentFactory;
         $this->orderInvoiceFactory = $orderInvoiceFactory;
         $this->cache = $cache;
         $this->tokenHelper = $tokenHelper;
@@ -60,7 +76,7 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         );
     }
 
-    public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
+    public function isAvailable(?\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
         if (!$this->config->isEnabled())
             return false;
@@ -84,7 +100,7 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
         return $this;
     }
 
-    public function capture(InfoInterface $payment, $amount)
+    public function order(InfoInterface $payment, $amount)
     {
         if ($amount > 0)
         {
@@ -109,23 +125,50 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
 
     public function createInvoice($order, $customerId)
     {
-        $currencyCode = $order->getOrderCurrencyCode();
         $items = $order->getAllItems();
 
         if (empty($items))
-            throw new GenericException("Could not create Stripe invoice because the order contains no items.");
-
-        $this->invoiceItemFactory->create()->fromOrderGrandTotal($order, $customerId);
-        $invoice = $this->invoiceFactory->create()->fromOrder($order, $customerId);
-        if ($invoice->getId())
         {
-            $this->orderInvoiceFactory->create()
-                ->setInvoiceId($invoice->getId())
-                ->setOrderIncrementId($order->getIncrementId())
-                ->save();
+            return $this->helper->throwError(__("Could not create Stripe invoice because the order contains no items."));
         }
 
-        return $invoice;
+        $magentoInvoice = $this->orderHelper->createInvoice($order);
+        $invoiceParams = $this->stripeInvoiceHelper->getStripeInvoiceParams($magentoInvoice);
+        $stripeInvoiceModel = $this->stripeInvoiceModelFactory->create()->fromOrder($order, $customerId, $invoiceParams);
+        if (!$stripeInvoiceModel->getId())
+        {
+            return $this->helper->throwError(__("Could not create Stripe invoice for order #%1", $order->getIncrementId()));
+        }
+
+        try
+        {
+            $stripeInvoiceModel->buildFromOrderBreakdown($order);
+        }
+        catch (\Exception $e)
+        {
+            $this->warningsLogger->warning("Stripe Billing invoice breakdown failed: " . $e->getMessage());
+            if ($e instanceof AmountMismatchException)
+            {
+                $stripeInvoiceModel->archive();
+            }
+            else
+            {
+                $stripeInvoiceModel->destroy();
+            }
+            $stripeInvoiceModel = $this->stripeInvoiceModelFactory->create()->fromOrder($order, $customerId, $invoiceParams);
+            $this->stripeInvoiceItemModelFactory->create()->fromOrderGrandTotal($order, $customerId, $stripeInvoiceModel->getId());
+            if ($this->areaCodeHelper->isAdmin())
+            {
+                $this->helper->addWarning("The created invoice was not broken down into invoice items: " . $e->getMessage());
+            }
+        }
+
+        $this->orderInvoiceFactory->create()
+            ->setInvoiceId($stripeInvoiceModel->getId())
+            ->setOrderIncrementId($order->getIncrementId())
+            ->save();
+
+        return $stripeInvoiceModel;
     }
 
     public function refund(InfoInterface $payment, $amount)
@@ -145,11 +188,12 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
 
         $currency = $payment->getOrder()->getOrderCurrencyCode();
 
-        $transactionId = $this->tokenHelper->cleanToken($payment->getLastTransId());
+        $paymentIntentId = $this->tokenHelper->cleanToken($payment->getLastTransId());
 
-        // Case where an invoice is in Pending status, with no transaction ID, receiving a source.failed event which cancels the invoice.
-        if (empty($transactionId))
-            return $this;
+        if (empty($paymentIntentId))
+        {
+            return $this->helper->throwError('Could not refund payment: PaymentIntent ID is missing');
+        }
 
         try
         {
@@ -158,13 +202,12 @@ class Invoice extends \Magento\Payment\Model\Method\Adapter
             if ($amount > 0)
                 $params["amount"] = $this->convert->magentoAmountToStripeAmount($amount, $currency);
 
-            $pi = \Stripe\PaymentIntent::retrieve($transactionId);
-            $charge = $pi->charges->data[0];
+            $stripePaymentIntentModel = $this->stripePaymentIntentFactory->create()->fromPaymentIntentId($paymentIntentId);
 
-            $params["charge"] = $charge->id;
+            $params["charge"] = $stripePaymentIntentModel->getStripeObject()->latest_charge;
 
             // This is true when an authorization has expired or when there was a refund through the Stripe account
-            $this->cache->save($value = "1", $key = "admin_refunded_" . $charge->id, ["stripe_payments"], $lifetime = 60 * 60);
+            $this->cache->save($value = "1", $key = "admin_refunded_" . $params["charge"], ["stripe_payments"], $lifetime = 60 * 60);
             $refund = $this->config->getStripeClient()->refunds->create($params);
         }
         catch (\Exception $e)

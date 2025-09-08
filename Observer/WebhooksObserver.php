@@ -25,9 +25,6 @@ class WebhooksObserver implements ObserverInterface
     private $paymentIntentPaymentFailed;
     private $paymentIntentPartiallyFunded;
     private $setupIntentSucceeded;
-    private $sourceChargeable;
-    private $sourceCanceled;
-    private $sourceFailed;
     private $chargeSucceeded;
     private $invoicePaid;
     private $invoiceUpcoming;
@@ -49,9 +46,6 @@ class WebhooksObserver implements ObserverInterface
         Event\PaymentIntentPaymentFailed $paymentIntentPaymentFailed,
         Event\PaymentIntentPartiallyFunded $paymentIntentPartiallyFunded,
         Event\SetupIntentSucceeded $setupIntentSucceeded,
-        Event\SourceChargeable $sourceChargeable,
-        Event\SourceCanceled $sourceCanceled,
-        Event\SourceFailed $sourceFailed,
         Event\ChargeSucceeded $chargeSucceeded,
         Event\InvoicePaid $invoicePaid,
         Event\InvoiceUpcoming $invoiceUpcoming
@@ -73,9 +67,6 @@ class WebhooksObserver implements ObserverInterface
         $this->paymentIntentPaymentFailed = $paymentIntentPaymentFailed;
         $this->paymentIntentPartiallyFunded = $paymentIntentPartiallyFunded;
         $this->setupIntentSucceeded = $setupIntentSucceeded;
-        $this->sourceChargeable = $sourceChargeable;
-        $this->sourceCanceled = $sourceCanceled;
-        $this->sourceFailed = $sourceFailed;
         $this->chargeSucceeded = $chargeSucceeded;
         $this->invoicePaid = $invoicePaid;
         $this->invoiceUpcoming = $invoiceUpcoming;
@@ -181,21 +172,6 @@ class WebhooksObserver implements ObserverInterface
             case 'stripe_payments_webhook_setup_intent_succeeded':
 
                 $this->setupIntentSucceeded->process($arrEvent, $object);
-                break;
-
-            case 'stripe_payments_webhook_source_chargeable':
-
-                $this->sourceChargeable->process($arrEvent, $object);
-                break;
-
-            case 'stripe_payments_webhook_source_canceled':
-
-                $this->sourceCanceled->process($arrEvent, $object);
-                break;
-
-            case 'stripe_payments_webhook_source_failed':
-
-                $this->sourceFailed->process($arrEvent, $object);
                 break;
 
             case 'stripe_payments_webhook_charge_succeeded':

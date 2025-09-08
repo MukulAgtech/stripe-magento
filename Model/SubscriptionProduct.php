@@ -3,29 +3,49 @@
 namespace StripeIntegration\Payments\Model;
 
 use StripeIntegration\Payments\Exception\InvalidSubscriptionProduct;
+use Magento\Store\Model\StoreManagerInterface;
+use Magento\Directory\Model\CurrencyFactory;
+use Magento\Framework\Exception\NoSuchEntityException;
 
 class SubscriptionProduct
 {
     private $product = null;
     private $subscriptionDetails = null;
-
-    private $helper;
-    protected $subscriptionHelper;
+    private $subscriptionHelper;
+    private $storeManager;
+    private $currencyFactory;
+    private $productHelper;
+    private $checkoutSessionHelper;
 
     public function __construct(
-        \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionHelper
+        \StripeIntegration\Payments\Helper\Product $productHelper,
+        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionHelper,
+        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSessionHelper,
+        StoreManagerInterface $storeManager,
+        CurrencyFactory $currencyFactory
     )
     {
-        $this->helper = $helper;
+        $this->productHelper = $productHelper;
         $this->subscriptionHelper = $subscriptionHelper;
+        $this->checkoutSessionHelper = $checkoutSessionHelper;
+        $this->storeManager = $storeManager;
+        $this->currencyFactory = $currencyFactory;
     }
 
     public function fromQuoteItem($item)
     {
         if (empty($item) || !$item->getProduct())
             throw new InvalidSubscriptionProduct("Invalid quote item.");
-        $product = $this->helper->loadProductById($item->getProduct()->getId());
+
+        try
+        {
+            $product = $this->productHelper->getProduct($item->getProduct()->getId());
+        }
+        catch (NoSuchEntityException $e)
+        {
+            return $this;
+        }
+
         if ($this->_isSubscriptionProduct($product))
         {
             $this->product = $product;
@@ -39,7 +59,16 @@ class SubscriptionProduct
     {
         if (empty($orderItem) || !$orderItem->getProductId())
             throw new InvalidSubscriptionProduct("Invalid order item.");
-        $product = $this->helper->loadProductById($orderItem->getProductId());
+
+        try
+        {
+            $product = $this->productHelper->getProduct($orderItem->getProductId());
+        }
+        catch (NoSuchEntityException $e)
+        {
+            return $this;
+        }
+
         if ($this->_isSubscriptionProduct($product))
         {
             $this->product = $product;
@@ -54,7 +83,15 @@ class SubscriptionProduct
         if (empty($productId))
             throw new InvalidSubscriptionProduct("Invalid product ID.");
 
-        $product = $this->helper->loadProductById($productId);
+        try
+        {
+            $product = $this->productHelper->getProduct($productId);
+        }
+        catch (NoSuchEntityException $e)
+        {
+            return $this;
+        }
+
         if ($this->_isSubscriptionProduct($product))
         {
             $this->product = $product;
@@ -64,9 +101,9 @@ class SubscriptionProduct
         return $this;
     }
 
-    public function getIsSaleable()
+    public function getIsSalable()
     {
-        return $this->product && $this->product->getIsSalable();
+        return $this->getProduct()->getIsSalable();
     }
 
     public function hasStartDate()
@@ -88,20 +125,83 @@ class SubscriptionProduct
         return true;
     }
 
+    public function getStartDate()
+    {
+        if ($this->hasStartDate()) {
+            return $this->subscriptionDetails->getStartDate();
+        }
+
+        return null;
+    }
+
+    public function getTrialEnd()
+    {
+        if ($this->hasTrialPeriod()) {
+            $date = new \DateTime();
+            $date->modify('+' . $this->getTrialDays() . ' days');
+
+            return $date->format('Y-m-d H:i:s');
+        }
+
+        return null;
+    }
+
     public function startsOnOrderDate()
     {
         return $this->hasStartDate() && $this->subscriptionDetails->getFirstPayment() == "on_order_date";
     }
 
+    public function startsOnStartDate()
+    {
+        return $this->hasStartDate() && $this->subscriptionDetails->getFirstPayment() == "on_start_date";
+    }
+
+    public function hasZeroInitialOrderPrice()
+    {
+        if ($this->hasTrialPeriod())
+        {
+            return true;
+        }
+
+        if ($this->startsOnStartDate() && !$this->startDateIsToday())
+        {
+            return true;
+        }
+
+        if ($this->checkoutSessionHelper->isSubscriptionUpdate())
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function startDateIsToday()
+    {
+        if (!$this->hasStartDate())
+            return false;
+
+        $startDate = strtotime($this->subscriptionDetails->getStartDate());
+
+        return (date("d") == date("d", $startDate));
+    }
+
     public function getProduct()
     {
+        if (!$this->product)
+        {
+            throw new InvalidSubscriptionProduct("Invalid subscription product.");
+        }
+
         return $this->product;
     }
 
     public function getProductId()
     {
         if (!$this->product)
-            return null;
+        {
+            throw new InvalidSubscriptionProduct("Invalid subscription product.");
+        }
 
         return $this->product->getId();
     }
@@ -111,10 +211,14 @@ class SubscriptionProduct
         $product = $this->product;
 
         if (!$product)
-            return null;
+        {
+            throw new InvalidSubscriptionProduct("Invalid subscription product.");
+        }
 
         if (!$this->subscriptionDetails)
-            return null;
+        {
+            throw new InvalidSubscriptionProduct("Subscription details not found.");
+        }
 
         if ($this->hasStartDate())
             return null;
@@ -217,27 +321,131 @@ class SubscriptionProduct
 
     public function getSubscriptionDetails()
     {
+        if (!$this->subscriptionDetails)
+        {
+            throw new InvalidSubscriptionProduct("Subscription details not found.");
+        }
+
         return $this->subscriptionDetails;
     }
 
     public function canChangeSubscription()
     {
-        return ($this->subscriptionDetails && $this->subscriptionDetails->getUpgradesDowngrades());
+        return ($this->getSubscriptionDetails()->getUpgradesDowngrades());
     }
 
-    public function useProrationsForUpgrades()
+    public function getFormattedInterval()
     {
-        if (!$this->canChangeSubscription())
-            return false;
+        $subscriptionDetails = $this->getSubscriptionDetails();
 
-        return ($this->subscriptionDetails && $this->subscriptionDetails->getProrateUpgrades());
+        $intervalCount = $subscriptionDetails->getSubIntervalCount();
+        $interval = ucfirst($subscriptionDetails->getSubInterval());
+        $plural = ($intervalCount > 1 ? 's' : '');
+
+        return "$intervalCount $interval$plural";
     }
 
-    public function useProrationsForDowngrades()
+    public function getBaseInitialFeeAmount()
     {
-        if (!$this->canChangeSubscription())
-            return false;
+        $subscriptionOptionDetails = $this->getSubscriptionDetails();
 
-        return ($this->subscriptionDetails && $this->subscriptionDetails->getProrateDowngrades());
+        $subInitialFee = $subscriptionOptionDetails->getSubInitialFee();
+
+        if (!is_numeric($subInitialFee) || $subInitialFee < 0)
+            return 0;
+
+        return $subInitialFee;
+    }
+
+    public function getInterval()
+    {
+        if (!$this->subscriptionDetails)
+        {
+            throw new InvalidSubscriptionProduct("Subscription details not found.");
+        }
+
+        return $this->subscriptionDetails->getSubInterval();
+    }
+
+    public function getIntervalCount()
+    {
+        if (!$this->subscriptionDetails)
+        {
+            throw new InvalidSubscriptionProduct("Subscription details not found.");
+        }
+
+        return $this->subscriptionDetails->getSubIntervalCount();
+    }
+
+    public function getInitialFeeAmount($qty = 1, $rate = null, $currencyCode = null)
+    {
+        $baseInitialFee = $this->getBaseInitialFeeAmount() * $qty;
+
+        if ($baseInitialFee <= 0)
+            return 0;
+
+        if ($rate == 1)
+            return $baseInitialFee;
+
+        if (!$rate)
+        {
+            $store = $this->storeManager->getStore();
+            $baseCurrencyCode = $store->getBaseCurrency()->getCode();
+
+            if ($currencyCode)
+            {
+                $currentCurrencyCode = $currencyCode;
+            }
+            else
+            {
+                $currentCurrencyCode = $store->getCurrentCurrency()->getCode();
+            }
+
+            if (!$baseCurrencyCode || !$currentCurrencyCode)
+                return $baseInitialFee;
+
+            if ($baseCurrencyCode == $currentCurrencyCode)
+                return $baseInitialFee;
+
+            $baseCurrency = $this->currencyFactory->create()->load($baseCurrencyCode);
+            $rate = $baseCurrency->getRate($currentCurrencyCode);
+
+            if (!$rate) {
+                return $baseInitialFee;
+            }
+        }
+
+        return round(floatval($baseInitialFee * $rate), 2);
+    }
+
+    public function getStartDateLabel($startDate = null): ?\Magento\Framework\Phrase
+    {
+        if (!$startDate && $this->hasStartDate()) {
+            $startDate = strtotime($this->getStartDate());
+        }
+        $trialEnd = $this->getTrialEnd();
+
+        if ($trialEnd) {
+            $trialEnd = date("F jS", strtotime($trialEnd));
+
+            return __("Trialing until %1", $trialEnd);
+        } elseif ($startDate) {
+            $startDate = date("F jS", $startDate);
+
+            return __("Starting on %1", $startDate);
+        }
+
+        return null;
+    }
+
+    public function getFrequencyLabel(): \Magento\Framework\Phrase
+    {
+        $interval = $this->getInterval();
+        $count = $this->getIntervalCount();
+
+        if ($count > 1)
+            return __("/ %1 %2", $count, __($interval . "s"));
+        else
+            return __("/ %1", __($interval));
     }
 }

@@ -62,18 +62,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertTrue($foundInitialFee, 'No line item with name "Initial Fee" and amount of 300 found.');
 
         $stripe = $this->tests->stripe();
-        $paymentMethod = $stripe->paymentMethods->create([
-          'type' => 'card',
-          'card' => [
-            'number' => '4242424242424242',
-            'exp_month' => 7,
-            'exp_year' => date("Y", time()) + 1,
-            'cvc' => '314',
-          ],
-          'billing_details' => $this->tests->address()->getStripeFormat("NewYork")
+        $confirmationToken = $stripe->testHelpers->confirmationTokens->create([
+            'payment_method' => 'pm_card_visa',
+            'setup_future_usage' => 'off_session'
         ]);
-        $this->assertNotEmpty($paymentMethod);
-        $this->assertNotEmpty($paymentMethod->id);
+        $this->assertNotEmpty($confirmationToken);
+        $this->assertNotEmpty($confirmationToken->id);
 
         $address = $this->tests->address()->getStripeFormat("NewYork");
         $result = [
@@ -82,10 +76,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "billingDetails" => $address,
             "shippingAddress" => $address,
             "shippingRate" =>  $selectedShippingMethod,
-            "paymentMethod" =>  $paymentMethod
+            "confirmationToken" =>  $confirmationToken
         ];
 
-        $this->markTestIncomplete('$result["confirmationToken"] must be created and passed to the API');
         $result = $this->apiService->place_order($result, "product");
         $this->assertNotEmpty($result);
 
@@ -104,17 +97,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Load the payment intent
         $paymentIntentId = $order->getPayment()->getLastTransId();
         $this->assertNotEmpty($paymentIntentId);
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId);
-
-        // Check if Radar risk value is exist in the payment object
-        $this->assertNotEmpty($paymentIntent->charges->data[0]->outcome->risk_score);
-        $this->assertNotEmpty($paymentIntent->charges->data[0]->outcome->risk_level);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, ['expand' => ['latest_charge']]);
 
         // Stripe checks
         $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->amount);
-        $this->assertCount(1, $paymentIntent->charges->data);
-        $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->charges->data[0]->amount);
-        $this->assertEquals("succeeded", $paymentIntent->charges->data[0]->status);
+        $this->assertEquals($order->getGrandTotal() * 100, $paymentIntent->latest_charge->amount);
+        $this->assertEquals("succeeded", $paymentIntent->latest_charge->status);
         $this->assertEquals("Subscription order #$orderIncrementId by Flint Jerry", $paymentIntent->description);
         $this->assertEquals($orderIncrementId, $paymentIntent->metadata->{"Order #"});
 

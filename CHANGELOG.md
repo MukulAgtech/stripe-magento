@@ -1,6 +1,299 @@
 # Changelog
 
-## 4.0.0-beta-2
+## 4.4.7 - 2025-09-02
+
+- Made it easier to customize initialization config of Express Checkout
+- An unhandled scenario with 3DS wallet payments would place the order in Payment Review status instead of Pending Payment status, with no ability to cancel the order.
+- Increased the Express Checkout Element's container minimum width from 240px to 248px. Required after internal ECE updates, otherwise ECE may not display on product pages.
+- Two fixes with 3DS payments when wallets are used from the product page and manual authentication is disabled.
+- In some cases when paying with a wallet via Express Checkout, the customer name and phone on the shipping address was incorrect.
+- When canceling an uncaptured payment that was under review, the Magento order would not be unholded.
+- Minor UI improvements in the admin area.
+
+## 4.4.6 - 2025-08-04
+
+- Added html and js escaping in all phtml templates.
+- Fixed a multishipping CSP issue, preventing the payment form from initializing.
+- Added minicart invalidation when returning from external payment authorization pages.
+
+## 4.4.5 - 2025-07-11
+
+- The Stripe Radar risk score and the payment method type are now set immediately when the order is placed, rather than when the charge.succeeded event is processed.
+- The Billie payment method now supports Authorize Only mode.
+- Added admin and email icons for the TWINT and Billie payment methods.
+- If the phone number format at the checkout is invalid, some payment methods like MB Way will now prompt the customer to re-enter the phone number.
+- Express Checkout wallet buttons were not visible at the product pages with Luma theme and some narrow screen widths.
+- In Magento 2.4.8, customers who bought a subscription were not able to update it's shipping details from the My Subscriptions page.
+- When using the "Order" payment action, placed orders could not be edited after the setup_intent.succeeded event was processed.
+- Fixed a Bank Transfers error for Spanish customers.
+
+## 4.4.4 - 2025-05-28
+
+- Made several block templates easier to overwrite.
+- The place order button would intermittently be re-enabled while the order was still being placed.
+- Discount coupon usage increment logic now also applies to Express Checkout.
+
+## 4.4.3 - 2025-05-12
+
+- Klarna can be configured from the admin as an Express Checkout wallet.
+- The Satispay payment method supports Authorize Only mode.
+- Added support for extended authorizations, for both the embedded and redirect based flows. Can be enabled from etc/config.xml.
+- Added setting in etc/config.xml to disable missing order emails.
+- Added admin and email icons for ScalaPay, Satispay and Affirm.
+- Fixed an issue where a missing order email would be sent unnecessarily.
+- Fixed a PDF printing issue for invoices and shipment documents in the admin area.
+- Fixed an issue where coupons that can only be applied once, could not be used with the redirect payment flow (Stripe Checkout).
+- Fixed an order cancelation issue with the redirect payment flow.
+
+## 4.4.2 - 2025-04-11
+
+- Compatibility with Magento 2.4.8 and PHP 8.4.
+- Critical security fix.
+- The SOFORT payment method has been deprecated.
+- The My payment methods link was not displaying with some module configurations.
+- When charge.succeeded webhook event is processed, the customer cart is deactivated. The customer no longer needs to return to the website.
+- When customers place orders with wallets such as Google Pay, and the shipping address name is different than the billing address name, the name on the order's shipping address was incorrect.
+- Fixed an admin error "No such PaymentMethod" when placing an admin order with multiple configured Stripe accounts.
+
+## 4.4.1 - 2025-03-24
+
+- When an order placed with ACH requires microdeposit verifications, the cart will be deactivated after the redirect, the sales email will be sent immediately, and a link to the verification page will be included in the email.
+- Orders placed with certain payment methods, were not cancelable while in Pending Payment status, causing reserved inventory issues.
+- Fixed an issue where if both a subscription's tax percent and price change, the invoice.upcoming event would update both the price and tax. It will now only update the tax.
+- Fixed a template localization bug with bank transfers in the admin area, causing a crash when placing the order.
+- Fixed a bug where subscriptions with start dates that are configured to also collect a payment on the order date, would not create an order on the start date (subsequent billing cycles unaffected).
+- Fixed incorrect Stripe Checkout session amount when buying mixed products and subscriptions with trial periods or start dates.
+- Cleaned unused code from the codebase.
+
+## 4.4.0 - 2025-03-12
+
+- Upgraded Stripe Tax submodule to 1.1.0, which now supports customer group tax exemptions.
+- Added support for Adobe Commerce gift cards, store credit and reward points when purchasing subscriptions.
+- Bank transfers have been added in the admin area as a new payment method.
+- Bank transfers are now supported in all EU countries.
+- Stripe Billing invoices will now be broken down into line items, tax rates, prices, discounts etc. The Magento invoice number now matches the Stripe invoice number.
+- Simplified checkout sidebar totals when a subscription with trial period or start date is purchased.
+- Improved support for Revolut Pay and Alma.
+- Added new cookbook on customizing webhook events.
+- Stripe API upgraded to 2024-10-28.acacia.
+- REST API endpoint `/stripe/payments/get_trialing_subscriptions` has been renamed to `/stripe/payments/get_future_subscriptions`. It will now include subscriptions with start dates.
+
+## 4.3.5 - 2025-03-11
+
+- Trial subscriptions and subscriptions with start dates could not be purchased using the redirect payment flow (Stripe Checkout).
+- Updated WeChat Pay icons in the admin and emails.
+- QR code based payment methods were sending the order email before the payment succeeded. This will now be sent after the payment succeeds.
+- Fixed an issue causing delayed processing of certain queued webhook events.
+- Fixed a bug with downloadable products affecting Magento versions 2.4.7 and newer.
+
+## 4.3.4 - 2025-02-17
+
+- When more than 9 shipping methods were enabled, Express Checkout would fail to load. These are now filtered to a maximum of 9.
+- Fixed an error when placing a subscription order from the admin area.
+- Disabled CVC check for saved cards when placing an order from the admin area.
+- Improvements in the subscriptions reactivation flow.
+- Added handling logic for several scenarios that would fail if a subscription product is deleted from the admin area.
+- Added more information in checkout error emails.
+- Fixed an address error at the product pages for an Express Checkout wallet that does not provide the billing address.
+
+## 4.3.3 - 2025-02-07
+
+- When the 'Save payment method' setting was enabled, alternative payment methods which cannot be saved were not available in the redirect flow (Stripe Checkout). These can now be used regardless of the setting.
+- In cases where a payment is collected but the charge.succeeded webhook event fails to arrive, orders placed with the redirect flow (Stripe Checkout) will no longer be canceled/closed by Magento's cron.
+- Certain redirect based methods such as Alipay and Revolut Pay, were sending the sales order email before the payment succeeded.
+- Added icons for Revolut Pay in the admin area and emails.
+- Fixed an issue where canceled subscriptions whose old payment method was deleted, could not be reactivated (affects 4.3.0 - 4.3.2).
+- Fixed an incomplete billing address error when Express Checkout was used from the cart page.
+- One fix and several checkout flow improvements when upgrading or downgrading subscriptions.
+
+## 4.3.2 - 2025-01-29
+
+- The "Initial Fee Tax" total was appearing on orders which have no subscriptions.
+- Configurable subscription products could not be purchased with 100% discount coupons.
+- Stripe Checkout sales emails were missing the payment method icon and name (affects 4.2.0 - 4.3.1).
+- Improvements to the webhooks order recovery system.
+
+## 4.3.1 - 2025-01-15
+
+- Implemented a new exception handler which notifies the store admin email when a payment is collected but a checkout crash prevents the order from being saved.
+- Fixed two issues that could cause orders to be canceled or closed while the payment is still being processed, or has succeeded asynchronously.
+- Fixed an issue when refunding orders that include subscriptions with initial fees.
+
+## 4.3.0 - 2025-01-08
+
+- Link is now explicitly disabled in the admin area CardElement.
+- When a cart contains a gift card, the virtual payment method configuration will be used.
+- Compatibility improvements between wallets and OneStepCheckout (OSC) modules when processing the region ID from the modal to the server side.
+- Controller endpoint `GET /stripe/customer/subscriptions/cancel` has changed to `POST /stripe/subscriptions/cancel`.
+- Controller endpoint `GET /stripe/customer/subscriptions/reactivate` has changed to `POST /stripe/subscriptions/reactivate`.
+- Controller endpoint `GET /stripe/customer/subscriptions/edit` has changed to `POST /stripe/subscriptions/change`.
+- Controller endpoint `GET /stripe/customer/subscriptions/changeshipping` has changed to `POST /stripe/subscriptions/changeshipping`.
+- Controller endpoint `GET /stripe/customer/subscriptions/changecard` has changed to `POST /stripe/subscriptions/changepaymentmethod`.
+- Removed deprecated controller endpoint `GET /stripe/customer/paymentmethods/delete`.
+- Added CSRF validations to controller endpoints.
+
+## 4.2.1 - 2024-12-04
+
+- Upgraded Stripe Tax submodule to v1.0.2.
+- Added Amazon Pay icons to admin area and sales emails.
+- Various improvements with Korean payment methods.
+- Payment method deduplication is skipped if the payment method is used with an active subscription.
+- Added cookbook on how to disable Express Checkout shipping methods.
+- Improvements to the fallback system that asynchronously places orders via webhook events.
+- Added more order comments when orders are canceled.
+- When saving payment methods were disabled, customers would not be able to change a subscription's payment method.
+- Fixed an issue with the admin "Invoice via Stripe Billing" payment method where form validation errors could corrupt the final invoice amount.
+
+## 4.2.0 - 2024-11-14
+
+- Express Checkout now supports Amazon Pay at product pages, minicart, shopping cart and checkout section.
+- Express Checkout wallet buttons will appear expanded by default. A new configuration setting has been added that can be used to revert to the old collapsed format if needed.
+- The "Payment Method Configuration" setting has been split into two, one that applies to all carts, and one that only applies to virtual carts. Can be used to filter out payment methods for gift carts and other virtual items.
+- Trial subscriptions and subscriptions with start dates will display additional subscription information at the order view page and sales emails.
+- Added support for overcapture, multicapture and external payment methods. Added 3 new cookbooks under `resources/cookbooks/` explaining how to enable these.
+- Various improvements with Stripe Checkout (redirect flow). Incomplete payment intents will no longer appear in the Stripe dashboard.
+- Upgraded to Stripe API version 2024-09-30.acacia.
+
+## 4.1.7 - 2024-11-13
+
+- Fixed recurring subscription orders failing to be created if the subscription had customizable options.
+- Fixed an internal server error when the charge.refunded webhook event was processed for refunds triggered from the Stripe dashboard.
+
+## 4.1.6 - 2024-10-22
+
+- Subscription initial fees are now compatible with the Stripe Tax submodule.
+- Fixed an issue causing some webhook events to not be found across any of the configured Stripe accounts.
+- In Adobe Commerce, if store credit, gift cards or reward points were used, Link would appear even if it was disabled.
+- Improvements with subscription recurring order creation logic.
+
+## 4.1.5 - 2024-10-16
+
+- Added `resources/cookbooks/` directory with 5 examples of common module customizations.
+- Added various new validations for actions in the My Subscriptions section.
+- Fixed two issues with subscription initial fee taxes.
+- Fixed an issue where in certain checkout flows, the shipping rate of a placed order would be different than the one selected at the checkout.
+- Some CSS fixes with Express Checkout on bundle product pages.
+
+## 4.1.4 - 2024-10-14
+
+- Fixed issue with subscription start dates where if bought on the exact start date, the order's grand total would be zero instead of fully paid.
+- Added html escaping to various templates.
+
+## 4.1.3 - 2024-10-09
+
+- Express Checkout is now supported on bundle product pages.
+- Added MB WAY payment method icons.
+- Moved API examples directory under resources/, added new resources/docs/ directory with current version documentation.
+- Stricter validations when invoicing admin orders.
+- Fixed an issue where after a redirect-based method payment failure, the order would be canceled but not disassociated from the payment intent.
+- Fixed a subscriptions issue where the shipping method would be unavailable if a minimum amount is specified for that method's availability.
+
+## 4.1.2 - 2024-09-25
+
+- Subscriptions can now be purchased with 100% discount coupons/rules.
+- Fixed a checkout error with Hyva Checkout.
+- Fixed Link not being disabled on product pages when its disabled from the admin.
+- Fixed an obscured error message at the My Payment Methods section.
+- Payment method validation improvements.
+
+## 4.1.1 - 2024-09-20
+
+- Various fixes and improvements with Stripe Checkout (redirect-based payment flow).
+- Added a new configuration option in etc/config.xml to control if coupon usages are incremented before or after the order is placed.
+- Fixed a tax inclusive issue where Klarna and Google Pay would display the tax exclusive amount instead of the tax inclusive one at the checkout page.
+- Fixed error 'The requested qty is not available' affecting bundle products with a Qty of 1, when using Express Checkout.
+- Fixed a case where if a subscription payment failed, and the subscription payment method was updated, a recurring order would not be created for the newly collected payment.
+- Fixed an issue where reactivating a canceled subscription after payment failure, would enter a trial period instead of collecting a new payment.
+- Fixed an issue where printing PDF shipment documents for Stripe Checkout would add escaped html under the payment info section of the shipping document.
+- When migrating a subscription using the CLI command stripe:subscriptions:migrate-subscription-price, the newly generated order will no longer reserve order item inventory.
+- Fixed an issue with wallets not appearing in the shopping cart page when certain plugin interceptiors are implemented.
+- Fixed several cases where Web API errors that should be displayed at the front-end would be masked in production mode.
+
+## 4.1.0 - 2024-09-10
+
+- Added support for Stripe Tax.
+- Orders for subscriptions with trial periods, start dates, as well as subscription upgrades/downgrades, will be placed with a grand total of 0 to reflect that no payment has been collected. Recurring subscription orders will be placed with a grand total reflecting the collected payment.
+- To better support Stripe Tax, prorated subscription upgrades/downgrades have been temporarily disabled. Only regular subscription upgrades/downgrades are currently supported.
+
+## 4.0.11 - 2024-09-05
+
+- Fixed the "Save payment method" checkbox in the admin new order page.
+- Fixed a javascript crash in the admin new order page.
+
+## 4.0.10 - 2024-08-28
+
+- Fixed a product loading error happening in certain edge cases.
+- Fixed a CSP policy issue in the admin area.
+- Fixed a setup:upgrade issue happening when other modules set the area code.
+
+## 4.0.9 - 2024-08-20
+
+- Enabled partial refunds for the Bank Transfers payment method.
+- Fixed order search filters at the sales orders grid. You can search for orders using queries such as "mastercard", "google pay", "klarna" etc.
+- Fixed a bug with Express Checkout Element where if the shipping rate is changed, the total would not update in the payment modal.
+- Fixed two issues with 'Payment Action = Order' mode, affecting redirect-based payment methods, where the payment method would fail to be saved.
+- Fixed a 3D Secure issue with coupon usage increments.
+
+## 4.0.8 - 2024-07-05
+
+- In four scenarios where saved payment methods are disabled but the PM needs to be saved, the customer would not see the saved PM dropdown at the checkout (affects 4.0.2 - 4.0.7). All four cases will now display the dropdown.
+- Added safety checks so that payment method deduplication is skipped when there are pending orders placed with the duplicate payment method.
+- Improved error handling when there are no available payment element methods for the given cart amount.
+- Added new validations during order placements to handle checkout crashes.
+- Fixed an issue with the order recovery system in "Authorize Only" mode.
+- Fixed a WeChat error on mobile devices.
+- Added new Stripe domains in CSP whitelist.
+- Cosmetic improvements in the admin area.
+
+## 4.0.7 - 2024-06-10
+
+- Fixed a problem where if an Express Checkout payment failed, and the customer switched to the PaymentElement, the payment would succeed but a checkout error would prevent the order from being saved (affects 4.0.0 - 4.0.6).
+
+## 4.0.6 - 2024-06-06
+
+- Fixed a webhook signature verification error affecting merchants that have multiple Stripe accounts configured (affects 4.0.0 - 4.0.5).
+- Fixed an infinite loop problem when switching from one store view to another. The error would be logged as 'Front controller reached 100 router match iterations'.
+
+## 4.0.5 - 2024-06-05
+
+- The payment method icon and name was not appearing in certain pages and emails (affects 4.0.4).
+- Compatibility improvements of Express Checkout with reward points, gift cards, store credit.
+- Express Checkout was appearing on the shopping cart page's minicart whereas it should appear on its sidebar.
+- Improvements with the webhooks order recovery system.
+- Two fixes with subscription reactivations.
+- Removed payment location metadata from payment intents.
+
+## 4.0.4 - 2024-05-29
+
+- Added MobilePay icons and MobilePay support for Authorize Only mode.
+- Fixed unhandled multi-shipping checkout scenario with redirect payment methods.
+- Fixed invoice pdf printing from the admin area. HTML tags were visible under the payment info section (affects 4.0.0 - 4.0.3).
+
+## 4.0.3 - 2024-05-15
+
+- In Adobe Commerce, when a gift card is redeemed, store credit is used, or reward points are applied to the cart, then redirect-based payment methods are automatically hidden at the checkout. Solves quote restoration issues when customers return from the payment provider without a payment authorization.
+- Added support for Multibanco voucher-based payment method in Portugal (beta). Please contact support to enable it in your Stripe account.
+- Voucher-based payment methods such as Multibanco and OXXO will now send the order email when the order is placed, rather than when the payment is completed.
+
+## 4.0.2 - 2024-04-29
+
+- Added new admin configuration options to enable or disable Express Checkout Element wallets individually.
+- In certain flows where the payment method would be automatically saved, there were no displayed terms that the payment method would be saved or used for future purchases.
+- When the "Save payment method" setting is disabled, customers will no longer see any saved payment methods at the checkout page.
+- If the customer returned from a redirect-based payment method back to Magento, and switched to a 3D Secure card, the payment method would not be updated after the subsequent order placement.
+- Fixed several backwards compatibility problems with PHP 7.4.
+- Fixed a Stripe object caching issue causing duplicate webhooks configuration when running the CLI webhooks:configure command.
+- Fixed an ACH Direct Debit subscription setup error when the subscription has a start date and the first payment is on the order date.
+
+## 4.0.1 - 2024-04-15
+
+- Upgraded to Stripe PHP library v13.15.0.
+- Amazon Pay now supports the "Authorize Only" payment action.
+- Improvements around the redirect-flow (Stripe Checkout) on session email updates and order invalidation.
+- Fixed a case where deleting a product that was ordered and the order is still pending payment, could cause delayed webhook events to fail processing for that order.
+- Fixed an issue with subscription start dates, where if the current date matches the subscription start date, the order cannot be placed.
+
+## 4.0.0 - 2024-03-26
 
 - This is a code quality release with broad refactoring to better comply with Adobe Commerce coding standards. We recommend that merchants carefully review and update all module customizations before upgrading to this version.
 - Added support for the Express Checkout Element. The ECE can display multiple wallet buttons (Google Pay, Apple Pay, Link) at the same time in the order that maximises payment conversion on your page. Various PaymentRequest APIs have been deprecated or replaced by the ECE. We recommend that merchants review and update headless commerce implementations which depend on the deprecated PRAPIs.
@@ -15,26 +308,26 @@
 - All examples under the module's `examples/` directory have been updated to use the new API parameters format.
 - Added fallback capability to asynchronously place orders via webhook events when checkout errors prevent the order from being placed.
 
-## 3.5.16
+## 3.5.16 - 2024-03-22
 
 - Guest orders placed with a wallet would show the customer name as "Guest" in the admin order view page. They will now show the full customer name.
 - When saving payment methods was disabled, subscription customers would not able to add a new payment method for their subscription.
 - Fixed an issue where if two payment intents were associated with a single order, one succeeded, and one was canceled, the successful order could end up canceled.
 
-## 3.5.15
+## 3.5.15 - 2024-03-14
 
 - Improvements with automatic webhooks configuration when upgrading from older versions of the module.
 - Replaced statement_descriptor with statement_descriptor_suffix, which is required with Stripe accounts created after February 2024.
 - Fixed cached payment intent invalidation - in cases where a Payment Method Configuration was active and a 3DS card was used, the PI would be incorrectly invalidated causing a 3DS error "The provided PaymentMethod was previously used with a PaymentIntent without Customer attachment".
 - After the order is placed at the checkout, the loading spinner will remain active until the redirect to the success page finishes.
 
-## 3.5.13
+## 3.5.13 - 2024-03-01
 
 - Updated the REST API headless commerce example for PaymentElement to correctly retrieve the PaymentIntent client_secret when customer authentication is required.
 - Fixed a PHP 7.4 backwards compatibility issue causing a crash at the checkout.
 - Fixed a multishipping checkout issue with 3D Secure authentication, affecting versions 3.5.11 and 3.5.12.
 
-## 3.5.12
+## 3.5.12 - 2024-02-28
 
 - Added support for 3-decimal point currencies (BHD, JOD, KWD, OMR, TND).
 - Added a cron job which periodically cleans old entries from large DB tables.
@@ -43,42 +336,42 @@
 - Fixed an issue with the Boleto payment method, where the state code would not be passed correctly to the Stripe API.
 - Fixed a PHP 8 error with strpos().
 
-## 3.5.11
+## 3.5.11 - 2024-02-15
 
 - Various 3D Secure authentication improvements for subscriptions with future start dates.
 - Disabled Amazon Pay support for "Authorize Only" payment action.
 - Fixed a Wallet Button error when buying trial subscriptions with a payment method that requires 3DS.
 
-## 3.5.10
+## 3.5.10 - 2024-02-14
 
-- PayPal and Amazon Pay now support the "Authorize Only" payment action.
+- Amazon Pay now supports the "Authorize Only" payment action.
 - Fixed an issue causing orders placed from the admin area with the Stripe Billing payment method to be stuck in Pending Payment. Affects versions 3.5.7 to 3.5.9.
 - When the 'Order' payment action is enabled, purchasing subscriptions with the Wallet Button would not set up the subscription correctly.
 - Fixed an issue with Link where if the 'Save payment method' is enabled, orders placed with Link would fail.
 - Fixed a checkout crash when using custom payment method configurations.
 
-## 3.5.9
+## 3.5.9 - 2024-02-07
 
 - Various 3D Secure customer authentication improvements around the "Order" payment action mode. Reduced likelyhood of a card being declined when the order is invoiced at a future date.
 - Fixed an admin area error where if an order was placed with the Link payment method, and the authorization expired, then invoicing the order would fail with the error 'The provided PaymentMethod cannot be attached. To reuse a PaymentMethod, you must attach it to a Customer first.'
 - Fixed a payment method display issue at the front-end order view page.
 - Fixed a dynamic subscription taxes issue in the invoice.upcoming observer.
 
-## 3.5.8
+## 3.5.8 - 2024-01-17
 
 - Fixed SEPA Direct Debit orders being created in Processing status before a payment is received.
 - Fixed PHP 7.4 compatibility issue affecting versions 3.5.6 and 3.5.7.
 - Fixed Magento 2.3.7 compatibility issue affecting versions 3.5.0 - 3.5.7.
 - Fixed 2 grand total issues at the sidebar.
 
-## 3.5.7
+## 3.5.7 - 2023-12-20
 
 - Recurring orders of configurable subscriptions will now include the parent configurable product instead of the child subscription product.
 - Improved handling of various cases of the admin Stripe Billing payment method: payment descriptions, metadata, transaction recording, refunds from Stripe Dashboard.
 - Fixed a bug with subscription dynamic taxes where the tax amount was not read correctly from configurable subscriptions.
 - Fixed the bank transfers payment method not being displayed when card payments are disabled.
 
-## 3.5.6
+## 3.5.6 - 2023-12-11
 
 - Payment form layout (vertical/horizontal) now also applies to the multishipping page.
 - Payment details are now displayed on shipment pages in the admin area.
@@ -87,29 +380,29 @@
 - Fixed a rounding error when using expiring coupons with tax inclusive subscription orders.
 - Fixed a bug causing payment method configurations to not have any effect at the front-end.
 
-## 3.5.5
+## 3.5.5 - 2023-11-16
 
 - Fixed a bug where an invalid payment method configuration would crash the payment element at the front-end.
 - Fixed payment method sort order only being applied to the redirect-based payment flow.
 - Fixed an md5() error when API keys on a store view are missing or misconfigured.
 - Fixed error 'The provided PaymentMethod was previously used with a PaymentIntent without Customer attachment', triggered by multiple card declines of the same payment method. Affects v3.5.1 - 3.5.4.
 
-## 3.5.4
+## 3.5.4 - 2023-11-09
 
 - Fixed a refunds issue affecting configurable products that are partially refunded from the Stripe dashboard.
 - Fixed an error at the order shipment pages when the Stripe API keys for the store view are missing.
 
-## 3.5.3
+## 3.5.3 - 2023-10-18
 
 - Fixed a compilation error affecting Adobe Commerce Cloud, introduced in v3.5.2.
 
-## 3.5.2
+## 3.5.2 - 2023-10-13
 
 - Payment method configurations are out of beta and enabled by default. You can now enable different combinations of payment methods on each Magento store view.
 - When the Stripe API keys are invalid, wallets and the checkout payment methods are hidden.
 - Fixed a wallets issue at the multishipping checkout page.
 
-## 3.5.1
+## 3.5.1 - 2023-09-20
 
 - Added GraphQL API endpoint for retrieving the module's configuration.
 - Updated examples for headless commerce.
@@ -117,7 +410,7 @@
 - Fixed a card icons configuration issue for Stripe Checkout.
 - Various fixes and improvements for subscription purchases.
 
-## 3.5.0
+## 3.5.0 - 2023-09-04
 
 - Added new checkout flow - "Payment action: Order". When the order is placed, only the payment method is saved without performing an authorization or capture. Orders can remain in Processing status for long durations, and be invoiced at any time to create the initial charge. Supports partial invoicing and works with both the Embedded flow (PaymentElement) as well as the Redirect flow (Stripe Checkout).
 - Orders that have been placed with the new "Order" payment action, can be edited from the Magento admin area. Merchants can change the ordered items, customer details and shipping details, and invoice the order using the same saved payment method used on the original order.
@@ -139,13 +432,13 @@
 - Improvements with automatic webhooks configuration.
 - Codebase refactor enabling easier customizations to the module.
 
-## 3.4.4
+## 3.4.4 - 2023-08-04
 
 - Added more examples on how to use the REST API with PaymentElement and CardElement.
 - Fixed recurring subscription orders re-activating the original cart that was used for the subscription purchase.
 - Fixed a data migration error when using table prefixes.
 
-## 3.4.3
+## 3.4.3 - 2023-07-12
 
 - When the "Save customer payment method" option is disabled, the "My Payment Methods" link will be hidden from the customer account section.
 - Added a data migration which cleans old settings for payment method filtering per country, applicable for users migrating from v2.x of the module.
@@ -154,7 +447,7 @@
 - Fixed an issue where disabling regular card payments would prevent wallet buttons from initializing correctly.
 - Fixed a crash in the customer.subscription.updated webhooks observer.
 
-## 3.4.2
+## 3.4.2 - 2023-05-17
 
 - For asynchronous payment methods, the new order email is sent upon payment authrorization, rather than payment receipt. The invoice email is still sent on payment receipt.
 - The default/stripe_settings/payment_methods config.xml setting can be used to additionally hide types of saved payment methods.
@@ -165,14 +458,14 @@
 - Fixed an issue in the Pending Payment Order Lifetime cron job, causing canceled orders for asynchronous payment methods that were in processing status.
 - Fixed a scenario where a trial subscription order placement would fail with error: This PaymentIntent's payment_method could not be updated.
 
-## 3.4.1
+## 3.4.1 - 2023-04-11
 
 - Compatible with PHP 8.2.
 - Added configuration method for hiding Afterpay/Clearpay on virtual carts.
 - Fixed abandoned orders placed with the Affirm payment method not getting canceled.
 - Fixed a javascript crash at the My Payment Methods page.
 
-## 3.4.0
+## 3.4.0 - 2023-03-27
 
 - Compatible with Magento 2.4.6.
 - Headless commerce: Simplified implementation flow for PWA apps, mobile apps and custom storefronts built with React, Vue or other front-end framework. Customer authentications are simplified and a wider number of payment methods are supported.
@@ -195,7 +488,7 @@
 - Changed what we consider a subscription upgrade/downgrade to be a simple subscription amount comparison. Changes in the billing interval are no longer taken into account.
 - Deprecated all CLI commands for Magento 1 to Magento 2 migrations.
 
-## 3.3.13
+## 3.3.13 - 2023-03-06
 
 - When guest customers return from Stripe Checkout and change their email, it is updated on the customer object in Stripe and reflected in the next Stripe Checkout session.
 - After multiple partial refunds from the Stripe dashboard, close the order when the final refund reaches the order's grand total.
@@ -206,7 +499,7 @@
 - Fixed a PHP 8.1 compatibility error when reading the module configuration for wallet locations.
 - Fixed an error in the customer.subscription.updated webhooks observer.
 
-## 3.3.12
+## 3.3.12 - 2023-02-08
 
 - Fixed an error triggered when telephone numbers are optional.
 - Fixed a subscription upgrades problem affecting upgrades to subscriptions with different intervals.
@@ -214,7 +507,7 @@
 - Fixed a scenario causing wallet payments to throw a country_id error.
 - Compatibility fix with a 3rd party Address Finder module.
 
-## 3.3.11
+## 3.3.11 - 2023-01-05
 
 - Added a webhooks endpoint exclusion rule for the Adobe Commerce "Web Restrictions" setting.
 - Added GraphQL examples under {module_directory}/examples/GraphQL/CardElement/.
@@ -225,54 +518,54 @@
 - Fixed a Wallet button shipping address error occurring when the region does not exist in the database.
 - Some fixes with the subscription price migration command when migrating orders in bulk.
 
-## 3.3.9
+## 3.3.9 - 2022-11-30
 
 - Store Credit and Gift Card fixes for Adobe Commerce.
 - GraphQL fixes for 3D Secure.
 - Fixed a crash in the CLI command stripe:cron:retry-events.
 
-## 3.3.8
+## 3.3.8 - 2022-11-18
 
 - The header title of the wallet buttons on the checkout page is renamed from "Chekcout with Google/Apple Pay" to "Checkout with digital wallet".
 - Added CLI command stripe:webhooks:automatic-configuration which can be used to enable or disable automatic webhooks configuration.
 - Improvements with checkout flow when a payment has failed and the cart changes.
 
-## 3.3.7
+## 3.3.7 - 2022-11-09
 
 - Fixed recurring configurable subscription orders not being created after Magento deletes the expired quote from the database.
 - Fixed voucher payment methods OXXO, Konbini and Boleto not redirecting to the order success page.
 - Javascript compatibility fix with older versions of mobile Safari.
 
-## 3.3.6
+## 3.3.6 - 2022-11-08
 
 - Fixed a webhooks crash which prevented recurring subscription orders from being created.
 - Added helper CLI command stripe:cron:retry-events.
 
-## 3.3.5
+## 3.3.5 - 2022-11-07
 
 - The Link payment method can be used with Authorize Only mode.
 - Added helper CLI command stripe:cron:cancel-abandoned-payments.
 - The API rate limiter is disabled when Magento is in "developer" mode.
 - Fixed a user scenario causing orders to be stuck in Pending status.
 
-## 3.3.4
+## 3.3.4 - 2022-10-26
 
 - Added a payment method title for Stripe Checkout in the admin orders grid.
 - Cosmetic UI improvements with Onestepcheckout_Iosc.
 - Adjusted checkout validations to work with configurable subscriptions created with older versions of the module.
 - Fixed partial refunds for the admin Stripe Invoice payment method.
 
-## 3.3.3
+## 3.3.3 - 2022-10-21
 
 - Added admin and email icons for the Link payment method.
 
-## 3.3.2
+## 3.3.2 - 2022-10-20
 
 - Improvements around GraphQL API flows.
 - Fixed duplicate emails being sent for admin orders.
 - Fixed a terms and conditions validation problem at the checkout page.
 
-## 3.3.1
+## 3.3.1 - 2022-10-13
 
 - Localization fixes for 6 locales. Afterpay is displayed as Clearpay in the UK.
 - Small checkout performance improvements.
@@ -283,7 +576,7 @@
 - Fixed statement descriptor configuration setting not being applied.
 - Fixed incorrect notification in admin that webhooks have not yet been configured.
 
-## 3.3.0
+## 3.3.0 - 2022-09-28
 
 - Added support for subscription plan updates. Customers can switch from one subscription plan to another from the customer account section. Supported via the use of Magento configurable products.
 - Customers can change the shipping address and shipping method of active subscriptions from the customer account section. The difference in shipping cost and taxes is collected via the checkout page. No new orders are created during the update; and all future recurring orders have the new shipping details and new shipping cost.
@@ -540,7 +833,7 @@
 
 ## 2.6.0 - 2021-07-20
 
-- `MAJOR`: Added support for PayPal
+- Added support for new payment methods.
 
 ## 2.5.9 - 2021-06-10
 

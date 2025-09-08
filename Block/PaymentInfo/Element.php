@@ -2,8 +2,6 @@
 
 namespace StripeIntegration\Payments\Block\PaymentInfo;
 
-use StripeIntegration\Payments\Helper\Data as StripeHelperData;
-
 class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
 {
     private $paymentIntents = [];
@@ -16,36 +14,51 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
     private $tokenHelper;
     private $orderHelper;
     private $paymentMethod;
-
-    /**
-     * @var StripeHelperData
-     */
-    protected $stripeHelperData;
+    private $currencyHelper;
+    private $radarHelper;
 
     public function __construct(
         \Magento\Framework\View\Element\Template\Context $context,
         \Magento\Payment\Gateway\ConfigInterface $config,
+        \Magento\Framework\App\RequestInterface $request,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptions,
         \StripeIntegration\Payments\Helper\Api $api,
         \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
         \StripeIntegration\Payments\Model\Config $paymentsConfig,
         \StripeIntegration\Payments\Model\Stripe\PaymentIntent $stripePaymentIntent,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $stripePaymentMethodFactory,
-        StripeHelperData $stripeHelperData,
+        \StripeIntegration\Payments\Helper\Radar $radarHelper,
         array $data = []
     ) {
-        parent::__construct($context, $config, $helper, $paymentMethodHelper, $subscriptions, $api, $tokenHelper, $paymentsConfig, $stripePaymentMethodFactory, $data);
+        parent::__construct(
+            $context,
+            $config,
+            $request,
+            $areaCodeHelper,
+            $helper,
+            $paymentMethodHelper,
+            $subscriptions,
+            $api,
+            $tokenHelper,
+            $currencyHelper,
+            $paymentsConfig,
+            $stripePaymentMethodFactory,
+            $data
+        );
 
-        $this->stripeHelperData = $stripeHelperData;
+        $this->radarHelper = $radarHelper;
         $this->stripePaymentIntent = $stripePaymentIntent;
         $this->helper = $helper;
         $this->orderHelper = $orderHelper;
         $this->paymentsConfig = $paymentsConfig;
         $this->tokenHelper = $tokenHelper;
         $this->stripePaymentMethodFactory = $stripePaymentMethodFactory;
+        $this->currencyHelper = $currencyHelper;
     }
 
     public function getTemplate()
@@ -55,10 +68,13 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (!$this->paymentsConfig->getStripeClient())
             return null;
 
-        if ($info && $info->getAdditionalInformation("is_subscription_update"))
-            return 'paymentInfo/subscription_update.phtml';
+        if (!$this->isAllowedAction())
+            return 'StripeIntegration_Payments::paymentInfo/generic.phtml';
 
-        return 'paymentInfo/element.phtml';
+        if ($info && $info->getAdditionalInformation("is_subscription_update"))
+            return 'StripeIntegration_Payments::paymentInfo/subscription_update.phtml';
+
+        return 'StripeIntegration_Payments::paymentInfo/element.phtml';
     }
 
     private function getPaymentMethodToken()
@@ -99,10 +115,12 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
                 $paymentMethod = $this->stripePaymentMethodFactory->create()->fromPaymentMethodId($paymentMethod)->getStripeObject();
                 return $this->paymentMethod = $paymentMethod;
             }
+            // @codeCoverageIgnoreStart
             catch (\Exception $e)
             {
                 $this->helper->logInfo("Could not retrieve payment method from Stripe: " . $e->getMessage());
             }
+            // @codeCoverageIgnoreEnd
         }
 
         return $this->paymentMethod = null;
@@ -126,7 +144,7 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (empty($paymentIntent->amount))
             return '';
 
-        return $this->helper->formatStripePrice($paymentIntent->amount, $paymentIntent->currency);
+        return $this->currencyHelper->formatStripePrice($paymentIntent->amount, $paymentIntent->currency);
     }
 
     public function getFormattedMultishippingAmount()
@@ -140,7 +158,7 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (!is_numeric($info->getAmountOrdered()))
             return $total;
 
-        $partial = $this->helper->addCurrencySymbol($info->getAmountOrdered(), $paymentIntent->currency);
+        $partial = $this->currencyHelper->addCurrencySymbol($info->getAmountOrdered(), $paymentIntent->currency);
 
         return $partial;
     }
@@ -164,11 +182,13 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
                     $subscriptionId = $info->getAdditionalInformation("subscription_id");
                     $this->subscription = $this->paymentsConfig->getStripeClient()->subscriptions->retrieve($subscriptionId);
                 }
+                // @codeCoverageIgnoreStart
                 catch (\Exception $e)
                 {
                     $this->helper->logInfo("Could not retrieve subscription from Stripe: " . $e->getMessage());
                     return null;
                 }
+                // @codeCoverageIgnoreEnd
             }
         }
 
@@ -202,18 +222,20 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (empty($transactionId) || strpos($transactionId, "pi_") !== 0)
             return null;
 
-        if (isset($this->paymentIntents[$transactionId]))
+        if (array_key_exists($transactionId, $this->paymentIntents))
             return $this->paymentIntents[$transactionId];
 
         try
         {
-            $paymentIntent = $this->stripePaymentIntent->fromPaymentIntentId($transactionId, ['payment_method'])->getStripeObject();
+            $paymentIntent = $this->stripePaymentIntent->fromPaymentIntentId($transactionId, ['payment_method', 'latest_charge', 'charges'])->getStripeObject();
             return $this->paymentIntents[$transactionId] = $paymentIntent;
         }
+        // @codeCoverageIgnoreStart
         catch (\Exception $e)
         {
             return $this->paymentIntents[$transactionId] = null;
         }
+        // @codeCoverageIgnoreEnd
     }
 
     public function getSetupIntent()
@@ -231,17 +253,19 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (empty($setupIntentId))
             return null;
 
-        if (isset($this->setupIntents[$setupIntentId]))
+        if (array_key_exists($setupIntentId, $this->setupIntents))
             return $this->setupIntents[$setupIntentId];
 
         try
         {
             return $this->setupIntents[$setupIntentId] = $this->paymentsConfig->getStripeClient()->setupIntents->retrieve($setupIntentId, ['expand' => ['payment_method']]);
         }
+        // @codeCoverageIgnoreStart
         catch (\Exception $e)
         {
             return $this->setupIntents[$setupIntentId] = null;
         }
+        // @codeCoverageIgnoreEnd
     }
 
     public function getMode()
@@ -255,16 +279,6 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
             return "";
 
         return "test/";
-    }
-
-    public function getOXXOVoucherLink()
-    {
-        $paymentIntent = $this->getPaymentIntent();
-
-        if (!empty($paymentIntent->next_action->oxxo_display_details->hosted_voucher_url))
-            return $paymentIntent->next_action->oxxo_display_details->hosted_voucher_url;
-
-        return null;
     }
 
     // For subscription updates
@@ -328,6 +342,10 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
         if (!$this->getPreviousSubscriptionAmount())
             return null;
 
+        $info = $this->getInfo();
+        if ($info && $info->getAdditionalInformation("new_subscription_amount"))
+            return $info->getAdditionalInformation("new_subscription_amount");
+
         return parent::getFormattedSubscriptionAmount();
     }
 
@@ -340,6 +358,6 @@ class Element extends \StripeIntegration\Payments\Block\PaymentInfo\Checkout
      */
     public function getRiskElementClass($riskScore = 0, $riskLevel = 'NA')
     {
-        return $this->stripeHelperData->getRiskElementClass($riskScore, $riskLevel);
+        return $this->radarHelper->getRiskElementClass($riskScore, $riskLevel);
     }
 }

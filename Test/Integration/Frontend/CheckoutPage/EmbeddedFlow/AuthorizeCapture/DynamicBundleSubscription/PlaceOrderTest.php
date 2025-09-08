@@ -55,7 +55,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         // Check that the subscription plan amount is correct
-        $customer = $this->tests->stripe()->customers->retrieve($order->getPayment()->getAdditionalInformation("customer_stripe_id"));
+        $customer = $this->tests->stripe()->customers->retrieve($order->getPayment()->getAdditionalInformation("customer_stripe_id"), [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->tests->compare($subscription, [

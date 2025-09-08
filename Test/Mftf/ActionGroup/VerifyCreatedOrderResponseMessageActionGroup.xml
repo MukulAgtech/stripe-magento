@@ -6,6 +6,6 @@
             <description>Validates that the Error Message is present and correct.</description>
         </annotations>
 
-        <see selector="{{AdminStripeCheckoutMessageSection.errorMessage}}" userInput="This payment method cannot be used because it requires a customer authentication. To avoid authentication in the admin area, please contact Stripe support to request access to the MOTO gate for your Stripe account." stepKey="seeErrorMessage"/>
+        <see selector="{{AdminStripeCheckoutMessageSection.errorMessage}}" userInput="Your card was declined. This transaction requires authentication." stepKey="seeErrorMessage"/>
     </actionGroup>
 </actionGroups>

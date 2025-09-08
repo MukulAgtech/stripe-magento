@@ -24,6 +24,7 @@ class RefundTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPlaceOrder()
     {
@@ -56,12 +57,16 @@ class RefundTest extends \PHPUnit\Framework\TestCase
         $this->assertTrue($invoice->canRefund());
         $this->assertFalse($invoice->canCapture()); // Offline capture should be possible
 
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $simpleProductInvoice = $customer->subscriptions->data[0]->latest_invoice;
 
         // Activate the subscription
         $ordersCount = $this->tests->getOrdersCount();
-        $customer = $this->tests->stripe()->customers->retrieve($paymentIntent->customer);
+        $customer = $this->tests->stripe()->customers->retrieve($paymentIntent->customer, [
+            'expand' => ['subscriptions']
+        ]);
         $this->tests->endTrialSubscription($customer->subscriptions->data[0]->id);
         $newOrdersCount = $this->tests->getOrdersCount();
         $this->assertEquals($ordersCount + 1, $newOrdersCount);
@@ -78,29 +83,31 @@ class RefundTest extends \PHPUnit\Framework\TestCase
         $this->tests->refundOnline($invoice, $skus, 5);
 
         // Stripe checks
-        $simpleProductInvoice = $this->tests->stripe()->invoices->retrieve($simpleProductInvoice, ['expand' => ['payment_intent']]);
+        $simpleProductInvoice = $this->tests->stripe()->invoices->retrieve($simpleProductInvoice, [
+            'expand' => [
+                'payment_intent.latest_charge'
+            ]
+        ]);
         $this->tests->compare($simpleProductInvoice, [
             "payment_intent" => [
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount_refunded" => 1346
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount_refunded" => 1346
                 ]
             ]
         ]);
 
-        $customer = $this->tests->stripe()->customers->retrieve($customer->id);
-        $trialSubscriptionInvoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, ['expand' => ['payment_intent']]);
+        $customer = $this->tests->stripe()->customers->retrieve($customer->id, [
+            'expand' => ['subscriptions']
+        ]);
+        $trialSubscriptionInvoice = $this->tests->stripe()->invoices->retrieve($customer->subscriptions->data[0]->latest_invoice, [
+            'expand' => [
+                'payment_intent.latest_charge'
+            ]
+        ]);
         $this->tests->compare($trialSubscriptionInvoice, [
             "payment_intent" => [
-                "charges" => [
-                    "data" => [
-                        0 => [
-                            "amount_refunded" => 0
-                        ]
-                    ]
+                "latest_charge" => [
+                    "amount_refunded" => 0
                 ]
             ]
         ]);

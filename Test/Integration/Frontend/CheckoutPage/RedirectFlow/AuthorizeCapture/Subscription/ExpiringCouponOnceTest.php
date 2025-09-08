@@ -23,6 +23,7 @@ class ExpiringCouponOnceTest extends \PHPUnit\Framework\TestCase
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Discounts.php
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testExpiringCouponOnce()
     {
@@ -46,7 +47,9 @@ class ExpiringCouponOnceTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         //Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);

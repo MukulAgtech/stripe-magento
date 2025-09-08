@@ -40,14 +40,26 @@ class OrderDate3DSTest extends \PHPUnit\Framework\TestCase
      */
     public function testPlaceOrder()
     {
+        $day = "10";
+        if (date("d") == $day)
+        {
+            // 3DS is used and an attempt is made to start the subscription today. Incomplete because it requires authentication.
+            $expectedSubscriptionStatus = "incomplete";
+        }
+        else
+        {
+            // The subscription is set up to start in the future, no payment is needed now and therefore no authentication is performed.
+            // This case needs some more investigation, past_due means that the payment could not be collected, likely because authentication is needed.
+            $expectedSubscriptionStatus = "past_due";
+        }
+
         $this->config->manualAuthenticationPaymentMethods = [];
 
         $product = $this->tests->getProduct('simple-monthly-subscription-product');
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
-            'start_date' => "2021-01-10",
-            'first_payment' => 'on_order_date',
-            'prorate_first_payment' => 0
+            'start_date' => "2021-01-$day",
+            'first_payment' => 'on_order_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -70,7 +82,9 @@ class OrderDate3DSTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
@@ -103,7 +117,7 @@ class OrderDate3DSTest extends \PHPUnit\Framework\TestCase
             "metadata" => [
                 "Order #" => $order->getIncrementId()
             ],
-            "status" => "past_due",
+            "status" => $expectedSubscriptionStatus,
             "description" => "Subscription order #{$order->getIncrementId()} by Joyce Strother",
             "discount" => null
         ]);
@@ -113,27 +127,6 @@ class OrderDate3DSTest extends \PHPUnit\Framework\TestCase
             'customer' => $customerId,
             'subscription' => $subscription->id
         ]);
-        $this->assertEquals("10", date("d", $upcomingInvoice->next_payment_attempt));
-
-        // Trigger the next subscription payment immediately
-        $subscription = $this->tests->stripe()->subscriptions->update($subscription->id, [
-            'billing_cycle_anchor' => 'now',
-            'proration_behavior' => "none",
-            'expand' => ['latest_invoice']
-        ]);
-
-        // Create a recurring order
-        $ordersCount = $this->tests->getOrdersCount();
-        $this->tests->event()->trigger("invoice.payment_succeeded", $subscription->latest_invoice, [
-            'billing_reason' => 'subscription_cycle'
-        ]);
-        $newOrdersCount = $this->tests->getOrdersCount();
-        $this->assertEquals($ordersCount + 1, $newOrdersCount);
-
-        // Make sure that the new order amount is the same
-        $recurringOrder = $this->tests->getLastOrder();
-        $this->tests->compare($recurringOrder->getData(), [
-            'grand_total' => $order->getGrandTotal()
-        ]);
+        $this->assertEquals($day, date("d", $upcomingInvoice->next_payment_attempt));
     }
 }

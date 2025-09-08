@@ -2,6 +2,8 @@
 
 namespace StripeIntegration\Payments\Helper;
 
+use Magento\Framework\Exception\NoSuchEntityException;
+
 class Order
 {
     public $orderComments = [];
@@ -13,24 +15,39 @@ class Order
     private $orderSender;
     private $orderCommentSender;
     private $logger;
+    private $tokenHelper;
+    private $orderCollectionFactory;
+    private $discountHelper;
+    private $searchCriteriaBuilder;
+    private $sequenceManager;
 
     public function __construct(
+        \Magento\SalesSequence\Model\Manager $sequenceManager,
         \Magento\Tax\Api\OrderTaxManagementInterface $orderTaxManagement,
         \Magento\Sales\Api\Data\OrderInterfaceFactory $orderFactory,
         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
         \Magento\Sales\Model\Order\Email\Sender\OrderCommentSender $orderCommentSender,
         \Magento\Sales\Model\Order\Email\Sender\OrderSender $orderSender,
+        \Magento\Sales\Model\ResourceModel\Order\CollectionFactory $orderCollectionFactory,
+        \Magento\Framework\Api\SearchCriteriaBuilder $searchCriteriaBuilder,
         \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory,
-        \StripeIntegration\Payments\Helper\Logger $logger
+        \StripeIntegration\Payments\Helper\Logger $logger,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
+        \StripeIntegration\Payments\Helper\Discount $discountHelper
     )
     {
+        $this->sequenceManager = $sequenceManager;
         $this->orderTaxManagement = $orderTaxManagement;
         $this->orderFactory = $orderFactory;
         $this->orderRepository = $orderRepository;
         $this->orderCommentSender = $orderCommentSender;
         $this->orderSender = $orderSender;
+        $this->orderCollectionFactory = $orderCollectionFactory;
         $this->subscriptionProductFactory = $subscriptionProductFactory;
         $this->logger = $logger;
+        $this->tokenHelper = $tokenHelper;
+        $this->discountHelper = $discountHelper;
+        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
     }
 
     /**
@@ -61,25 +78,6 @@ class Order
         $created = strtotime($order->getCreatedAt());
         $now = time();
         return (($now - $created) < ($minutes * 60));
-    }
-
-    public function setRiskDataFrom($paymentIntentResponse, $order)
-    {
-        if (is_array($paymentIntentResponse)) {
-            if (isset($paymentIntentResponse['outcome']['risk_score']) && $paymentIntentResponse['outcome']['risk_score'] >= 0) {
-                $order->setStripeRadarRiskScore($paymentIntentResponse['outcome']['risk_score']);
-            }
-            if (isset($paymentIntentResponse['outcome']['risk_level'])) {
-                $order->setStripeRadarRiskLevel($paymentIntentResponse['outcome']['risk_level']);
-            }
-        } else {
-            if (isset($paymentIntentResponse->charges->data[0]->outcome->risk_score) && $paymentIntentResponse->charges->data[0]->outcome->risk_score >= 0) {
-                $order->setStripeRadarRiskScore($paymentIntentResponse->charges->data[0]->outcome->risk_score);
-            }
-            if (isset($paymentIntentResponse->charges->data[0]->outcome->risk_level)) {
-                $order->setStripeRadarRiskLevel($paymentIntentResponse->charges->data[0]->outcome->risk_level);
-            }
-        }
     }
 
     public function hasSubscriptionsIn($orderItems)
@@ -135,15 +133,46 @@ class Order
 
         try
         {
-            $orderModel = $this->orderFactory->create();
-            $order = $orderModel->loadByIncrementId($incrementId);
-            if ($order && $order->getId())
+            $searchCriteria = $this->searchCriteriaBuilder
+                ->addFilter('increment_id', $incrementId)
+                ->create();
+
+            $orderList = $this->orderRepository->getList($searchCriteria);
+
+            if ($orderList->getTotalCount() === 1)
+            {
+                $orders = $orderList->getItems();
+                $order = reset($orders);
                 return $this->ordersCache[$incrementId] = $order;
+            }
         }
-        catch (\Exception $e)
+        catch(NoSuchEntityException $e)
         {
             return null;
         }
+        catch (\Exception $e)
+        {
+            $this->logger->logError($e->getMessage(), $e->getTraceAsString());
+            return null;
+        }
+
+        return null;
+    }
+
+    public function getOrdersByQuoteId($quoteId)
+    {
+        return $this->loadOrdersByQuoteId($quoteId);
+    }
+
+    public function loadOrdersByQuoteId($quoteId)
+    {
+        if (empty($quoteId))
+            return null;
+
+        $orderCollection = $this->orderCollectionFactory->create()
+            ->addFieldToFilter('quote_id', $quoteId);
+
+        return $orderCollection;
     }
 
     public function getOrderDescription($order)
@@ -164,6 +193,42 @@ class Order
             $description = "{$subscription}order #" . $order->getRealOrderId() . " by $customerName";
 
         return ucfirst($description);
+    }
+
+    public function getPaymentMethodId($order)
+    {
+        if (!$order || !$order->getPayment())
+            return null;
+
+        $payment = $order->getPayment();
+
+        // // Confirmation token takes precedence to normal token
+        // $confirmationTokenId = $payment->getAdditionalInformation("confirmation_token");
+
+        // if ($confirmationTokenId)
+        // {
+        //     try
+        //     {
+        //         $confirmationToken = $this->config->getStripeClient()->confirmationTokens->retrieve($confirmationTokenId);
+        //         if ($confirmationToken->payment_method)
+        //         {
+        //             return $confirmationToken->payment_method;
+        //         }
+        //     }
+        //     catch (\Exception $e)
+        //     {
+        //         $this->helper->logError("Could not retrieve confirmation token: " . $e->getMessage());
+        //     }
+        // }
+
+        $paymentMethodId = $payment->getAdditionalInformation("token");
+
+        if ($this->tokenHelper->isPaymentMethodToken($paymentMethodId))
+        {
+            return $paymentMethodId;
+        }
+
+        return null;
     }
 
     public function isMultishipping($order)
@@ -242,5 +307,74 @@ class Order
         $order->addStatusToHistory(false, $comment, false);
 
         return $order;
+    }
+
+    public function getTransactionId($order)
+    {
+        if (!$order || !$order->getPayment())
+            return null;
+
+        $transactionId = $order->getPayment()->getLastTransId();
+        $transactionId = $this->tokenHelper->cleanToken($transactionId);
+
+        if (empty($transactionId))
+            return null;
+
+        return $transactionId;
+    }
+
+    public function getPaymentIntentId($order)
+    {
+        $transactionId = $this->getTransactionId($order);
+
+        if (!$this->tokenHelper->isPaymentIntentToken($transactionId))
+            return null;
+
+        return $transactionId;
+    }
+
+    public function getExpiringCoupon($order)
+    {
+        if (empty($order))
+            return null;
+
+        $discountRules = $this->discountHelper->getDiscountRules($order->getAppliedRuleIds());
+
+        if (count($discountRules) > 1)
+        {
+            $this->logger->logError("Could not apply discount coupon: Multiple cart price rules were applied on the cart. Only one can be applied on subscription carts.");
+            return null;
+        }
+
+        if (empty($discountRules))
+        {
+            return null;
+        }
+
+        $couponCode = $order->getCouponCode() ?? "rule_id_" . $discountRules[0]->getRuleId();
+        $discountRules[0]->setCouponCode($couponCode);
+        return $discountRules[0];
+    }
+
+    public function removeTransactions($order)
+    {
+        $order->getPayment()->setLastTransId(null);
+        $order->getPayment()->setTransactionId(null);
+        $order->getPayment()->save();
+    }
+
+    public function createInvoice($order, $transactionId = null)
+    {
+        $invoice = $order->prepareInvoice();
+        $invoice->setTransactionId($transactionId);
+        $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::NOT_CAPTURE);
+        $invoice->register();
+        $order->addRelatedObject($invoice);
+
+        $sequenceId = $this->sequenceManager->getSequence($invoice->getEntityType(), $order->getStoreId())->getNextValue();
+        $invoice->setIncrementId($sequenceId);
+        $invoice->setState(\Magento\Sales\Model\Order\Invoice::STATE_OPEN);
+
+        return $invoice;
     }
 }

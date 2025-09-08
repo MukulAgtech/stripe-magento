@@ -26,6 +26,7 @@ class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
      * We should be able to create a recurring order using the legacy subscription structure.
      *
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testRecurringOrders()
     {
@@ -170,7 +171,9 @@ class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
 
         // Done, now trigger a recurring order webhook event
 
-        $customer = $this->tests->stripe()->customers->retrieve($customer->id);
+        $customer = $this->tests->stripe()->customers->retrieve($customer->id, [
+            'expand' => ['subscriptions']
+        ]);
         $subscription = $customer->subscriptions->data[0];
         $this->tests->event()->trigger("invoice.payment_succeeded", $subscription->latest_invoice, ['billing_reason' => 'subscription_cycle']);
 

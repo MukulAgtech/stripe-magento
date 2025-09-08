@@ -6,22 +6,15 @@ class Invoice
 {
     private $transactions = [];
     private $transactionSearchResultFactory;
-    private $productFactory;
-    private $dataHelper;
-    private $products;
-    private $subscriptionHelper;
+    private $subscriptionProductFactory;
 
     public function __construct(
         \Magento\Sales\Api\Data\TransactionSearchResultInterfaceFactory $transactionSearchResultFactory,
-        \Magento\Catalog\Model\ProductFactory $productFactory,
-        \StripeIntegration\Payments\Helper\Data $dataHelper,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionHelper
+        \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory
     )
     {
         $this->transactionSearchResultFactory = $transactionSearchResultFactory;
-        $this->productFactory = $productFactory;
-        $this->dataHelper = $dataHelper;
-        $this->subscriptionHelper = $subscriptionHelper;
+        $this->subscriptionProductFactory = $subscriptionProductFactory;
     }
 
     public function getTransactions($order)
@@ -33,34 +26,6 @@ class Invoice
         return $this->transactions[$order->getId()] = $transactions;
     }
 
-    public function aroundCanCancel($subject, \Closure $proceed)
-    {
-        $order = $subject->getOrder();
-
-        $isStripePaymentMethod = (strpos($order->getPayment()->getMethod(), "stripe_") === 0);
-
-        if (!$isStripePaymentMethod || !$this->dataHelper->isAdmin())
-            return $proceed();
-
-        $isPending = ($subject->getState() == \Magento\Sales\Model\Order\Invoice::STATE_OPEN);
-        $transactions = $this->getTransactions($order);
-        $hasTransactions = ($transactions->getSize() > 0);
-        $wasCaptured = false;
-        foreach ($transactions->getItems() as $transaction)
-        {
-            if ($transaction->getTxnType() == "capture")
-                $wasCaptured = true;
-        }
-
-        if ($isPending && $hasTransactions)
-            return false;
-
-        if ($wasCaptured)
-            return false;
-
-        return $proceed();
-    }
-
     public function hasSubscriptions($subject)
     {
         $items = $subject->getAllItems();
@@ -70,25 +35,10 @@ class Invoice
             if (!$item->getProductId())
                 continue;
 
-            $product = $this->loadProductById($item->getProductId());
-            if ($product && $this->subscriptionHelper->isSubscriptionOptionEnabled($product->getId()))
+            if ($this->subscriptionProductFactory->create()->fromProductId($item->getProductId())->isSubscriptionProduct())
                 return true;
         }
 
         return false;
     }
-
-    public function loadProductById($productId)
-    {
-        if (!isset($this->products))
-            $this->products = [];
-
-        if (!empty($this->products[$productId]))
-            return $this->products[$productId];
-
-        $this->products[$productId] = $this->productFactory->create()->load($productId);
-
-        return $this->products[$productId];
-    }
-
 }

@@ -67,7 +67,7 @@ class PartialCaptureCancelTest extends \PHPUnit\Framework\TestCase
 
         // Trigger webhooks
         $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id);
-        $this->tests->event()->trigger("charge.captured", $paymentIntent->charges->data[0]);
+        $this->tests->event()->trigger("charge.captured", $paymentIntent->latest_charge);
         $this->tests->event()->trigger("payment_intent.succeeded", $paymentIntent);
 
         // Stripe checks
@@ -112,19 +112,15 @@ class PartialCaptureCancelTest extends \PHPUnit\Framework\TestCase
         ]);
 
         // Stripe checks
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntent->id, ['expand' => ['latest_charge']]);
         $this->tests->compare($paymentIntent, [
             "amount" => $order->getGrandTotal() * 100,
             "amount_capturable" => 0,
             "amount_received" => $order->getTotalInvoiced() * 100,
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $order->getGrandTotal() * 100,
-                        "amount_captured" => $order->getTotalInvoiced() * 100,
-                        "amount_refunded" => $order->getTotalCanceled() * 100,
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $order->getGrandTotal() * 100,
+                "amount_captured" => $order->getTotalInvoiced() * 100,
+                "amount_refunded" => $order->getTotalCanceled() * 100,
             ]
         ]);
     }

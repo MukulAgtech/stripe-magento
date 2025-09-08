@@ -27,6 +27,7 @@ class RefundsTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
      * @magentoConfigFixture current_store currency/options/default EUR
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testRefunds()
     {
@@ -81,7 +82,7 @@ class RefundsTest extends \PHPUnit\Framework\TestCase
 
         // Trigger webhooks
         $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($response->payment_intent->id);
-        $this->tests->event()->trigger("charge.refunded", $paymentIntent->charges->data[0]->id);
+        $this->tests->event()->trigger("charge.refunded", $paymentIntent->latest_charge);
 
         // Order checks
         $order = $this->tests->refreshOrder($order);

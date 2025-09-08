@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace StripeIntegration\Payments\Model;
 
 use StripeIntegration\Payments\Exception\WebhookException;
@@ -11,7 +13,6 @@ class WebhookEvent extends \Magento\Framework\Model\AbstractModel
     private $stdEvent;
     private $dateTime;
     private $config;
-    private $defaultStripeClient;
     private $webhooksHelper;
     private $resourceModel;
     private $orderHelper;
@@ -24,15 +25,14 @@ class WebhookEvent extends \Magento\Framework\Model\AbstractModel
         \StripeIntegration\Payments\Model\ResourceModel\WebhookEvent $resourceModel,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+        ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+        ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
         array $data = []
     ) {
         $this->orderHelper = $orderHelper;
         $this->webhooksHelper = $webhooksHelper;
         $this->config = $config;
         $this->dateTime = $dateTime;
-        $this->defaultStripeClient = $config->getStripeClient();
         $this->resourceModel = $resourceModel;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
@@ -148,15 +148,6 @@ class WebhookEvent extends \Magento\Framework\Model\AbstractModel
         {
             if ($stripeClient)
             {
-                if ($this->getOrderIncrementId())
-                {
-                    $stripeClient = $this->findStripeClientByOrder();
-                }
-                else
-                {
-                    $stripeClient = $this->defaultStripeClient;
-                }
-
                 $this->stdEvent = $stripeClient->events->retrieve($this->getEventId(), []);
             }
             else
@@ -256,7 +247,7 @@ class WebhookEvent extends \Magento\Framework\Model\AbstractModel
 
         foreach ($keys as $secretKey => $publicKey)
         {
-            $this->config->initStripeFromSecretKey($secretKey);
+            $this->config->reInitStripeFromSecretKey($secretKey);
 
             try
             {

@@ -28,10 +28,11 @@ class Quote
     private $objectFactory;
     private $paymentsHelper;
     private $quoteCollectionFactory;
-    private $quoteManagement;
     private $storeManager;
     private $paymentMethodHelper;
     private $billingAddressIdentifier;
+    private $backendSessionQuote;
+    private $requestCache;
 
     public function __construct()
     {
@@ -50,8 +51,9 @@ class Quote
         $this->api = $this->objectManager->get(\StripeIntegration\Payments\Api\Service::class);
         $this->paymentsHelper = $this->objectManager->get(\StripeIntegration\Payments\Helper\Generic::class);
         $this->paymentMethodHelper = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\PaymentMethod::class);
+        $this->requestCache = $this->objectManager->get(\StripeIntegration\Payments\Helper\RequestCache::class);
 
-        $this->quoteManagement = $this->objectManager->get(\StripeIntegration\Payments\Test\Integration\Helper\QuoteManagement::class);
+        $this->backendSessionQuote = $this->objectManager->get(\Magento\Backend\Model\Session\Quote::class);
 
         \Magento\TestFramework\Helper\Bootstrap::getInstance()->loadArea(\Magento\Framework\App\Area::AREA_FRONTEND);
 
@@ -89,13 +91,10 @@ class Quote
     {
         \Magento\TestFramework\Helper\Bootstrap::getInstance()->loadArea(\Magento\Framework\App\Area::AREA_ADMINHTML);
 
-        $this->quote = $this->objectManager
-            ->create(\Magento\Quote\Model\Quote::class)
+        $this->quote = $this->backendSessionQuote->getQuote()
             ->setStoreId($this->store->getId())
             ->setWebsiteId($this->store->getWebsiteId())
             ->setInventoryProcessed(false);
-
-        $this->checkoutHelper->getCheckout()->replaceQuote($this->quote);
 
         return $this;
     }
@@ -132,7 +131,6 @@ class Quote
             case 'LoggedIn':
                 $this->customer = $customer = $this->customerRepository->get('customer@example.com');
                 $this->customerSession->setCustomerId($customer->getId());
-
                 $this->quote->assignCustomer($customer);
 
                 break;
@@ -143,6 +141,16 @@ class Quote
         }
 
         return $this;
+    }
+
+    public function getCustomer()
+    {
+        return $this->customer;
+    }
+
+    public function getCustomerSession()
+    {
+        return $this->customerSession;
     }
 
     // Multishipping Checkout
@@ -323,6 +331,11 @@ class Quote
                 $this->addProduct('simple-monthly-subscription-initial-fee-product', 2);
                 break;
 
+            case 'SimpleProductVirtualSubscription':
+                $this->addProduct('simple-product', 2);
+                $this->addProduct('virtual-monthly-subscription-product', 2);
+                break;
+
             case 'VirtualMixed':
                 $this->addProduct('virtual-product', 1);
                 $this->addProduct('virtual-monthly-subscription-product', 1);
@@ -346,6 +359,7 @@ class Quote
                 $this->addProduct('virtual-trial-monthly-subscription-product', 1);
                 break;
 
+            // All bundle products ship together, not separately
             case "DynamicBundleSubscription":
                 $this->addProduct('bundle-dynamic', 2, ["simple-product" => 2, "simple-monthly-subscription-product" => 2]);
                 break;
@@ -366,6 +380,16 @@ class Quote
             case 'FixedBundleMixedTrial':
                 $this->addProduct('bundle-fixed', 2, ["simple-product" => 2, "simple-trial-monthly-subscription-product" => 2]);
                 $this->addProduct('simple-product', 2);
+                break;
+
+            case 'Simple':
+                $this->addProduct('simple-product', 2);
+                break;
+
+            case 'ThreePartialCreditMemos':
+                $this->addProduct('configurable-product', 1, [["tests_product_type" => "simple"]]);
+                $this->addProduct('virtual-product', 1);
+                $this->addProduct('bundle-fixed-no-subscriptions', 1, ["simple-product" => 2, "virtual-product" => 2]);
                 break;
 
             default:
@@ -414,6 +438,16 @@ class Quote
         }
 
         return $this->save();
+    }
+
+    public function reloadQuote()
+    {
+        if ($this->quote && $this->quote->getId()) {
+            $this->quote = $this->quoteRepository->get($this->quote->getId());
+            $this->checkoutSession->replaceQuote($this->quote);
+        }
+
+        return $this;
     }
 
     public function setShippingMethod($identifier)
@@ -479,7 +513,9 @@ class Quote
 
             $billingAddressData = $this->quote->getBillingAddress()->getData();
             $shippingAddressData = $this->quote->getShippingAddress()->getData();
-            $this->availablePaymentMethods = json_decode($this->api->get_checkout_payment_methods($billingAddressData, $shippingAddressData), true);
+            $shippingMethod = $this->quote->getShippingAddress()->getShippingMethod();
+            $couponCode = $this->quote->getCouponCode();
+            $this->availablePaymentMethods = json_decode($this->api->get_checkout_payment_methods($billingAddressData, $shippingAddressData, $shippingMethod, $couponCode), true);
 
             if (!empty($this->availablePaymentMethods['error']))
                 throw new \Exception($this->availablePaymentMethods['error']);
@@ -497,18 +533,18 @@ class Quote
 
     public function placeOrder()
     {
-        $this->quote->collectTotals()->save();
+        $this->reCollectTotals($this->quote);
+        $this->quote->save();
 
         if (!$this->quote->getCustomerEmail() && $this->customerEmail) // Magento 2.3
             $this->quote->setCustomerEmail($this->customerEmail);
 
-        return $this->cartManagement->submit($this->quote);
-    }
+        $order = $this->cartManagement->submit($this->quote);
 
-    public function mockOrder()
-    {
-        $order = $this->quoteManagement->mockOrder($this->quote);
-        $this->checkoutSession->replaceQuote($this->quote);
+        $this->checkoutSession->setLastRealOrder($order);
+        $this->checkoutSession->setLastRealOrderId($order->getIncrementId());
+        $this->requestCache->clear();
+
         return $order;
     }
 
@@ -546,5 +582,25 @@ class Quote
     public function getStore()
     {
         return $this->store;
+    }
+
+    public function reCollectTotals($quote)
+    {
+        $quote->getBillingAddress()->unsetData('cached_items_all');
+        $quote->getBillingAddress()->unsetData('cached_items_nominal');
+        $quote->getBillingAddress()->unsetData('cached_items_nonnominal');
+        if (!$quote->getIsVirtual())
+        {
+            $quote->getShippingAddress()->unsetData('cached_items_all');
+            $quote->getShippingAddress()->unsetData('cached_items_nominal');
+            $quote->getShippingAddress()->unsetData('cached_items_nonnominal');
+        }
+        foreach ($quote->getAllItems() as $item)
+        {
+            $item->setTaxCalculationPrice(null);
+            $item->setBaseTaxCalculationPrice(null);
+        }
+        $quote->setTotalsCollectedFlag(false);
+        $quote->collectTotals();
     }
 }

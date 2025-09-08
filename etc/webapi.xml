@@ -1,21 +1,8 @@
 <?xml version="1.0"?>
 
 <routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Webapi:etc/webapi.xsd">
-    <route url="/V1/stripe/payments/redirect_url" method="GET">
-        <service class="StripeIntegration\Payments\Api\ServiceInterface" method="redirect_url"/>
-        <resources>
-            <resource ref="anonymous"/>
-        </resources>
-    </route>
 
     <!-- Express Checkout -->
-    <route url="/V1/stripe/payments/set_billing_address" method="POST">
-        <service class="StripeIntegration\Payments\Api\ServiceInterface" method="set_billing_address"/>
-        <resources>
-            <resource ref="anonymous"/>
-        </resources>
-    </route>
-
     <route url="/V1/stripe/payments/ece_shipping_address_changed" method="POST">
         <service class="StripeIntegration\Payments\Api\ServiceInterface" method="ece_shipping_address_changed"/>
         <resources>
@@ -51,8 +38,8 @@
         </resources>
     </route>
 
-    <route url="/V1/stripe/payments/get_trialing_subscriptions" method="POST">
-        <service class="StripeIntegration\Payments\Api\ServiceInterface" method="get_trialing_subscriptions"/>
+    <route url="/V1/stripe/payments/get_future_subscriptions" method="POST">
+        <service class="StripeIntegration\Payments\Api\ServiceInterface" method="get_future_subscriptions"/>
         <resources>
             <resource ref="anonymous"/>
         </resources>

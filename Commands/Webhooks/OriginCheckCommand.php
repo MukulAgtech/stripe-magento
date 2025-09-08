@@ -6,6 +6,9 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * @codeCoverageIgnore
+ */
 class OriginCheckCommand extends Command
 {
     private $areaCodeFactory;
@@ -26,7 +29,7 @@ class OriginCheckCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $newValue = $input->getArgument("enabled");
         $objectManager = \Magento\Framework\App\ObjectManager::getInstance();

@@ -99,6 +99,11 @@
         <column name="quantity" xsi:type="int" unsigned="true" nullable="false" default="1" comment="Subscription quantity" />
         <column name="currency" xsi:type="varchar" length="255" nullable="false" comment="Currency code" />
         <column name="grand_total" xsi:type="decimal" scale="4" precision="10" unsigned="false" nullable="false" default="0" comment="Grand total"/>
+        <column name="plan_amount" xsi:type="int" unsigned="true" nullable="false" default="0" comment="Stripe subscription amount, as per the subscription plan"/>
+        <column name="start_date" xsi:type="timestamp" nullable="true" comment="Subscription start date"/>
+        <column name="trial_end" xsi:type="timestamp" nullable="true" comment="Subscription trial end date"/>
+        <column name="plan_interval" xsi:type="varchar" length="255" nullable="false" comment="Subscription interval"/>
+        <column name="plan_interval_count" xsi:type="int" nullable="true" default="1" comment="Subscription interval count"/>
         <column name="last_updated" xsi:type="timestamp" nullable="true" on_update="false" comment="Time when the subscription was last updated by the customer"/>
         <column name="reorder_from_quote_id" xsi:type="int" unsigned="true" nullable="true" comment="Product ID" />
         <column name="status" xsi:type="varchar" length="255" nullable="false" comment="Subscription Status" />
@@ -140,16 +145,9 @@
         <column name="start_on_specific_date" xsi:type="boolean" nullable="false" default="false" comment="Start subscription on specific date"/>
         <column xsi:type="date" name="start_date" nullable="true" comment="Subscription start date"/>
         <column name="first_payment" xsi:type="varchar" length="255" nullable="true" comment="First payment collection happens on"/>
-        <column name="prorate_first_payment" xsi:type="boolean" nullable="false" default="false" comment="Prorate first payment"/>
         <column name="upgrades_downgrades" xsi:type="boolean" nullable="false" default="false" comment="Upgrades and downgrades"/>
         <column xsi:type="smallint" name="upgrades_downgrades_use_config" unsigned="true" nullable="false"
                 identity="false" default="1" comment="Use Config Upgrades and downgrades"/>
-        <column name="prorate_upgrades" xsi:type="boolean" nullable="false" default="false" comment="Prorations for upgrades"/>
-        <column xsi:type="smallint" name="prorate_upgrades_use_config" unsigned="true" nullable="false"
-                identity="false" default="1" comment="Use Config Prorations for upgrades"/>
-        <column name="prorate_downgrades" xsi:type="boolean" nullable="false" default="false" comment="Prorations for downgrades"/>
-        <column xsi:type="smallint" name="prorate_downgrades_use_config" unsigned="true" nullable="false"
-                identity="false" default="1" comment="Use Config Prorations for downgrades"/>
         <constraint xsi:type="primary" referenceId="PRIMARY">
             <column name="product_id"/>
         </constraint>
@@ -244,6 +242,9 @@
         <index referenceId="STRIPE_CHECKOUT_SESSIONS_QUOTE_ID" indexType="btree">
             <column name="quote_id"/>
         </index>
+        <index referenceId="STRIPE_CHECKOUT_SESSIONS_ORDER_INCREMENT_ID" indexType="btree">
+            <column name="order_increment_id"/>
+        </index>
         <index referenceId="STRIPE_CHECKOUT_SESSIONS_CHECKOUT_SESSION_ID" indexType="btree">
             <column name="checkout_session_id"/>
         </index>
@@ -309,6 +310,8 @@
     </table>
     <table name="quote" resource="default" engine="innodb">
         <column name="is_used_for_recurring_orders" xsi:type="boolean" default="false" comment="Added by the Stripe module"/>
+        <column name="initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee tax"/>
+        <column name="base_initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee tax"/>
         <index referenceId="QUOTE_IS_USED_FOR_RECURRING_ORDERS" indexType="btree">
             <column name="is_used_for_recurring_orders"/>
         </index>
@@ -323,21 +326,31 @@
         <column name="base_initial_fee" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee"/>
         <column name="initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee tax"/>
         <column name="base_initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee tax"/>
+        <column name="stripe_original_subscription_price" xsi:type="decimal" scale="4" precision="20" unsigned="false" nullable="true" comment="Stripe original subscription price"/>
+        <column name="stripe_base_original_subscription_price" xsi:type="decimal" scale="4" precision="20" unsigned="false" nullable="true" comment="Stripe base original subscription price"/>
     </table>
     <table name="quote_item" resource="default" engine="innodb">
         <column name="initial_fee" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee"/>
         <column name="base_initial_fee" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee"/>
         <column name="initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee tax"/>
         <column name="base_initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee tax"/>
+        <column name="stripe_original_subscription_price" xsi:type="decimal" scale="4" precision="20" unsigned="false" nullable="true" comment="Stripe original subscription price"/>
+        <column name="stripe_base_original_subscription_price" xsi:type="decimal" scale="4" precision="20" unsigned="false" nullable="true" comment="Stripe base original subscription price"/>
     </table>
     <table name="sales_order" resource="sales" comment="Sales Flat Order">
         <column name="stripe_radar_risk_score" xsi:type="int" nullable="true" identity="false" comment="Stripe Radar Risk Score"/>
         <column name="stripe_radar_risk_level" xsi:type="varchar" nullable="true" length="155" default="NA" comment="Stripe Radar Risk Level"/>
+        <column name="stripe_payment_method_type" xsi:type="varchar" nullable="true" length="255" comment="Stripe Payment method Type"/>
+        <column name="initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee tax"/>
+        <column name="base_initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee tax"/>
         <index referenceId="SALES_ORDER_ENTITY_STRIPE_RADAR_RISK_SCORE" indexType="btree">
             <column name="stripe_radar_risk_score"/>
         </index>
         <index referenceId="SALES_ORDER_ENTITY_STRIPE_RADAR_RISK_LEVEL" indexType="btree">
             <column name="stripe_radar_risk_level"/>
+        </index>
+        <index referenceId="SALES_ORDER_ENTITY_STRIPE_PAYMENT_METHOD_TYPE" indexType="btree">
+            <column name="stripe_payment_method_type"/>
         </index>
     </table>
     <table name="stripe_payment_methods" resource="default" engine="innodb" comment="Stripe Payment Methods">
@@ -361,8 +374,19 @@
     <table name="sales_order_grid" resource="sales" comment="Sales Flat Order Grid">
         <column name="stripe_radar_risk_score" xsi:type="int" nullable="true" identity="false" comment="Stripe Radar Risk Score"/>
         <column name="stripe_radar_risk_level" xsi:type="varchar" nullable="true" length="155" default="NA" comment="Stripe Radar Risk Level"/>
+        <column name="stripe_payment_method_type" xsi:type="varchar" nullable="true" length="255" comment="Stripe Payment method Type"/>
+        <column name="initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription initial fee tax"/>
+        <column name="base_initial_fee_tax" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="true" comment="Stripe subscription base initial fee tax"/>
+        <index referenceId="SALES_ORDER_ENTITY_STRIPE_RADAR_RISK_SCORE" indexType="btree">
+            <column name="stripe_radar_risk_score"/>
+        </index>
+        <index referenceId="SALES_ORDER_ENTITY_STRIPE_RADAR_RISK_LEVEL" indexType="btree">
+            <column name="stripe_radar_risk_level"/>
+        </index>
+        <index referenceId="SALES_ORDER_ENTITY_STRIPE_PAYMENT_METHOD_TYPE" indexType="btree">
+            <column name="stripe_payment_method_type"/>
+        </index>
     </table>
-
     <table name="stripe_account" resource="default" engine="innodb">
         <column name="id" xsi:type="int" identity="true" unsigned="true" nullable="false" comment="Entity ID" />
         <column name="account_id" xsi:type="varchar" length="255" nullable="false" comment="Stripe account ID" />
@@ -382,6 +406,66 @@
         </index>
         <index referenceId="STRIPE_ACCOUNT_PUBLISHABLE_KEY" indexType="btree">
             <column name="publishable_key"/>
+        </index>
+    </table>
+
+    <table name="stripe_tax_rates" resource="default" engine="innodb" comment="Tax Rates">
+        <column name="id" xsi:type="int" identity="true" unsigned="true" nullable="false" comment="Entity ID" />
+        <column name="stripe_account_id" xsi:type="int" unsigned="true" nullable="false" comment="Stripe account ID" />
+        <column name="tax_rate_id" xsi:type="varchar" length="255" nullable="false" comment="Tax rate ID" />
+        <column name="display_name" xsi:type="varchar" length="255" nullable="false" comment="Display name" />
+        <column name="inclusive" xsi:type="boolean" nullable="false" default="false" comment="Inclusive" />
+        <column name="percentage" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="false" comment="Percentage" />
+        <column name="country_code" xsi:type="varchar" length="255" nullable="false" comment="Country Code" />
+
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="id"/>
+        </constraint>
+        <index referenceId="STRIPE_TAX_RATES_STRIPE_ACCOUNT_ID" indexType="btree">
+            <column name="stripe_account_id"/>
+        </index>
+        <index referenceId="STRIPE_TAX_RATES_TAX_RATE_ID" indexType="btree">
+            <column name="tax_rate_id"/>
+        </index>
+        <index referenceId="STRIPE_TAX_RATES_DISPLAY_NAME" indexType="btree">
+            <column name="display_name"/>
+        </index>
+        <index referenceId="STRIPE_TAX_RATES_INCLUSIVE" indexType="btree">
+            <column name="inclusive"/>
+        </index>
+        <index referenceId="STRIPE_TAX_RATES_PERCENTAGE" indexType="btree">
+            <column name="percentage"/>
+        </index>
+        <index referenceId="STRIPE_TAX_RATES_COUNTRY_CODE" indexType="btree">
+            <column name="country_code"/>
+        </index>
+    </table>
+
+    <table name="stripe_shipping_rates" resource="default" engine="innodb" comment="Shipping Rates">
+        <column name="id" xsi:type="int" identity="true" unsigned="true" nullable="false" comment="Entity ID" />
+        <column name="stripe_account_id" xsi:type="int" unsigned="true" nullable="false" comment="Stripe account ID" />
+        <column name="shipping_rate_id" xsi:type="varchar" length="255" nullable="false" comment="Shipping rate ID" />
+        <column name="display_name" xsi:type="varchar" length="255" nullable="false" comment="Display name" />
+        <column name="amount" xsi:type="decimal" scale="4" precision="10" unsigned="true" nullable="false" comment="Amount" />
+        <column name="currency" xsi:type="varchar" length="255" nullable="false" comment="Currency" />
+
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="id"/>
+        </constraint>
+        <index referenceId="STRIPE_SHIPPING_RATES_STRIPE_ACCOUNT_ID" indexType="btree">
+            <column name="stripe_account_id"/>
+        </index>
+        <index referenceId="STRIPE_SHIPPING_RATES_SHIPPING_RATE_ID" indexType="btree">
+            <column name="shipping_rate_id"/>
+        </index>
+        <index referenceId="STRIPE_SHIPPING_RATES_DISPLAY_NAME" indexType="btree">
+            <column name="display_name"/>
+        </index>
+        <index referenceId="STRIPE_SHIPPING_RATES_AMOUNT" indexType="btree">
+            <column name="amount"/>
+        </index>
+        <index referenceId="STRIPE_SHIPPING_RATES_CURRENCY" indexType="btree">
+            <column name="currency"/>
         </index>
     </table>
 

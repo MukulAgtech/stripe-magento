@@ -52,7 +52,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $paymentMethod = $paymentInfoBlock->getPaymentMethod();
         $formattedAmount = $paymentInfoBlock->getFormattedAmount();
         $paymentStatus = $paymentInfoBlock->getPaymentStatus();
-        $isStripeMethod = $paymentInfoBlock->isStripeMethod();
         $paymentIntent = $paymentInfoBlock->getPaymentIntent();
         $subscription = $paymentInfoBlock->getSubscription();
         $setupIntent = $paymentInfoBlock->getSetupIntent();
@@ -67,7 +66,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertStringStartsWith("pm_", $paymentMethod->id);
         $this->assertEquals("$69.80", $formattedAmount);
         $this->assertEquals("succeeded", $paymentStatus);
-        $this->assertTrue($isStripeMethod);
         $this->assertStringStartsWith("pi_", $paymentIntent->id);
         $this->assertStringStartsWith("sub_", $subscription->id);
         $this->assertEmpty($setupIntent);
@@ -88,7 +86,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $stripe = $this->stripeConfig->getStripeClient();
 
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $stripe->customers->retrieve($customerId);
+        $customer = $stripe->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertEquals(1, count($customer->subscriptions->data));
         $subscription = $customer->subscriptions->data[0];
         $this->assertNotEmpty($subscription->latest_invoice);
@@ -132,8 +132,8 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals("processing", $order->getStatus());
         $this->assertEquals(31.65, $order->getTotalRefunded());
 
-        $paymentIntent = $stripe->paymentIntents->retrieve($paymentIntent->id);
-        $this->assertEquals(6980, $paymentIntent->charges->data[0]->amount);
-        $this->assertEquals(3165, $paymentIntent->charges->data[0]->amount_refunded);
+        $paymentIntent = $stripe->paymentIntents->retrieve($paymentIntent->id, ['expand' => ['latest_charge']]);
+        $this->assertEquals(6980, $paymentIntent->latest_charge->amount);
+        $this->assertEquals(3165, $paymentIntent->latest_charge->amount_refunded);
     }
 }

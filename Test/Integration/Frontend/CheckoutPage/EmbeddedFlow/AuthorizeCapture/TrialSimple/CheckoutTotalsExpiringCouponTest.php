@@ -38,25 +38,15 @@ class CheckoutTotalsExpiringCouponTest extends \PHPUnit\Framework\TestCase
         $quote = $this->quote->getQuote();
         $this->assertEquals("10_percent_apply_once", $quote->getCouponCode());
 
-        $trialSubscriptionsConfig = $this->service->get_trialing_subscriptions(
+        $futureSubscriptionsConfig = $this->service->get_future_subscriptions(
             $quote->getBillingAddress()->getData(),
             $quote->getShippingAddress()->getData(),
             $quote->getShippingAddress()->getShippingMethod(),
             $quote->getCouponCode()
         );
-        $trialSubscriptionsConfig = json_decode($trialSubscriptionsConfig, true);
+        $futureSubscriptionsConfig = json_decode($futureSubscriptionsConfig, true);
 
         $order = $this->quote->placeOrder();
-        $this->assertEquals($order->getSubtotal(), $trialSubscriptionsConfig["subscriptions_total"], "Subtotal");
-        $this->assertEquals($order->getBaseSubtotal(), $trialSubscriptionsConfig["base_subscriptions_total"], "Base Subtotal");
-
-        $this->assertEquals($order->getShippingAmount(), $trialSubscriptionsConfig["shipping_total"], "Shipping");
-        $this->assertEquals($order->getBaseShippingAmount(), $trialSubscriptionsConfig["base_shipping_total"], "Base Shipping");
-
-        $this->assertEquals($order->getDiscountAmount(), -$trialSubscriptionsConfig["discount_total"], "Discount");
-        $this->assertEquals($order->getBaseDiscountAmount(), -$trialSubscriptionsConfig["base_discount_total"], "Base Discount");
-
-        $this->assertEquals($order->getTaxAmount(), $trialSubscriptionsConfig["tax_total"], "Tax");
-        $this->assertEquals($order->getBaseTaxAmount(), $trialSubscriptionsConfig["tax_total"], "Base Tax");
+        $this->assertStringContainsString("14.74", $futureSubscriptionsConfig["formatted_amount"], "Amount");
     }
 }

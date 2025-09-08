@@ -54,7 +54,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $magentoProduct = $this->tests->helper()->loadProductBySku("simple-monthly-subscription-product");
@@ -99,7 +101,7 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         // Change the subscription price
         $this->assertNotEmpty($customer->subscriptions->data[0]->metadata->{"SubscriptionProductIDs"});
         $productId = $customer->subscriptions->data[0]->metadata->{"SubscriptionProductIDs"};
-        $product = $this->helper->loadProductById($productId);
+        $product = $this->productRepository->getById($productId);
         $productId = $product->getEntityId();
         $product->setPrice(15);
         $product = $this->tests->saveProduct($product);
@@ -120,15 +122,24 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         $exitCode = $this->subscriptionPriceCommand->run($input, $output);
         $this->assertEquals(0, $exitCode);
 
-        // Order checks
+        // New order checks
         $newOrdersCount = $this->tests->getOrdersCount();
-
         $this->assertEquals($ordersCount + 1, $newOrdersCount);
         $newOrder = $this->tests->getLastOrder();
         $this->assertNotEquals($order->getIncrementId(), $newOrder->getIncrementId());
+        $this->compare->object($newOrder->getData(), [
+            "state" => "closed",
+            "status" => "closed",
+            "base_total_paid" => 0,
+            "total_invoiced" => 0,
+            "total_paid" => 0,
+            "total_due" => "21.2400",
+        ]);
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $subscription = $customer->subscriptions->data[0];
         $this->compare->object($customer->subscriptions->data[0], [
             "items" => [

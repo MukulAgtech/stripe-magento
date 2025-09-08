@@ -7,7 +7,6 @@ use StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServiceFactory;
 class StripeObjectServicePool
 {
     private $stripeObjectServiceFactory;
-    private $stripeObjectServices;
 
     public function __construct(
         StripeObjectServiceFactory $stripeObjectServiceFactory
@@ -18,11 +17,8 @@ class StripeObjectServicePool
 
     public function getStripeObjectService($objectSpace)
     {
-        if (!isset($this->stripeObjectServices[$objectSpace])) {
-            $this->stripeObjectServices[$objectSpace] = $this->stripeObjectServiceFactory
+        return $this->stripeObjectServiceFactory
                 ->create()
                 ->setObjectSpace($objectSpace);
-        }
-        return $this->stripeObjectServices[$objectSpace];
     }
 }

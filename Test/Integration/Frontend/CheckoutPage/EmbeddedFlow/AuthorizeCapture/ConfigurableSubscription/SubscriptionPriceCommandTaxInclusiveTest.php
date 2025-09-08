@@ -66,7 +66,9 @@ class SubscriptionPriceCommandTaxInclusiveTest extends \PHPUnit\Framework\TestCa
 
         // Stripe checks
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $magentoProduct = $this->tests->helper()->loadProductBySku("simple-monthly-subscription-product");
@@ -113,7 +115,7 @@ class SubscriptionPriceCommandTaxInclusiveTest extends \PHPUnit\Framework\TestCa
         // Change the subscription price
         $this->assertNotEmpty($customer->subscriptions->data[0]->metadata->{"SubscriptionProductIDs"});
         $productId = $customer->subscriptions->data[0]->metadata->{"SubscriptionProductIDs"};
-        $product = $this->helper->loadProductById($productId);
+        $product = $this->productRepository->getById($productId);
         $productId = $product->getEntityId();
         $product->setPrice(15);
         $product = $this->tests->saveProduct($product);
@@ -195,7 +197,9 @@ class SubscriptionPriceCommandTaxInclusiveTest extends \PHPUnit\Framework\TestCa
         ]);
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         $subscription = $customer->subscriptions->data[0];

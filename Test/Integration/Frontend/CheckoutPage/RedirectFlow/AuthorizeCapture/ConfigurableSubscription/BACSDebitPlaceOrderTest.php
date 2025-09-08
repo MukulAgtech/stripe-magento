@@ -58,7 +58,9 @@ class BACSDebitPlaceOrderTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $session->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         $ordersCount = $this->tests->getOrdersCount();
@@ -90,7 +92,9 @@ class BACSDebitPlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals($session->amount_total / 100, round($order->getGrandTotal(), 2));
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Stripe checks

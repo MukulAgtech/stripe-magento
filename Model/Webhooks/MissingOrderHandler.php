@@ -6,6 +6,8 @@ class MissingOrderHandler
 {
     private $wasOrderPlaced = false;
     private $wasAdminNotified = false;
+    private $emailsEnabled = true;
+    private $placedOrder = null;
     private $orderHelper;
     private $quoteHelper;
     private $convert;
@@ -15,10 +17,12 @@ class MissingOrderHandler
     private $stripePaymentIntentModel;
     private $emailHelper;
     private $logger;
-    private $helper;
     private $addressRenderer;
     private $orderAddressFactory;
-    private $subscriptionProductFactory;
+    private $checkoutFlow;
+    private $chargeSucceededEvent;
+    private $currencyHelper;
+    private $webhooksHelper;
 
     public function __construct(
         \StripeIntegration\Payments\Helper\Order $orderHelper,
@@ -26,13 +30,15 @@ class MissingOrderHandler
         \StripeIntegration\Payments\Helper\Convert $convert,
         \StripeIntegration\Payments\Helper\Email $emailHelper,
         \StripeIntegration\Payments\Helper\Logger $logger,
-        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\Webhooks $webhooksHelper,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\ResourceModel\PaymentIntent\CollectionFactory $stripePaymentIntentsCollectionFactory,
-        \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
         \Magento\Quote\Model\QuoteManagement $quoteManagement,
         \Magento\Sales\Model\Order\Address\Renderer $addressRenderer,
-        \Magento\Sales\Model\Order\AddressFactory $orderAddressFactory
+        \Magento\Sales\Model\Order\AddressFactory $orderAddressFactory,
+        \StripeIntegration\Payments\Model\Stripe\Event\ChargeSucceeded $chargeSucceededEvent
     )
     {
         $this->orderHelper = $orderHelper;
@@ -40,17 +46,25 @@ class MissingOrderHandler
         $this->convert = $convert;
         $this->emailHelper = $emailHelper;
         $this->logger = $logger;
-        $this->helper = $helper;
+        $this->webhooksHelper = $webhooksHelper;
         $this->config = $config;
         $this->stripePaymentIntentsCollectionFactory = $stripePaymentIntentsCollectionFactory;
-        $this->subscriptionProductFactory = $subscriptionProductFactory;
+        $this->checkoutFlow = $checkoutFlow;
         $this->quoteManagement = $quoteManagement;
         $this->addressRenderer = $addressRenderer;
         $this->orderAddressFactory = $orderAddressFactory;
+        $this->chargeSucceededEvent = $chargeSucceededEvent;
+        $this->currencyHelper = $currencyHelper;
     }
 
     public function fromEvent(array $event)
     {
+        $updatedCharge = null;
+        $this->placedOrder = null;
+        $this->wasOrderPlaced = false;
+        $this->wasAdminNotified = false;
+        $this->emailsEnabled = $this->config->isMissingOrderEmailsEnabled();
+
         if (empty($event['type']) || $event['type'] != 'charge.succeeded')
             return $this;
 
@@ -63,43 +77,71 @@ class MissingOrderHandler
         if ($this->orderHelper->loadOrderByIncrementId($event['data']['object']['metadata']['Order #']))
             return $this;
 
+        $eventId = $event['id'];
         $charge = $event['data']['object'];
         $quote = $this->loadQuoteByOrderIncrementId($charge['metadata']['Order #'], $charge['payment_intent']);
         if (!$quote)
         {
+            $this->webhooksHelper->log("A charge.succeeded event arrived ($eventId), but we could not find the quote for order increment id: " . $charge['metadata']['Order #']);
             $this->notifyAdminQuoteIsMissing($charge);
             return $this;
         }
 
         if (!$this->grandTotalMatches($quote, $charge['amount']))
         {
+            $this->webhooksHelper->log("A charge.succeeded event arrived ($eventId), but the grand total of the quote does not match the charge amount.");
             $this->notifyAdminGrandTotalMismatch($quote, $charge);
             return $this;
         }
 
         if (!$this->currencyMatches($quote, $charge['currency']))
         {
+            $this->webhooksHelper->log("A charge.succeeded event arrived ($eventId), but the currency of the quote does not match the charge currency.");
             $this->notifyAdminCurrencyMismatch($quote, $charge);
             return $this;
         }
 
-        if ($this->hasSubscriptionsWithFutureStartDate($quote))
+        if ($this->quoteHelper->hasSubscriptionsWithStartDate($quote))
         {
             return $this;
         }
 
         try
         {
-            $order = $this->reAttemptOrderPlacement($quote);
-            $this->updateChargeFromOrder($order, $charge);
+            $this->placedOrder = $order = $this->reAttemptOrderPlacement($quote, $charge);
+            $updatedCharge = $this->updateChargeFromOrder($order, $charge);
+            $this->processEvent($event, $updatedCharge);
+            $message = __("This order failed to be created when the original payment was collected. It has been automatically re-created via it's charge.succeeded webhook event.");
+            $this->orderHelper->addOrderComment($message, $order);
+            $this->orderHelper->saveOrder($order);
+            $this->webhooksHelper->log("A charge.succeeded event arrived ($eventId), and we successfully placed the order: " . $order->getIncrementId());
             $this->notifyAdminOrderPlaced($order, $quote, $charge);
         }
         catch (\Exception $e)
         {
+            $this->webhooksHelper->log("A charge.succeeded event arrived ($eventId), but we could not place the order: " . $e->getMessage() . "\n" . $e->getTraceAsString());
             $this->notifyAdminCouldNotPlaceOrder($e, $quote, $charge);
         }
 
         return $this;
+    }
+
+    private function processEvent($event, $updatedCharge)
+    {
+        if (!$updatedCharge)
+            return;
+
+        // Try to process the charge.succeeded event
+        try
+        {
+            $updatedCharge = json_decode(json_encode($updatedCharge), true);
+            $event['data']['object'] = $updatedCharge;
+            $this->chargeSucceededEvent->process($event, $updatedCharge);
+        }
+        catch (\Exception $e)
+        {
+            $this->logger->logError($e->getMessage(), $e->getTraceAsString());
+        }
     }
 
     public function wasOrderPlaced()
@@ -107,9 +149,19 @@ class MissingOrderHandler
         return $this->wasOrderPlaced;
     }
 
+    public function getPlacedOrder()
+    {
+        return $this->placedOrder;
+    }
+
     public function wasAdminNotified()
     {
         return $this->wasAdminNotified;
+    }
+
+    public function areEmailsDisabled()
+    {
+        return !$this->emailsEnabled;
     }
 
     private function isLessThanMinutesOld($timestamp, $minutes)
@@ -133,11 +185,12 @@ class MissingOrderHandler
         if (!$this->stripePaymentIntentModel->getQuoteId())
             return null;
 
-        return $this->quoteHelper->loadQuoteById($this->stripePaymentIntentModel->getQuoteId());
+        return $this->quoteHelper->loadQuoteByIdWithoutStore($this->stripePaymentIntentModel->getQuoteId());
     }
 
-    private function reAttemptOrderPlacement($quote)
+    private function reAttemptOrderPlacement($quote, $charge)
     {
+        $this->checkoutFlow->creatingOrderFromCharge = $charge;
         $this->config->reInitStripeFromStoreId($quote->getStoreId());
 
         if (!$quote->getCustomerEmail())
@@ -166,16 +219,7 @@ class MissingOrderHandler
 
             $templateVars['extraDetails'] = $extraDetails;
 
-            $sent = $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
-
-            if (!$sent)
-            {
-                $this->logger->logError("Could not send email to admin about missing quote");
-            }
-            else
-            {
-                $this->wasAdminNotified = true;
-            }
+            $this->wasAdminNotified = $this->emailsEnabled ? $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars) : false;
         }
         catch (\Exception $e)
         {
@@ -192,7 +236,7 @@ class MissingOrderHandler
 
         $paymentIntentId = $charge["payment_intent"];
         $paymentLink = "https://dashboard.stripe.com/{$mode}payments/$paymentIntentId";
-        $formattedAmount = $this->helper->formatStripePrice($charge["amount"], $charge["currency"]);
+        $formattedAmount = $this->currencyHelper->formatStripePrice($charge["amount"], $charge["currency"]);
 
         $templateVars = [
             'paymentIntentId' => $paymentIntentId,
@@ -248,16 +292,7 @@ class MissingOrderHandler
             $templateVars['errorMessage'] = $errorMessage;
             $templateVars['stackTrace'] = $stackTrace;
 
-            $sent = $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
-
-            if (!$sent)
-            {
-                $this->logger->logError($exception->getMessage(), $exception->getTraceAsString());
-            }
-            else
-            {
-                $this->wasAdminNotified = true;
-            }
+            $this->wasAdminNotified = $this->emailsEnabled ? $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars) : false;
         }
         catch (\Exception $e)
         {
@@ -278,16 +313,7 @@ class MissingOrderHandler
 
             $templateVars['extraDetails'] = $extraDetails;
 
-            $sent = $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
-
-            if (!$sent)
-            {
-                $this->logger->logError("Could not send email to admin about grand total mismatch");
-            }
-            else
-            {
-                $this->wasAdminNotified = true;
-            }
+            $this->wasAdminNotified = $this->emailsEnabled ? $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars) : false;
         }
         catch (\Exception $e)
         {
@@ -308,16 +334,7 @@ class MissingOrderHandler
 
             $templateVars['extraDetails'] = $extraDetails;
 
-            $sent = $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
-
-            if (!$sent)
-            {
-                $this->logger->logError("Could not send email to admin about currency mismatch");
-            }
-            else
-            {
-                $this->wasAdminNotified = true;
-            }
+            $this->wasAdminNotified = $this->emailsEnabled ? $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars) : false;
         }
         catch (\Exception $e)
         {
@@ -338,16 +355,7 @@ class MissingOrderHandler
 
             $templateVars['extraDetails'] = $extraDetails;
 
-            $sent = $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars);
-
-            if (!$sent)
-            {
-                $this->logger->logError("Could not send email to admin about order placement");
-            }
-            else
-            {
-                $this->wasAdminNotified = true;
-            }
+            $this->wasAdminNotified = $this->emailsEnabled ? $this->emailHelper->send('stripe_missing_order', $generalName, $generalEmail, $generalName, $generalEmail, $templateVars) : false;
         }
         catch (\Exception $e)
         {
@@ -375,30 +383,15 @@ class MissingOrderHandler
 
         try
         {
-            $this->config->getStripeClient()->charges->update($charge['id'], $updateParams);
+            $updatedCharge = $this->config->getStripeClient()->charges->update($charge['id'], $updateParams);
             $this->config->getStripeClient()->paymentIntents->update($charge['payment_intent'], $updateParams);
+            return $updatedCharge;
         }
         catch (\Exception $e)
         {
             $this->logger->logError("Could not update charge with order details: " . $e->getMessage());
         }
-    }
 
-    private function hasSubscriptionsWithFutureStartDate($quote)
-    {
-        $items = $quote->getAllItems();
-        foreach ($items as $item)
-        {
-            $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
-            if ($subscriptionProductModel->isSubscriptionProduct() &&
-                $subscriptionProductModel->hasStartDate() &&
-                !$subscriptionProductModel->startsOnOrderDate()
-            )
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return null;
     }
 }

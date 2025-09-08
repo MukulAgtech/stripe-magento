@@ -9,11 +9,11 @@ use StripeIntegration\Payments\Exception\GenericException;
 class Config
 {
     public static $moduleName           = "Magento2";
-    public static $moduleVersion        = "4.0.0";
-    public static $minStripePHPVersion  = "12.7.0";
+    public static $moduleVersion        = "4.4.7";
+    public static $minStripePHPVersion  = "14.10.0";
     public static $moduleUrl            = "https://stripe.com/docs/plugins/magento";
     public static $partnerId            = "pp_partner_Fs67gT2M6v3mH7";
-    public const STRIPE_API             = "2020-03-02";
+    public const STRIPE_API             = "2024-10-28.acacia";
     public const BETAS_SERVER           = [];
     public const BETAS_CLIENT           = [];
 
@@ -45,7 +45,7 @@ class Config
     private $areaCodeHelper;
     private $storeHelper;
     private $convert;
-    private $localeHelper;
+    private $cartInfo;
 
     public function __construct(
         \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
@@ -66,10 +66,10 @@ class Config
         \Magento\Framework\App\State $appState,
         \StripeIntegration\Payments\Model\ResourceModel\Account\CollectionFactory $accountCollectionFactory,
         \StripeIntegration\Payments\Model\AccountFactory $accountFactory,
+        \StripeIntegration\Payments\Model\Cart\Info $cartInfo,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
         \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
-        \StripeIntegration\Payments\Helper\Store $storeHelper,
-        \StripeIntegration\Payments\Helper\Locale $localeHelper
+        \StripeIntegration\Payments\Helper\Store $storeHelper
     ) {
         $this->scopeConfig = $scopeConfig;
         $this->loggerHelper = $loggerHelper;
@@ -89,10 +89,10 @@ class Config
         $this->appState = $appState;
         $this->accountCollectionFactory = $accountCollectionFactory;
         $this->accountFactory = $accountFactory;
+        $this->cartInfo = $cartInfo;
         $this->orderHelper = $orderHelper;
         $this->areaCodeHelper = $areaCodeHelper;
         $this->storeHelper = $storeHelper;
-        $this->localeHelper = $localeHelper;
 
         $this->initStripe();
     }
@@ -162,50 +162,28 @@ class Config
         return $api;
     }
 
-    public function getElementOptions()
-    {
-        $options = [
-            "mode" => "payment",
-            "locale" => $this->localeHelper->getStripeJsLocale(),
-            "paymentMethodCreation" => "manual",
-            "appearance" => [
-                "theme" => "stripe",
-                "variables" => [
-                    "colorText" => "#32325d",
-                    "fontFamily" => '"Open Sans","Helvetica Neue", Helvetica, Arial, sans-serif'
-                ],
-            ]
-        ];
-
-        if ($this->getPaymentAction() == "order")
-        {
-            $options["setupFutureUsage"] = "off_session";
-        }
-
-        if ($this->isEnabled() && $this->isSubscriptionsEnabled())
-        {
-            if ($this->quoteHelper->hasSubscriptions())
-            {
-                // Regular products may also exist in this cart. We still go for subscribe mode.
-                $options["mode"] = "subscription";
-            }
-        }
-
-        $pmc = $this->getPaymentMethodConfiguration();
-        if ($pmc)
-        {
-            $options['payment_method_configuration'] = $pmc;
-        }
-
-        return $options;
-    }
-
     public function getPaymentMethodConfiguration()
     {
         $storeId = $this->storeHelper->getStoreId();
-        $pmc = $this->scopeConfig->getValue("payment/stripe_payments/payments/payment_method_configuration", ScopeInterface::SCOPE_STORE, $storeId);
-        if (empty($pmc))
+        $quote = $this->quoteHelper->getQuote();
+        $this->cartInfo->setQuote($quote);
+
+        $allCarts = $pmc = $this->scopeConfig->getValue("payment/stripe_payments/pmc_all_carts", ScopeInterface::SCOPE_STORE, $storeId);
+        $virtualCarts = $this->scopeConfig->getValue("payment/stripe_payments/pmc_virtual_carts", ScopeInterface::SCOPE_STORE, $storeId);
+        $hasGiftCards = $this->cartInfo->hasGiftCards();
+
+        if (($hasGiftCards || $quote->getIsVirtual()) && !empty($virtualCarts))
+        {
+            $pmc = $virtualCarts;
+        }
+        else if (!empty($allCarts))
+        {
+            $pmc = $allCarts;
+        }
+        else
+        {
             return null;
+        }
 
         try
         {
@@ -221,6 +199,12 @@ class Config
         }
     }
 
+    public function reInitStripeFromSecretKey($key)
+    {
+        unset($this->isInitialized);
+        return $this->initStripeFromSecretKey($key);
+    }
+
     public function initStripeFromSecretKey($key)
     {
         if (!$this->canInitialize())
@@ -234,15 +218,10 @@ class Config
 
         try
         {
-            $this->setAppInfo();
-            \Stripe\Stripe::setApiKey($key);
-
-            $api = $this->getStripeAPIVersion();
-
-            \Stripe\Stripe::setApiVersion($api);
             $this->stripeClient = new \Stripe\StripeClient([
                 "api_key" => $key,
-                "stripe_version" => $api
+                "stripe_version" => $this->getStripeAPIVersion(),
+                "app_info" => $this->getAppInfo()
             ]);
 
             $accountModel = $this->getAccountModel($key);
@@ -259,15 +238,6 @@ class Config
         }
 
         return $this->isInitialized = true;
-    }
-
-    public function setAppInfo()
-    {
-        if ($this->canInitialize())
-        {
-            $appInfo = $this->getAppInfo();
-            \Stripe\Stripe::setAppInfo($appInfo['name'], $appInfo['version'], $appInfo['url'], $appInfo['partner_id']);
-        }
     }
 
     public function getAppInfo($clientSide = false)
@@ -427,6 +397,22 @@ class Config
         return ((bool)$this->getConfigData('receipt_emails'));
     }
 
+    public function isTaxCalculationAppliedAfterDiscount()
+    {
+        if ($this->isStripeTaxEnabled())
+        {
+            return true;
+        }
+
+        $store = $this->storeHelper->getStore();
+        return (bool)$store->getConfig('tax/calculation/apply_after_discount');
+    }
+
+    public function isTaxCalculationAppliedBeforeDiscount()
+    {
+        return !$this->isTaxCalculationAppliedAfterDiscount();
+    }
+
     public function getStripeMode($storeId = null)
     {
         return $this->getConfigData('stripe_mode', 'basic', $storeId);
@@ -559,6 +545,13 @@ class Config
             $this->getPaymentAction() == "order");
     }
 
+    public function displayMyPaymentMethodsLink()
+    {
+        return ($this->getSavePaymentMethod() ||
+            ($this->isAuthorizeOnly() && $this->retryWithSavedCard()) ||
+            $this->getPaymentAction() == "order");
+    }
+
     public function getIsStripeAPIKeyError()
     {
         if (isset($this->isStripeAPIKeyError))
@@ -583,30 +576,7 @@ class Config
         if ($order->getCustomerIsGuest())
             $metadata["Guest"] = "Yes";
 
-        if ($order->getPayment()->getAdditionalInformation("payment_location"))
-            $metadata["Payment Location"] = $this->getPaymentLocation($order->getPayment()->getAdditionalInformation("payment_location"));
-
         return $metadata;
-    }
-
-    private function getPaymentLocation($location)
-    {
-        if (stripos($location, 'product') === 0)
-            return "Product Page";
-
-        switch ($location) {
-            case 'cart':
-                return "Shopping Cart Page";
-
-            case 'checkout':
-                return "Checkout Page";
-
-            case 'minicart':
-                return "Mini cart";
-
-            default:
-                return "Unknown";
-        }
     }
 
     public function getMultishippingMetadata($quote, $orders)
@@ -679,14 +649,42 @@ class Config
         return $this->stripeClient;
     }
 
-    public function shippingIncludesTax($store = null)
+    public function isStripeTaxEnabled($storeId = null)
     {
-        return $this->taxConfig->shippingPriceIncludesTax($store);
+        return (
+            $this->configHelper->getConfigData('tax/stripe_tax/enabled', $storeId) &&
+            class_exists('StripeIntegration\Tax\Model\Config')
+        );
     }
 
-    public function priceIncludesTax($store = null)
+    public function getStripeTaxShippingBehavior($storeId = null)
     {
-        return $this->taxConfig->priceIncludesTax($store);
+        return $this->configHelper->getConfigData('tax/stripe_tax/shipping_tax_behavior', $storeId);
+    }
+
+    public function getStripeTaxPricesAndPromotionsBehavior($storeId = null)
+    {
+        return $this->configHelper->getConfigData('tax/stripe_tax/prices_and_promotions_tax_behavior', $storeId);
+    }
+
+    public function shippingIncludesTax($storeId = null)
+    {
+        if ($this->isStripeTaxEnabled($storeId))
+        {
+            return $this->getStripeTaxShippingBehavior($storeId) == "inclusive";
+        }
+
+        return $this->taxConfig->shippingPriceIncludesTax($storeId);
+    }
+
+    public function priceIncludesTax($storeId = null)
+    {
+        if ($this->isStripeTaxEnabled($storeId))
+        {
+            return $this->getStripeTaxPricesAndPromotionsBehavior($storeId) == "inclusive";
+        }
+
+        return $this->taxConfig->priceIncludesTax($storeId);
     }
 
     public function getSetupFutureUsage($quote)
@@ -698,7 +696,7 @@ class Config
             return "off_session";
 
         if ($this->isAuthorizeOnly() && $this->retryWithSavedCard())
-            return "on_session";
+            return "off_session";
 
         if ($this->quoteHelper->isMultiShipping($quote))
             return "on_session";
@@ -755,6 +753,11 @@ class Config
 
     public function reCheckCVCForSavedCards()
     {
+        if ($this->areaCodeHelper->isAdmin())
+        {
+            return false;
+        }
+
         $config = $this->getConfigData("cvc_code");
 
         return ($config == "new_saved_cards");
@@ -839,11 +842,6 @@ class Config
         return $accountModel;
     }
 
-    public function getECEPaymentMethodTypes()
-    {
-        return ["card", "link"];
-    }
-
     public function getECEMode($viewingSubscriptionProduct = false)
     {
         if ($this->isSubscriptionsEnabled())
@@ -882,5 +880,84 @@ class Config
         }
 
         return $methods;
+    }
+
+    public function isTelephoneRequired($storeId = null)
+    {
+        if (!$storeId)
+            $storeId = $this->storeHelper->getStoreId();
+
+        $telephoneShow = $this->scopeConfig->getValue(
+            'customer/address/telephone_show',
+            ScopeInterface::SCOPE_STORE,
+            $storeId
+        );
+
+        return $telephoneShow == 'req';
+    }
+
+    public function isOvercaptureEnabled()
+    {
+        return !!$this->scopeConfig->getValue('stripe_settings/overcapture_enabled', \Magento\Store\Model\ScopeInterface::SCOPE_STORE, 0);
+    }
+
+    public function isMulticaptureEnabled()
+    {
+        return !!$this->scopeConfig->getValue('stripe_settings/multicapture_enabled', \Magento\Store\Model\ScopeInterface::SCOPE_STORE, 0);
+    }
+
+    public function isMissingOrderEmailsEnabled()
+    {
+        return !!$this->scopeConfig->getValue('stripe_settings/send_missing_order_emails', \Magento\Store\Model\ScopeInterface::SCOPE_STORE, 0);
+    }
+
+    public function incrementCouponUsageAfterOrderPlacement($quote)
+    {
+        $incrementCouponUsageAfterOrderPlaced = $this->scopeConfig->getValue('stripe_settings/increment_coupon_usage_after_order_placed', \Magento\Store\Model\ScopeInterface::SCOPE_STORE, 0);
+
+        $paymentMethodCode = $quote->getPayment()->getMethod();
+        if ($paymentMethodCode != "stripe_payments" && $paymentMethodCode != "stripe_payments_express")
+        {
+            return false;
+        }
+        else
+        {
+            return $incrementCouponUsageAfterOrderPlaced;
+        }
+    }
+
+    public function getTaxCalculationAlgorithm($store)
+    {
+        if ($this->isStripeTaxEnabled($store->getId()))
+        {
+            return \Magento\Tax\Model\Calculation::CALC_ROW_BASE;
+        }
+
+        return $store->getConfig('tax/calculation/algorithm');
+    }
+
+    public function isCrossBorderTradeEnabled($store)
+    {
+        return $store->getConfig('tax/calculation/cross_border_trade_enabled') == 1;
+    }
+
+    public function areDiscountsAppliedOnPriceIncludingTax($store)
+    {
+        if ($this->isStripeTaxEnabled($store->getId()))
+        {
+            return $this->getStripeTaxPricesAndPromotionsBehavior($store->getId()) == "inclusive";
+        }
+
+        return $store->getConfig('tax/calculation/discount_tax') == 1;
+    }
+
+    public function areExtendedAuthorizationsEnabled(): bool
+    {
+        if (!$this->isAuthorizeOnly())
+        {
+            return false;
+        }
+
+        return !!$this->scopeConfig->getValue('stripe_settings/extended_authorizations_enabled', \Magento\Store\Model\ScopeInterface::SCOPE_STORE, 0);
     }
 }

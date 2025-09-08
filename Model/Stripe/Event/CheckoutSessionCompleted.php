@@ -16,6 +16,7 @@ class CheckoutSessionCompleted
     private $subscriptionsHelper;
     private $quoteHelper;
     private $orderHelper;
+    private $stripeSubscriptionModelFactory;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
@@ -25,6 +26,7 @@ class CheckoutSessionCompleted
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
+        \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $stripeSubscriptionModelFactory,
         \StripeIntegration\Payments\Model\Subscription\StartDateFactory $startDateFactory,
         \StripeIntegration\Payments\Model\Subscription\ScheduleFactory $subscriptionScheduleModelFactory
     )
@@ -40,27 +42,23 @@ class CheckoutSessionCompleted
         $this->subscriptionsHelper = $subscriptionsHelper;
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
+        $this->stripeSubscriptionModelFactory = $stripeSubscriptionModelFactory;
     }
 
     public function process($arrEvent, array $object)
     {
         $order = $this->webhooksHelper->loadOrderFromEvent($arrEvent);
 
-        $quote = $this->quoteHelper->loadQuoteById($order->getQuoteId());
-        if ($quote && $quote->getIsActive())
-        {
-            $quote->setIsActive(false);
-            $this->quoteHelper->saveQuote($quote);
-        }
+        $this->quoteHelper->deactivateQuoteById($order->getQuoteId());
 
         // A subscription with a start date might have been purchased
         $this->processSubscriptionPhases($order, $object);
 
-        if (!empty($object['subscription']) && !empty($object['setup_intent']))
+        // Update related subscription data
+        if (is_string($object['subscription']))
         {
-            // A trial subscription has been purchased
-            $subscription = $this->config->getStripeClient()->subscriptions->retrieve($object['subscription']);
-            $this->webhooksHelper->processTrialingSubscriptionOrder($order, $subscription);
+            $stripeSubscriptionModel = $this->stripeSubscriptionModelFactory->create()->fromSubscriptionId($object['subscription']);
+            $this->subscriptionsHelper->updateSubscriptionEntry($stripeSubscriptionModel->getStripeObject(), $order);
         }
 
         if (!empty($object['customer']))
@@ -69,9 +67,9 @@ class CheckoutSessionCompleted
             $order->getPayment()->save();
         }
 
-
         if (!empty($object['setup_intent']))
         {
+            // Hits when the payment action is order, and when a subscription with a start date is purchased
             $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($object['setup_intent']);
             if (!empty($setupIntent->payment_method))
             {
@@ -82,7 +80,7 @@ class CheckoutSessionCompleted
         }
     }
 
-    public function processSubscriptionPhases($order, array $object)
+    private function processSubscriptionPhases($order, array $object)
     {
         if (empty($object['subscription']))
         {
@@ -109,7 +107,7 @@ class CheckoutSessionCompleted
         $subscriptionScheduleModel->createFromSubscription($object['subscription'], $startDateModel);
 
         $order->getPayment()->setAdditionalInformation('subscription_schedule_id', $subscriptionScheduleModel->getId());
-        $order->getPayment()->save(); // Saving the order instead could cause webhooks race conditions
+        $order->getPayment()->save(); // Saving the payment instead of the order, because that could cause webhooks race conditions
 
         return true;
     }

@@ -70,6 +70,10 @@ class Event
                 $this->objectCollection = "setupIntents";
                 break;
 
+            case (strpos($type, "payment_method.") === 0):
+                $this->objectCollection = "paymentMethods";
+                break;
+
             default:
                 throw new \Exception("Event type $type is not supported");
         }
@@ -270,8 +274,8 @@ class Event
         if (is_string($paymentIntent))
             $paymentIntent = $this->stripeConfig->getStripeClient()->paymentIntents->retrieve($paymentIntent);
 
-        if (!empty($paymentIntent->charges->data[0]))
-            $this->triggerEvent('charge.succeeded', $paymentIntent->charges->data[0]);
+        if (!empty($paymentIntent->latest_charge))
+            $this->triggerEvent('charge.succeeded', $paymentIntent->latest_charge);
 
         $this->triggerEvent('payment_intent.succeeded', $paymentIntent);
 

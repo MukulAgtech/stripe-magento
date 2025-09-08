@@ -8,13 +8,10 @@ define(
         'Magento_Checkout/js/model/payment/additional-validators',
         'Magento_Checkout/js/action/place-order',
         'Magento_Checkout/js/model/full-screen-loader',
-        'Magento_Ui/js/model/messageList',
         'Magento_Customer/js/customer-data',
         'StripeIntegration_Payments/js/stripe',
-        'StripeIntegration_Payments/js/view/checkout/trialing_subscriptions',
         'StripeIntegration_Payments/js/action/get-checkout-methods',
         'StripeIntegration_Payments/js/action/get-checkout-session-id',
-        'StripeIntegration_Payments/js/action/get-payment-url',
         'Magento_Checkout/js/view/payment/default',
         'mage/translate',
         'stripejs',
@@ -27,13 +24,10 @@ define(
         additionalValidators,
         placeOrderAction,
         fullScreenLoader,
-        globalMessageList,
         customerData,
         stripe,
-        trialingSubscriptions,
         getCheckoutMethods,
         getCheckoutSessionId,
-        getPaymentUrlAction,
         Component,
         $t
     ) {
@@ -45,8 +39,6 @@ define(
                 template: 'StripeIntegration_Payments/payment/checkout',
                 code: "stripe_checkout",
                 customRedirect: true,
-                shouldPlaceOrder: true,
-                checkoutSessionId: null,
                 guestEmail: null,
                 methodIcons: ko.observableArray([])
             },
@@ -134,8 +126,6 @@ define(
             setPaymentMethods: function(response)
             {
                 var methods = [];
-                this.shouldPlaceOrder = true;
-                this.checkoutSessionId = null;
 
                 if (typeof response == "string")
                     response = JSON.parse(response);
@@ -147,12 +137,6 @@ define(
 
                 if (typeof response.methods != "undefined" && response.methods.length > 0)
                     methods = response.methods;
-
-                if (typeof response.place_order != "undefined")
-                    this.shouldPlaceOrder = response.place_order;
-
-                if (typeof response.checkout_session_id != "undefined")
-                    this.checkoutSessionId = response.checkout_session_id;
 
                 var icons = window.checkoutConfig.payment.stripe_payments.icons;
                 var self = this;
@@ -193,6 +177,35 @@ define(
                 return exists;
             },
 
+            performRedirect: function()
+            {
+                var self = this;
+
+                getCheckoutSessionId().then(function (response)
+                {
+                    if (response && response.length && response.indexOf("cs_") === 0)
+                    {
+                        self.redirect.bind(self)(response);
+                    }
+                    else
+                    {
+                        self.showError($t('Could not redirect to Stripe Checkout.'));
+                    }
+                },
+                function (e)
+                {
+                    if (e.responseJSON && e.responseJSON.message)
+                    {
+                        self.showError(e.responseJSON.message);
+                    }
+                    else
+                    {
+                        self.showError($t('An error has occurred on the server. Could not redirect to Stripe Checkout.'));
+                    }
+                    console.error(e.responseJSON.message);
+                });
+            },
+
             checkoutPlaceOrder: function()
             {
                 var self = this;
@@ -202,22 +215,30 @@ define(
                     fullScreenLoader.startLoader();
                     getCheckoutSessionId().then(function (response)
                     {
-                        if (response && response.length && response.indexOf("http") === 0 && !self.hasGuestEmailChanged())
-                            self.redirectToURL(response);
+                        if (response && response.length && response.indexOf("cs_") === 0)
+                        {
+                            self.redirect.bind(self)(response);
+                        }
                         else
-                            self.placeOrder();
-                    }, self.placeOrder.bind(self));
+                        {
+                            self.placeOrder.bind(self)(self.performRedirect.bind(self));
+                        }
+                    },
+                    function (e)
+                    {
+                        if (e.responseJSON && e.responseJSON.message)
+                        {
+                            self.showError(e.responseJSON.message);
+                        }
+                        else
+                        {
+                            self.showError($t('An error has occurred on the server. Could not redirect to Stripe Checkout.'));
+                        }
+                        console.error(e.responseJSON.message);
+                    });
                 }
 
                 return false;
-            },
-
-            hasGuestEmailChanged: function()
-            {
-                if (!this.guestEmail || this.guestEmail.length == 0)
-                    return false;
-
-                return (this.guestEmail != quote.guestEmail);
             },
 
             placeOrder: function()
@@ -225,24 +246,21 @@ define(
                 var self = this;
 
                 placeOrderAction(self.getData(), self.messageContainer)
-                .then(function () {
-                    getPaymentUrlAction(self.messageContainer).always(function () {
-                        fullScreenLoader.stopLoader();
-                    }).then(function (response) {
-                        fullScreenLoader.startLoader();
-                        self.redirectToURL(response);
-                    }, function () {
-                        globalMessageList.addErrorMessage({
-                            message: $t('An error occurred on the server. Please try to place the order again.')
-                        });
-                    });
-                }, function (e) {
-                    globalMessageList.addErrorMessage({
-                        message: $t(e.responseJSON.message)
-                    });
-                }).always(function () {
-                    fullScreenLoader.stopLoader();
-                });
+                .then(
+                    this.performRedirect.bind(this),
+                    function (e)
+                    {
+                        if (e.responseJSON && e.responseJSON.message)
+                        {
+                            self.showError(e.responseJSON.message);
+                        }
+                        else
+                        {
+                            self.showError($t('An error has occurred. Could not redirect to Stripe Checkout.'));
+                        }
+                        console.error(e.responseJSON.message);
+                    }
+                );
 
                 return false;
             },
@@ -265,10 +283,11 @@ define(
                 try
                 {
                     customerData.invalidate(['cart']);
-                    stripe.stripeJs.redirectToCheckout({ sessionId: sessionId }, self.onRedirectFailure);
+                    stripe.stripeJs.redirectToCheckout({ sessionId: sessionId }, this.onRedirectFailure.bind(this));
                 }
                 catch (e)
                 {
+                    fullScreenLoader.stopLoader();
                     console.error(e);
                 }
             },
@@ -276,9 +295,14 @@ define(
             onRedirectFailure: function(result)
             {
                 if (result.error)
-                    alert(result.error.message);
+                {
+                    this.showError(result.error.message);
+                }
                 else
-                    alert("An error has occurred.");
+                {
+                    this.showError($("A redirect error has occurred."));
+                    console.error(result);
+                }
             },
 
             methodName: function(code)
@@ -291,7 +315,8 @@ define(
 
             showError: function(message)
             {
-                document.getElementById('actions-toolbar').scrollIntoView(true);
+                fullScreenLoader.stopLoader();
+                document.getElementById('stripe-checkout-actions-toolbar').scrollIntoView(true);
                 this.messageContainer.addErrorMessage({ "message": message });
             },
         });

@@ -3,6 +3,8 @@
 namespace StripeIntegration\Payments\Model;
 
 use StripeIntegration\Payments\Exception\GenericException;
+use StripeIntegration\Payments\Exception\PaymentMethodInUse;
+use StripeIntegration\Payments\Exception\InvalidPaymentMethod;
 
 class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 {
@@ -22,6 +24,9 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
     private $paymentMethodFactory;
     private $resourceModel;
     private $quoteHelper;
+    private $orderCollectionFactory;
+    private $tokenHelper;
+    private $stripeSubscriptionFactory;
 
     /**
      * @param \Magento\Framework\Model\Context $context
@@ -37,14 +42,17 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         \StripeIntegration\Payments\Helper\Address $addressHelper,
         \StripeIntegration\Payments\Helper\Locale $localeHelper,
         \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Helper\Token $tokenHelper,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethodFactory $paymentMethodFactory,
+        \StripeIntegration\Payments\Model\Stripe\SubscriptionFactory $stripeSubscriptionFactory,
         \Magento\Customer\Model\Session $customerSession,
         \Magento\Framework\Session\SessionManagerInterface $sessionManager,
         \StripeIntegration\Payments\Model\ResourceModel\StripeCustomer $resourceModel,
+        \Magento\Sales\Model\ResourceModel\Order\CollectionFactory $orderCollectionFactory,
         \Magento\Framework\Model\Context $context,
         \Magento\Framework\Registry $registry,
-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+        ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+        ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
         array $data = []
     ) {
         $this->config = $config;
@@ -52,10 +60,13 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $this->addressHelper = $addressHelper;
         $this->localeHelper = $localeHelper;
         $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->tokenHelper = $tokenHelper;
         $this->paymentMethodFactory = $paymentMethodFactory;
+        $this->stripeSubscriptionFactory = $stripeSubscriptionFactory;
         $this->sessionManager = $sessionManager;
         $this->customerSession = $customerSession;
         $this->resourceModel = $resourceModel;
+        $this->orderCollectionFactory = $orderCollectionFactory;
         $this->quoteHelper = $quoteHelper;
 
         parent::__construct($context, $registry, $resource, $resourceCollection, $data); // This will also call _construct after DI logic
@@ -228,12 +239,12 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
                 catch (\Stripe\Exception\ApiErrorException $e)
                 {
                     if ($e->getError()->code == "resource_missing")
-                        $this->_stripeCustomer = \Stripe\Customer::create($params);
+                        $this->_stripeCustomer = $this->config->getStripeClient()->customers->create($params);
                 }
             }
             else
             {
-                $this->_stripeCustomer = \Stripe\Customer::create($params);
+                $this->_stripeCustomer = $this->config->getStripeClient()->customers->create($params);
             }
 
             if (!$this->_stripeCustomer)
@@ -280,7 +291,7 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
 
         try
         {
-            return $this->_defaultPaymentMethod = \Stripe\PaymentMethod::retrieve($customer->invoice_settings->default_payment_method);
+            return $this->_defaultPaymentMethod = $this->config->getStripeClient()->paymentMethods->retrieve($customer->invoice_settings->default_payment_method);
         }
         catch (\Exception $e)
         {
@@ -324,6 +335,73 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         }
     }
 
+    private function verifyCanDeletePaymentMethod($paymentMethodId)
+    {
+        $customerId = $this->getStripeId();
+        $stripePaymentMethodModel = $this->paymentMethodFactory->create()->fromPaymentMethodId($paymentMethodId);
+        $paymentMethod = $stripePaymentMethodModel->getStripeObject();
+        if (!$paymentMethod)
+            return;
+
+        // In "Authorize Only" mode, there will be non-successful payment intents associated with orders which are still being processed
+        $oneDay = 60 * 60 * 24;
+        $created = $paymentMethod->created - $oneDay;
+        $paymentIntents = $this->config->getStripeClient()->paymentIntents->all(['customer' => $customerId, 'created' => ['gte' => $created]]);
+        $eligiblePaymentIntentIds = [];
+
+        foreach ($paymentIntents->autoPagingIterator() as $paymentIntent)
+        {
+            if ($paymentIntent->payment_method == $paymentMethodId && $paymentIntent->status != "succeeded")
+            {
+                $eligiblePaymentIntentIds[] = $paymentIntent->id;
+            }
+        }
+
+        $statuses = ['processing', 'pending_payment', 'payment_review', 'pending', 'holded'];
+        foreach ($eligiblePaymentIntentIds as $paymentIntentId)
+        {
+            $orders = $this->helper->getOrdersByTransactionId($paymentIntentId);
+            foreach ($orders as $order)
+            {
+                if (in_array($order->getStatus(), $statuses))
+                {
+                    $message = __("Sorry, it is not possible to delete this payment method because order #%1 which was placed using it is still being processed.", $order->getIncrementId());
+                    throw new PaymentMethodInUse($message);
+                }
+            }
+        }
+
+        // In "Order" mode, there will be orders placed with this payment method that do not have any transactions yet
+        $orders = $this->getCustomerOrdersWithoutTransaction($paymentMethodId, $statuses, $created);
+        foreach ($orders as $order)
+        {
+            $message = __("Sorry, it is not possible to delete this payment method because order #%1 which was placed using it is still being processed.", $order->getIncrementId());
+            throw new PaymentMethodInUse($message);
+        }
+
+        if (!$this->getStripeId() || !$paymentMethod->customer || $paymentMethod->customer != $this->getStripeId())
+        {
+            throw new InvalidPaymentMethod("This payment method could not be deleted. Please contact us for assistance.");
+        }
+    }
+
+    // Get orders which have a status in $statuses, which have no last_trans_id and which have payment additional_information that includes $paymentMethodId
+    private function getCustomerOrdersWithoutTransaction($paymentMethodId, $statuses, $createdAtTimestamp)
+    {
+        $collection = $this->orderCollectionFactory->create()
+            ->addAttributeToSelect('*')
+            ->join(
+                ['payment' => 'sales_order_payment'],
+                'main_table.entity_id = payment.parent_id',
+                ['payment_method' => 'payment.method', 'payment_additional_information' => 'payment.additional_information']
+            )
+            ->addFieldToFilter('main_table.created_at', ['gteq' => $createdAtTimestamp])
+            ->addFieldToFilter('main_table.status', ['in' => $statuses])
+            ->addFieldToFilter('payment.additional_information', ['like' => '%' . $paymentMethodId . '%']);
+
+        return $collection;
+    }
+
     public function deletePaymentMethod($token, $fingerprint = null)
     {
         if (!$this->_stripeCustomer)
@@ -335,7 +413,9 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         // Deleting a payment method
         if (strpos($token, "pm_") === 0)
         {
-            if ($fingerprint)
+            $this->verifyCanDeletePaymentMethod($token);
+
+            if ($fingerprint && !$this->tokenHelper->isPaymentMethodToken($fingerprint))
             {
                 $allMethods = $this->getSavedPaymentMethods(null, false);
                 $newestMethod = null;
@@ -374,32 +454,39 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         throw new GenericException("This payment method could not be deleted.");
     }
 
-    public function getSavedPaymentMethods($types = null, $formatted = false)
+    public function getSavedPaymentMethods($types = null, $formatted = false, $onlyWhenEnabled = true)
     {
         if (!$types)
         {
-            $types = \StripeIntegration\Payments\Helper\PaymentMethod::CAN_BE_SAVED_ON_SESSION;
+            $types = $this->paymentMethodHelper->getPaymentMethodsThatCanBeSaved();
         }
 
         if (!$this->getStripeId())
             return [];
 
+        // If the customer cannot manage saved payment methods at the customer account section,
+        // then it makes sense that they should also not be able to see them at the checkout page.
+        if ($onlyWhenEnabled && !$this->config->getSavePaymentMethod() && !$this->config->alwaysSaveCards())
+            return [];
+
         $methods = [];
 
-        foreach ($types as $type)
+        try
         {
-            try
+            $result = $this->config->getStripeClient()->customers->allPaymentMethods($this->getStripeId(), ['limit' => 30]);
+            if (!empty($result->data))
             {
-                $result = $this->config->getStripeClient()->customers->allPaymentMethods($this->getStripeId(), ['type' => $type, 'limit' => 30]);
-                if (!empty($result->data))
+                foreach ($result->data as $method)
                 {
-                    $methods[$type] = $result->data;
+                    $type = $method->type;
+                    if (in_array($type, $types))
+                        $methods[$type][] = $method;
                 }
             }
-            catch (\Exception $e)
-            {
-                $this->helper->logError("Cannot retrieve saved payment methods for customer {$this->getStripeId()}: " . $e->getMessage());
-            }
+        }
+        catch (\Exception $e)
+        {
+            $this->helper->logError("Cannot retrieve saved payment methods for customer {$this->getStripeId()}: " . $e->getMessage());
         }
 
         if ($formatted)
@@ -434,7 +521,7 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $params['limit'] = 100;
         $params['expand'] = ['data.default_payment_method'];
 
-        $collection = \Stripe\Subscription::all($params);
+        $collection = $this->config->getStripeClient()->subscriptions->all($params);
 
         foreach ($collection->data as $subscription)
         {
@@ -459,7 +546,7 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $params['limit'] = 100;
         $params['expand'] = ['data.default_payment_method', 'data.items.data.price', 'data.plan.product'];
 
-        $collection = \Stripe\Subscription::all($params);
+        $collection = $this->config->getStripeClient()->subscriptions->all($params);
 
         foreach ($collection->autoPagingIterator() as $subscription)
         {
@@ -497,6 +584,18 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
             return;
 
         $this->_stripeCustomer = $this->config->getStripeClient()->customers->update($this->getStripeId(), $data);
+    }
+
+    public function updateBalance($data)
+    {
+        if (!$this->getStripeId())
+            return;
+
+        if ($data['amount'] != 0 && isset($data['currency'])) {
+            $this->_stripeCustomer = $this->config->getStripeClient()->customers->createBalanceTransaction(
+                $this->getStripeId(), $data
+            );
+        }
     }
 
     public function attachPaymentMethod($paymentMethodId)
@@ -577,5 +676,39 @@ class StripeCustomer extends \Magento\Framework\Model\AbstractModel
         $this->updateSessionId();
         $this->retrieveByStripeID($customerStripeId);
         $this->resourceModel->save($this);
+    }
+
+    public function getInvoiceSettingsDefaultPaymentMethod()
+    {
+        if (!$this->getStripeId())
+            return null;
+
+        $customer = $this->retrieveByStripeID();
+        if (empty($customer->invoice_settings->default_payment_method))
+            return null;
+
+        return $customer->invoice_settings->default_payment_method;
+    }
+
+    public function ownsSubscriptionId(?string $subscriptionId)
+    {
+        if (!$this->getStripeId())
+            return false;
+
+        if (empty($subscriptionId))
+            return false;
+
+        $subscriptionModel = $this->stripeSubscriptionFactory->create()->fromSubscriptionId($subscriptionId);
+        $subscription = $subscriptionModel->getStripeObject();
+
+        return $this->ownsSubscription($subscription);
+    }
+
+    public function ownsSubscription(?\Stripe\Subscription $subscription): bool
+    {
+        if (!$this->getStripeId())
+            return false;
+
+        return ($subscription && $subscription->customer && $subscription->customer == $this->getStripeId());
     }
 }

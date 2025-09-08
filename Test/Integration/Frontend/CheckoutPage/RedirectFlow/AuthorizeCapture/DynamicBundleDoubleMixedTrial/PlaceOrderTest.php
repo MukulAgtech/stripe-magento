@@ -9,22 +9,18 @@ namespace StripeIntegration\Payments\Test\Integration\Frontend\RedirectFlow\Auth
  */
 class PlaceOrderTest extends \PHPUnit\Framework\TestCase
 {
-    private $objectManager;
     private $quote;
-    private $subscriptions;
     private $tests;
 
     public function setUp(): void
     {
-        $this->objectManager = \Magento\TestFramework\ObjectManager::getInstance();
         $this->tests = new \StripeIntegration\Payments\Test\Integration\Helper\Tests($this);
         $this->quote = new \StripeIntegration\Payments\Test\Integration\Helper\Quote();
-
-        $this->subscriptions = $this->objectManager->get(\StripeIntegration\Payments\Helper\Subscriptions::class);
     }
 
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testDynamicBundleDoubleMixedTrialCart()
     {
@@ -37,23 +33,6 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             ->setPaymentMethod("StripeCheckout");
 
         $quote = $this->quote->getQuote();
-
-        // Checkout totals should be correct
-        $trialSubscriptionsConfig = $this->subscriptions->getTrialingSubscriptionsAmounts($quote);
-
-        // 4 subscriptions x $5 (50% off special price) + 4 products x $5 ($0% off)
-        $this->assertEquals(40, $trialSubscriptionsConfig["subscriptions_total"], "Subtotal");
-        $this->assertEquals(40, $trialSubscriptionsConfig["base_subscriptions_total"], "Base Subtotal");
-
-        // 4 subscriptions x $5 and 50% off special price
-        $this->assertEquals(10, $trialSubscriptionsConfig["shipping_total"], "Shipping");
-        $this->assertEquals(10, $trialSubscriptionsConfig["base_shipping_total"], "Base Shipping");
-
-        $this->assertEquals(0, $trialSubscriptionsConfig["discount_total"], "Discount");
-        $this->assertEquals(0, $trialSubscriptionsConfig["base_discount_total"], "Base Discount");
-
-        $this->assertEquals(3.30, $trialSubscriptionsConfig["tax_total"], "Tax");
-        $this->assertEquals(3.30, $trialSubscriptionsConfig["tax_total"], "Base Tax");
 
         // Place the order
         $order = $this->quote->placeOrder();
@@ -77,16 +56,28 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         // Refresh the order
         $order = $this->tests->refreshOrder($order);
 
-        $customer = $this->tests->stripe()->customers->retrieve($paymentIntent->customer);
+        // Check the order total
+        $expectedOrderTotal = 0;
+        $expectedOrderTotal += $bundleProductTotal = 2 * 4 * 5; /* Qty bundle = 2, Qty subproducts = 4, Discounted price = 5 */
+        $expectedOrderTotal += $simpleProductTotal = 2 * 10; /* Qty simple product = 2 */
+        $expectedOrderTotal += $bundleShippingTotal = 2 * 5; /* Bundle shipped together, so Qty bundle = 2 */
+        $expectedOrderTotal += $simpleShippingTotal = 2 * 5; /* Qty simple product = 2 */
+        $expectedOrderTotal += ($bundleTaxTotal = round($bundleProductTotal * 0.0825, 2)); // Shipping is not taxed
+        $expectedOrderTotal += ($simpleTaxTotal = round($simpleProductTotal * 0.0825, 2)); // Shipping is not taxed
+
+        // Trial subscriptions are reduced from the order total
+        $expectedOrderTotal -= $trialSubscriptionTotal = $bundleProductTotal + $bundleShippingTotal + $bundleTaxTotal;
+
+        $expectedOrderTotal = round($expectedOrderTotal, 4);
+        $this->assertEquals($expectedOrderTotal, $order->getGrandTotal());
+
+        $customer = $this->tests->stripe()->customers->retrieve($paymentIntent->customer, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
 
-        $trialSubscriptionTotal = $trialSubscriptionsConfig["subscriptions_total"]
-            + $trialSubscriptionsConfig["shipping_total"]
-            - $trialSubscriptionsConfig["discount_total"]
-            + $trialSubscriptionsConfig["tax_total"];
-        $expectedChargeAmount = $order->getGrandTotal() - $trialSubscriptionTotal;
-        $expectedChargeAmountStripe = $this->tests->helper()->convertMagentoAmountToStripeAmount($expectedChargeAmount, $currency);
+        $expectedChargeAmountStripe = $this->tests->helper()->convertMagentoAmountToStripeAmount($expectedOrderTotal, $currency);
         $trialSubscriptionTotalStripe = $this->tests->helper()->convertMagentoAmountToStripeAmount($trialSubscriptionTotal, $currency);
         $this->assertEquals($trialSubscriptionTotalStripe, $subscription->plan->amount);
 
@@ -95,7 +86,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "state" => "processing",
             "status" => "processing",
             "total_due" => 0,
-            "grand_total" => 84.95,
+            "grand_total" => $expectedOrderTotal,
             "total_paid" => $order->getGrandTotal(),
             // "total_refunded" => $trialSubscriptionTotal
         ]);
@@ -105,9 +96,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
 
         // Credit memos check
-        // $this->assertEquals(1, $order->getCreditmemosCollection()->getSize());
-        $creditmemo = $order->getCreditmemosCollection()->getFirstItem();
-        $this->assertEquals($order->getGrandTotal() - $expectedChargeAmount, $creditmemo->getGrandTotal());
+        $this->assertEquals(0, $order->getCreditmemosCollection()->getSize());
 
         // Retrieve the created session
         $checkoutSessionId = $order->getPayment()->getAdditionalInformation('checkout_session_id');
@@ -119,7 +108,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals($expectedChargeAmountStripe, $session->amount_total);
 
         // Stripe subscription checks
-        $customer = $stripe->customers->retrieve($session->customer);
+        $customer = $stripe->customers->retrieve($session->customer, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $subscription = $customer->subscriptions->data[0];
         $this->assertEquals("trialing", $subscription->status);
@@ -144,7 +135,7 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "status" => "processing",
             "total_due" => 0,
             "grand_total" => $trialSubscriptionTotal,
-            "shipping_amount" => $trialSubscriptionsConfig["shipping_total"],
+            "shipping_amount" => 10,
             "total_paid" => $order->getGrandTotal(),
             "total_refunded" => 0
         ]);
@@ -166,13 +157,12 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
             "status" => "processing",
             "total_due" => 0,
             "grand_total" => $trialSubscriptionTotal,
-            "shipping_amount" => $trialSubscriptionsConfig["shipping_total"],
+            "shipping_amount" => 10,
             "total_paid" => $order->getGrandTotal(),
             "total_refunded" => 0
         ]);
 
         $this->assertEquals(1, $order->getInvoiceCollection()->count());
-
-        $this->markTestIncomplete("Why does the original order have a total_refunded of $60.41, and why does it have 2 credit memos? This only happens in the test suite.");
+        $this->assertEquals(0, $order->getCreditmemosCollection()->count());
     }
 }

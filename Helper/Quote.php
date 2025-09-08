@@ -2,6 +2,9 @@
 
 namespace StripeIntegration\Payments\Helper;
 
+use StripeIntegration\Payments\Exception\Exception;
+use Magento\Framework\Exception\NoSuchEntityException;
+
 class Quote
 {
     // $quoteId is set right before the order is placed from inside Plugin/Sales/Model/Service/OrderService,
@@ -17,6 +20,9 @@ class Quote
     private $productHelper;
     private $subscriptionProductFactory;
     private $quoteFactory;
+    private $logHelper;
+    private $storeManager;
+    private $customerSession;
 
     public function __construct(
         \Magento\Backend\Model\Session\Quote $backendSessionQuote,
@@ -25,7 +31,10 @@ class Quote
         \Magento\Quote\Model\QuoteFactory $quoteFactory,
         \StripeIntegration\Payments\Helper\AreaCode $areaCodeHelper,
         \StripeIntegration\Payments\Helper\Product $productHelper,
-        \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory
+        \StripeIntegration\Payments\Helper\Logger $logHelper,
+        \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory,
+        \Magento\Store\Model\StoreManagerInterface $storeManager,
+        \Magento\Customer\Model\Session $customerSession
     )
     {
         $this->backendSessionQuote = $backendSessionQuote;
@@ -33,8 +42,11 @@ class Quote
         $this->quoteRepository = $quoteRepository;
         $this->areaCodeHelper = $areaCodeHelper;
         $this->productHelper = $productHelper;
+        $this->logHelper = $logHelper;
         $this->subscriptionProductFactory = $subscriptionProductFactory;
         $this->quoteFactory = $quoteFactory;
+        $this->storeManager = $storeManager;
+        $this->customerSession = $customerSession;
     }
 
     // This method is not inside the subscriptions helper to avoid circular dependencies between Model/Config and other classes.
@@ -138,6 +150,19 @@ class Quote
         return $this->quotesCache[$quoteId];
     }
 
+    public function loadQuoteByIdWithoutStore($quoteId)
+    {
+        if (!is_numeric($quoteId))
+            return null;
+
+        if (!empty($this->quotesCache[$quoteId]))
+            return $this->quotesCache[$quoteId];
+
+        $this->quotesCache[$quoteId] = $this->quoteFactory->create()->loadByIdWithoutStore($quoteId);
+
+        return $this->quotesCache[$quoteId];
+    }
+
     private function getBackendSessionQuote()
     {
         return $this->backendSessionQuote->getQuote();
@@ -161,26 +186,32 @@ class Quote
     /**
      * Add product to shopping cart (quote)
      */
-    public function addProduct($productId, array $requestInfo = null)
+    public function addProduct($productId, ?array $requestInfo = null)
     {
         if (!$productId)
             throw new \Magento\Framework\Exception\LocalizedException(__('The product does not exist.'));
 
-        $request = new \Magento\Framework\DataObject($requestInfo);
         try
         {
+            $request = new \Magento\Framework\DataObject($requestInfo);
             $product = $this->productHelper->getProduct($productId);
             $result = $this->getQuote()->addProduct($product, $request);
         }
-        catch (\Magento\Framework\Exception\LocalizedException $e)
+        catch (NoSuchEntityException $e)
         {
             $this->checkoutSession->setUseNotice(false);
-            $result = $e->getMessage();
+            throw new \Magento\Framework\Exception\LocalizedException(__("The product wasn't found. Verify the product and try again."));
         }
-        /**
-         * String we can get if prepare process has error
-         */
-        if (is_string($result)) {
+        catch (\Exception $e)
+        {
+            $this->logHelper->logError($e->getMessage(), $e->getTraceAsString());
+            $this->checkoutSession->setUseNotice(false);
+            throw new \Magento\Framework\Exception\LocalizedException(__("We can't add this item to your shopping cart right now."));
+        }
+
+        if (is_string($result))
+        {
+            $this->checkoutSession->setUseNotice(false);
             throw new \Magento\Framework\Exception\LocalizedException(__($result));
         }
 
@@ -247,28 +278,17 @@ class Quote
         return $quote;
     }
 
-    public function reCalculateQuoteTotals($quote)
+    public function hasSubscriptionsWithStartDate($quote = null)
     {
-        $quote->setTotalsCollectedFlag(false);
-        $quote->collectTotals();
-        $this->saveQuote($quote);
-        return $quote;
-    }
+        if (!$quote)
+            $quote = $this->getQuote();
 
-    // We intentionally do not take a quote parameter, because this is only used
-    // in active checkout flows, where the quote is already loaded in the session.
-    // Checks if the cart only consists of subscriptions with a future start date,
-    // with the first payment collected on the start date and not on the order date.
-    public function hasSubscriptionsWithFutureStartDate()
-    {
-        $quote = $this->getQuote();
         $items = $quote->getAllItems();
         foreach ($items as $item)
         {
             $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
             if ($subscriptionProductModel->isSubscriptionProduct() &&
-                $subscriptionProductModel->hasStartDate() &&
-                !$subscriptionProductModel->startsOnOrderDate()
+                $subscriptionProductModel->hasStartDate()
             )
             {
                 return true;
@@ -278,17 +298,280 @@ class Quote
         return false;
     }
 
-    public function hasTrialSubscriptionsIn($quoteItems)
+    public function hasFutureSubscriptionsIn($quoteItems)
     {
         foreach ($quoteItems as $item)
         {
             $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
-            if ($subscriptionProductModel->isSubscriptionProduct() && $subscriptionProductModel->hasTrialPeriod())
+            if ($subscriptionProductModel->isSubscriptionProduct() &&
+                ($subscriptionProductModel->hasTrialPeriod() || $subscriptionProductModel->hasStartDate())
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function hasOnlyTrialSubscriptions($quote = null)
+    {
+        if (!$quote)
+            $quote = $this->getQuote();
+
+        if (!$quote || !$quote->getId())
+            return false;
+
+        $items = $quote->getAllItems();
+        $trialSubscriptions = 0;
+
+        foreach ($items as $item)
+        {
+            $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
+            if (!$subscriptionProductModel->isSubscriptionProduct())
+                return false;
+
+            if (!$subscriptionProductModel->hasTrialPeriod())
+                return false;
+
+            $trialSubscriptions++;
+        }
+
+        return $trialSubscriptions > 0;
+    }
+
+    public function getNonBillableSubscriptionItems($items)
+    {
+        $nonBillableItems = [];
+
+        foreach ($items as $item)
+        {
+            $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
+
+            if (!$subscriptionProductModel->isSubscriptionProduct())
+                continue;
+
+            if (!$subscriptionProductModel->hasZeroInitialOrderPrice())
+                continue;
+
+            if ($item->getParentItem()) // Bundle and configurable subscriptions
+            {
+                $item = $item->getParentItem();
+                $nonBillableItems[] = $item;
+
+                // Get all child products
+                foreach ($items as $item2)
+                {
+                    if ($item2->getParentItemId() == $item->getId())
+                        $nonBillableItems[] = $item2;
+                }
+            }
+            else
+            {
+                $nonBillableItems[] = $item;
+            }
+        }
+
+        return $nonBillableItems;
+    }
+
+    // Checks if the quote has a 100% discount rule, and that the discount will eventually expire
+    public function hasFullyDiscountedSubscriptions($quote)
+    {
+        $items = $quote->getAllItems();
+
+        foreach ($items as $item)
+        {
+            $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
+
+            if (!$subscriptionProductModel->isSubscriptionProduct())
+            {
+                continue;
+            }
+
+            if ($item->getParentItem())
+            {
+                $item = $item->getParentItem();
+            }
+
+            if ($item->getBasePrice() > 0 && $item->getBasePrice() <= $item->getBaseDiscountAmount())
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Check if the total on the quote is fully being redeemed through a combination of gift cards, store credit and
+     * reward points
+     *
+     * @param $quote
+     * @return bool
+     * @throws \StripeIntegration\Payments\Exception\InvalidSubscriptionProduct
+     */
+    public function isZeroTotalSubscriptionFromAdjustment($quote)
+    {
+        $totalAdjustment = floatval($quote->getRewardCurrencyAmount()) + floatval($quote->getGiftCardsAmountUsed()) + floatval($quote->getCustomerBalanceAmountUsed());
+
+        if ($this->hasSubscriptions($quote)) {
+            // The way the adjustments will be used is we assume that first they will be applied to other types of
+            // products and then to the subscriptions, so if the grand total is 0 and the adjustment is greater than 0,
+            // then a deduction has taken place. If there is a non-billable subscription in the cart, the grand total
+            // is still set to what it is before the subscription recurring price is taken out.
+            if (($quote->getGrandTotal() == 0) && ($totalAdjustment > 0)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function reCollectTotals($quote)
+    {
+        $shippingMethod = null;
+        $quote->getBillingAddress()->unsetData('cached_items_all');
+        $quote->getBillingAddress()->unsetData('cached_items_nominal');
+        $quote->getBillingAddress()->unsetData('cached_items_nonnominal');
+        if (!$quote->getIsVirtual())
+        {
+            $shippingMethod = $quote->getShippingAddress()->getShippingMethod();
+            $quote->getShippingAddress()->unsetData('cached_items_all');
+            $quote->getShippingAddress()->unsetData('cached_items_nominal');
+            $quote->getShippingAddress()->unsetData('cached_items_nonnominal');
+            $quote->getShippingAddress()->setCollectShippingRates(true);
+        }
+        foreach ($quote->getAllItems() as $item)
+        {
+            $item->setTaxCalculationPrice(null);
+            $item->setBaseTaxCalculationPrice(null);
+        }
+        $quote->setTotalsCollectedFlag(false);
+        $quote->collectTotals();
+
+        if ($shippingMethod)
+        {
+            // We restore it because when the shipping rates are collected, the shipping method is reset
+            $quote->getShippingAddress()->setShippingMethod($shippingMethod);
+        }
+    }
+
+    public function removeSubscriptions(\Magento\Quote\Api\Data\CartInterface $quote)
+    {
+        $removed = false;
+        $items = $quote->getAllItems();
+        foreach ($items as $item)
+        {
+            $subscriptionProductModel = $this->subscriptionProductFactory->create()->fromQuoteItem($item);
+            if ($subscriptionProductModel->isSubscriptionProduct())
+            {
+                if ($item->getParentItem())
+                {
+                    $quote->removeItem($item->getParentItem()->getId());
+                    $removed = true;
+                }
+                else
+                {
+                    $quote->removeItem($item->getId());
+                    $removed = true;
+                }
+            }
+        }
+
+        return $removed;
+    }
+
+    public function getQuoteItemFromProductId($productId)
+    {
+        $quote = $this->getQuote();
+        $quoteItems = $quote->getAllItems();
+
+        foreach ($quoteItems as $quoteItem)
+        {
+            if ($quoteItem->getProductId() == $productId)
+            {
+                return $quoteItem;
+            }
+        }
+
+        throw new Exception("Quote item not found for order item");
+    }
+
+    public function deactivateQuoteById($quoteId)
+    {
+        if (empty($quoteId))
+            return;
+
+        try
+        {
+            $quote = $this->quoteRepository->get($quoteId);
+            $this->deactivateQuote($quote);
+        }
+        catch (\Exception $e)
+        {
+
+        }
+    }
+
+    public function deactivateQuote($quote)
+    {
+        if (empty($quote) || !$quote->getId())
+            return;
+
+        try
+        {
+            $quote->setIsActive(false);
+            $this->quoteRepository->save($quote);
+        }
+        catch (\Exception $e)
+        {
+
+        }
+    }
+
+    public function deactivateCurrentQuote()
+    {
+        $quote = $this->getQuote();
+        if ($quote && $quote->getId())
+        {
+            $this->deactivateQuote($quote);
+        }
+    }
+
+    public function createFreshQuote()
+    {
+        // Create a new empty quote
+        $quote = $this->quoteFactory->create();
+
+        // Get store ID and website ID correctly
+        $store = $this->storeManager->getStore();
+        $storeId = $store->getId();
+
+        // Set store ID and website ID on the quote
+        $quote->setStoreId($storeId);
+        $quote->setWebsiteId($store->getWebsiteId());
+        $quote->setIsActive(true);
+
+        // If customer is logged in, associate the quote with them
+        $customerId = $this->customerSession->getCustomer()->getEntityId();
+        if ($customerId) {
+            $quote->setCustomerId($customerId);
+            $quote->setCustomerEmail($this->customerSession->getCustomer()->getEmail());
+            $quote->setCustomerIsGuest(0);
+        } else {
+            $quote->setCustomerIsGuest(1);
+        }
+
+        // Save the quote
+        $this->quoteRepository->save($quote);
+
+        // Set as active quote in session
+        $this->checkoutSession->setQuoteId($quote->getId());
+        $this->checkoutSession->replaceQuote($quote);
+
+        // Add to quotes cache
+        $this->quotesCache[$quote->getId()] = $quote;
+
+        return $quote;
     }
 }

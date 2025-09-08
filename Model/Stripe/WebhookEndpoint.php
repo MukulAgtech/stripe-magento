@@ -12,12 +12,15 @@ class WebhookEndpoint
     private $stripeClient = null;
     private $publishableKey = null;
     private $webhookFactory;
+    private $enabledEvents;
 
     public function __construct(
+        \StripeIntegration\Payments\Model\Webhooks\EnabledEvents $enabledEvents,
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
         \StripeIntegration\Payments\Model\WebhookFactory $webhookFactory
     )
     {
+        $this->enabledEvents = $enabledEvents;
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService($this->objectSpace);
         $this->setData($stripeObjectService);
 
@@ -35,7 +38,7 @@ class WebhookEndpoint
             'url' => $url,
             'api_version' => \StripeIntegration\Payments\Model\Config::STRIPE_API,
             'connect' => false,
-            'enabled_events' => \StripeIntegration\Payments\Helper\WebhooksSetup::$enabledEvents,
+            'enabled_events' => $this->enabledEvents->getEvents(),
         ];
     }
 
@@ -48,7 +51,7 @@ class WebhookEndpoint
 
         return [
             'url' => ($url ? $url : $this->getStripeObject()->url),
-            'enabled_events' => \StripeIntegration\Payments\Helper\WebhooksSetup::$enabledEvents,
+            'enabled_events' => $this->enabledEvents->getEvents(),
         ];
     }
 
@@ -164,7 +167,7 @@ class WebhookEndpoint
         $localRecord = $this->getLocalRecord();
         $this->stripeClient->webhookEndpoints->delete($this->getId(), []);
         $localRecord->delete();
-        $this->setObject(null);
+        $this->unsetObject();
 
         return null;
     }

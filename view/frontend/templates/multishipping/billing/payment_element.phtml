@@ -7,23 +7,15 @@
     <!-- ko template: getTemplate() --><!-- /ko -->
   </div>
 
-  <script type="application/javascript">
-    window.initParams = <?= $block->getInitParams(); //phpcs:ignore ?>;
-
-    require([ 'uiLayout' ], function (layout)
-    {
-        layout([
-            {
-                component: 'StripeIntegration_Payments/js/view/multishipping/method-renderer/payment_element',
-                name: 'payment_method_stripe_payments',
-                method: 'stripe_payments',
-                item: {
-                    method: 'stripe_payments'
-                },
-                captureMethod: '<?= $block->getCaptureMethod() //phpcs:ignore ?>'
-            }
-        ]);
-    });
-  </script>
-
 </fieldset>
+
+<script type="text/x-magento-init">
+{
+    "#payment_form_stripe_payments": {
+        "StripeIntegration_Payments/js/multishipping/payment-element-initializer": {
+            "initParams": <?= /* @noEscape */ $block->getInitParams(); ?>,
+            "captureMethod": "<?= $block->escapeJs($block->getCaptureMethod()) ?>"
+        }
+    }
+}
+</script>

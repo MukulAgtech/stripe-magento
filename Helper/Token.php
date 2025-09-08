@@ -22,6 +22,22 @@ class Token
         return substr($token, 0, 3) == "pm_";
     }
 
+    public function isExternalPaymentMethodToken($token)
+    {
+        if (!is_string($token))
+            return false;
+
+        return substr($token, 0, 9) == "external_";
+    }
+
+    public function isPaymentIntentToken($token)
+    {
+        if (!is_string($token))
+            return false;
+
+        return substr($token, 0, 3) == "pi_";
+    }
+
     public function isSetupIntentToken($token)
     {
         if (!is_string($token))
@@ -36,6 +52,14 @@ class Token
             return false;
 
         return substr($token, 0, 4) == "sub_";
+    }
+
+    public function isChargeToken($token)
+    {
+        if (!is_string($token))
+            return false;
+
+        return substr($token, 0, 3) == "ch_";
     }
 
     public function getSetupIntentIdFromClientSecret($clientSecret)

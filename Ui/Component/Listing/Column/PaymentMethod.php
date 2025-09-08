@@ -65,8 +65,8 @@ class PaymentMethod extends Column
                 if (isset($data['payment_method_type']) && $data['payment_method_type']) {
                     if ($data['payment_method_type'] === 'card') {
                         $cardData = $this->json->unserialize($data['payment_method_card_data']);
-                        $paymentIcon = $this->stripeHelperPaymentMethod->getIconFromPaymentType('card', $cardData['card_type']);
-                        $paymentName = __("•••• %1", $cardData['card_data']);
+                        $paymentIcon = $this->stripeHelperPaymentMethod->getIconFromPaymentType('card', $cardData['brand'] ?? null);
+                        $paymentName = isset($cardData['last4']) ? __("•••• %1", $cardData['last4']) : '';
 
                         if (isset($cardData['wallet']) && $cardData['wallet']) {
                             $walletIcon = $this->stripeHelperPaymentMethod->getIconFromPaymentType($cardData['wallet']);

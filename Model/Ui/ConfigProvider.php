@@ -75,9 +75,9 @@ class ConfigProvider implements ConfigProviderInterface
                     'initParams' => $checkoutInitParams,
                     'icons' => $this->getIcons(),
                     'pmIcons' => $this->paymentMethodHelper->getPaymentMethodDetails(),
-                    'elementOptions' => $this->config->getElementOptions(),
-                    'hasTrialSubscriptions' => false,
-                    'trialingSubscriptions' => null
+                    'elementOptions' => $this->initParams->getElementOptions(),
+                    'hasFutureSubscriptions' => false,
+                    'futureSubscriptions' => null
                 ],
                 'express_checkout' => [
                     'enabled' => $this->expressCheckoutConfig->isEnabled('checkout_page'),
@@ -94,8 +94,8 @@ class ConfigProvider implements ConfigProviderInterface
         if ($this->config->isEnabled() && $this->config->isSubscriptionsEnabled())
         {
             // These are a bit more resource intensive, so we only want to run them if the module is enabled
-            $data['payment']['stripe_payments']['hasTrialSubscriptions'] = $this->subscriptionsHelper->hasTrialSubscriptions();
-            $data['payment']['stripe_payments']['trialingSubscriptions'] = $this->subscriptionsHelper->getTrialingSubscriptionsAmounts();
+            $data['payment']['stripe_payments']['hasFutureSubscriptions'] = $this->subscriptionsHelper->hasFutureSubscriptions();
+            $data['payment']['stripe_payments']['futureSubscriptions'] = $this->subscriptionsHelper->getFutureSubscriptionsDetails();
 
             $subscriptionUpdateDetails = $this->getFrontendSubscriptionUpdateDetails();
             if ($subscriptionUpdateDetails)

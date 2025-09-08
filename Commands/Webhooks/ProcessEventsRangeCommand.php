@@ -6,6 +6,9 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * @codeCoverageIgnore
+ */
 class ProcessEventsRangeCommand extends Command
 {
     private $areaCodeFactory;
@@ -33,7 +36,7 @@ class ProcessEventsRangeCommand extends Command
         parent::configure();
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $fromEventId = $input->getArgument("from_event_id");
         $toEventId = $input->getArgument("to_event_id");

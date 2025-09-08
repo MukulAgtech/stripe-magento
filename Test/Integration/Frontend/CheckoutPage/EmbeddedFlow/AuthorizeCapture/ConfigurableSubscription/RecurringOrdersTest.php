@@ -41,7 +41,9 @@ class RecurringOrdersTest extends \PHPUnit\Framework\TestCase
 
         // Stripe checks
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $this->compare->object($customer->subscriptions->data[0], [
             "items" => [

@@ -5,8 +5,15 @@ namespace StripeIntegration\Payments\Model\ExpressCheckout;
 class Config
 {
     // State
+    public $isEnabled = null;
+    public $isApplePayEnabled = null;
+    public $isGooglePayEnabled = null;
+    public $isLinkEnabled = null;
+    public $isPaypalEnabled = null;
+    public $isAmazonPayEnabled = null;
+    public $isKlarnaEnabled = null;
+
     private $storeId = null;
-    private $isEnabled = null;
     private $activeLocations = [];
     private $allowGuestCheckout = null;
     private $sellerName = null;
@@ -14,6 +21,7 @@ class Config
     private $sortOrderMethod = null;
     private $buttonTheme = [];
     private $buttonType = [];
+    private $layout = [];
     private $paymentMethodOrder = [];
 
     // Comstructor properties
@@ -39,9 +47,30 @@ class Config
         $this->areaCodeHelper = $areaCodeHelper;
         $this->checkoutSessionHelper = $checkoutSessionHelper;
         $this->config = $config;
+        $this->enablePaymentMethods();
+        $this->initConfig();
+    }
 
+    // Determine whether payment methods are enabled
+    public function enablePaymentMethods()
+    {
         $this->isEnabled = $this->getConfigData('payment/stripe_payments_express/global_enabled');
 
+        if (!$this->isEnabled)
+            return;
+
+        $this->isApplePayEnabled = $this->getConfigData('payment/stripe_payments_express/apple_pay_enabled');
+        $this->isGooglePayEnabled = $this->getConfigData('payment/stripe_payments_express/google_pay_enabled');
+        $this->isLinkEnabled = $this->getConfigData('payment/stripe_payments_express/link_enabled');
+        $this->isPaypalEnabled = $this->getConfigData('payment/stripe_payments_express/paypal_enabled');
+        $this->isAmazonPayEnabled = $this->getConfigData('payment/stripe_payments_express/amazon_pay_enabled');
+        $this->isKlarnaEnabled = $this->getConfigData('payment/stripe_payments_express/klarna_enabled');
+        $this->isEnabled = $this->isApplePayEnabled || $this->isGooglePayEnabled || $this->isLinkEnabled || $this->isPaypalEnabled || $this->isAmazonPayEnabled || $this->isKlarnaEnabled;
+    }
+
+    // Initialize configuration for Express Checkout
+    public function initConfig()
+    {
         if (!$this->isEnabled)
             return;
 
@@ -52,6 +81,9 @@ class Config
         $this->sortOrderMethod = $this->getConfigData("payment/stripe_payments_express/sort_order");
         $this->buttonTheme = $this->_getButtonThemeConfig();
         $this->buttonType = $this->_getButtonTypeConfig();
+        $this->layout = [
+            "overflow" => $this->getConfigData('payment/stripe_payments_express/overflow')
+        ];
         $this->paymentMethodOrder = $this->_getPaymentMethodOrderConfig();
     }
 
@@ -90,6 +122,14 @@ class Config
         if ($this->checkoutSessionHelper->isSubscriptionUpdate())
             return false;
 
+        if ($this->checkoutSessionHelper->isSubscriptionReactivate())
+        {
+            // Because confirmation tokens cannot yet be used to set the default_payment_method after the re-activation
+            // We can only set https://docs.stripe.com/api/subscriptions/update#update_subscription-default_payment_method
+            // Currently set via Model/PaymentElement.php::updateSubscriptionFromOrder()
+            return false;
+        }
+
         if ($this->areaCodeHelper->isAdmin())
             return false;
 
@@ -107,11 +147,21 @@ class Config
         $options = [
             'buttonHeight' => $this->buttonHeight,
             'buttonTheme' => $this->buttonTheme,
-            'buttonType' => $this->buttonType
+            'buttonType' => $this->buttonType,
+            'layout' => $this->layout
         ];
 
         if ($this->sortOrderMethod == "custom")
             $options['paymentMethodOrder'] = $this->paymentMethodOrder;
+
+        $options['paymentMethods'] = [
+            'applePay' => $this->isApplePayEnabled ? 'auto' : 'never',
+            'googlePay' => $this->isGooglePayEnabled ? 'auto' : 'never',
+            'link' => $this->isLinkEnabled ? 'auto' : 'never',
+            'paypal' => $this->isPaypalEnabled ? 'auto' : 'never',
+            'amazonPay' => $this->isAmazonPayEnabled ? 'auto' : 'never',
+            'klarna' => $this->isKlarnaEnabled ? 'auto' : 'never'
+        ];
 
         return $options;
     }
@@ -145,22 +195,38 @@ class Config
 
     private function _getButtonThemeConfig()
     {
-        $buttonTheme = [
-            'applePay' => $this->getConfigData('payment/stripe_payments_express/apple_pay_button_theme'),
-            'googlePay' => $this->getConfigData('payment/stripe_payments_express/google_pay_button_theme'),
-            'paypal' => $this->getConfigData('payment/stripe_payments_express/paypal_button_theme')
-        ];
+        $buttonTheme = [];
+
+        if ($this->isApplePayEnabled)
+            $buttonTheme['applePay'] = $this->getConfigData('payment/stripe_payments_express/apple_pay_button_theme');
+
+        if ($this->isGooglePayEnabled)
+            $buttonTheme['googlePay'] = $this->getConfigData('payment/stripe_payments_express/google_pay_button_theme');
+
+        if ($this->isPaypalEnabled)
+            $buttonTheme['paypal'] = $this->getConfigData('payment/stripe_payments_express/paypal_button_theme');
+
+        if ($this->isKlarnaEnabled)
+            $buttonTheme['klarna'] = $this->getConfigData('payment/stripe_payments_express/klarna_button_theme');
 
         return $buttonTheme;
     }
 
     private function _getButtonTypeConfig()
     {
-        $buttonType = [
-            'applePay' => $this->getConfigData('payment/stripe_payments_express/apple_pay_button_type'),
-            'googlePay' => $this->getConfigData('payment/stripe_payments_express/google_pay_button_type'),
-            'paypal' => $this->getConfigData('payment/stripe_payments_express/paypal_button_type')
-        ];
+        $buttonType = [];
+
+        if ($this->isApplePayEnabled)
+            $buttonType['applePay'] = $this->getConfigData('payment/stripe_payments_express/apple_pay_button_type');
+
+        if ($this->isGooglePayEnabled)
+            $buttonType['googlePay'] = $this->getConfigData('payment/stripe_payments_express/google_pay_button_type');
+
+        if ($this->isPaypalEnabled)
+            $buttonType['paypal'] = $this->getConfigData('payment/stripe_payments_express/paypal_button_type');
+
+        if ($this->isKlarnaEnabled)
+            $buttonType['klarna'] = $this->getConfigData('payment/stripe_payments_express/klarna_button_type');
 
         return $buttonType;
     }
@@ -169,11 +235,25 @@ class Config
     {
         $paymentMethodOrder = [];
 
-        $sortOrders = [
-            'applePay' => $this->getConfigData('payment/stripe_payments_express/apple_pay_sort_order'),
-            'googlePay' => $this->getConfigData('payment/stripe_payments_express/google_pay_sort_order'),
-            'paypal' => $this->getConfigData('payment/stripe_payments_express/paypal_sort_order')
-        ];
+        $sortOrders = [];
+
+        if ($this->isApplePayEnabled)
+            $sortOrders['applePay'] = $this->getConfigData('payment/stripe_payments_express/apple_pay_sort_order');
+
+        if ($this->isGooglePayEnabled)
+            $sortOrders['googlePay'] = $this->getConfigData('payment/stripe_payments_express/google_pay_sort_order');
+
+        if ($this->isLinkEnabled)
+            $sortOrders['link'] = $this->getConfigData('payment/stripe_payments_express/link_sort_order');
+
+        if ($this->isPaypalEnabled)
+            $sortOrders['paypal'] = $this->getConfigData('payment/stripe_payments_express/paypal_sort_order');
+
+        if ($this->isAmazonPayEnabled)
+            $sortOrders['amazonPay'] = $this->getConfigData('payment/stripe_payments_express/amazon_pay_sort_order');
+
+        if ($this->isKlarnaEnabled)
+            $sortOrders['klarna'] = $this->getConfigData('payment/stripe_payments_express/klarna_sort_order');
 
         foreach ($sortOrders as $key => $index)
         {

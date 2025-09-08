@@ -53,7 +53,6 @@ class ProductExtensionAttributesTest extends \PHPUnit\Framework\TestCase
                 ->setProductId($productId)
                 ->setStartOnSpecificDate(1)
                 ->setFirstPayment('on_order_date')
-                ->setProrateFirstPayment(1)
                 ->setStartDate('2023-04-02')
                 ->save();
 
@@ -79,7 +78,6 @@ class ProductExtensionAttributesTest extends \PHPUnit\Framework\TestCase
             $this->assertEquals($subscriptionOptionsModel->getProductId(), $entry->getProductId());
             $this->assertEquals($subscriptionOptionsModel->getStartOnSpecificDate(), $entry->getStartOnSpecificDate());
             $this->assertEquals($subscriptionOptionsModel->getFirstPayment(), $entry->getFirstPayment());
-            $this->assertEquals($subscriptionOptionsModel->getProrateFirstPayment(), $entry->getProrateFirstPayment());
             $this->assertEquals($subscriptionOptionsModel->getStartDate(), $entry->getStartDate());
         }
     }

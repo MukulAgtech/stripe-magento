@@ -30,6 +30,8 @@
             <argument name="accordionButton" value="{{StorefrontStripePaymentMethodSection.paymentElementAccordionButtonP24}}" />
         </actionGroup>
 
+        <selectOption selector="#Field-bankInput" userInput="alior_bank" stepKey="fillPaymentForm"/>
+
         <after>
             <deleteData createDataKey="createProduct" stepKey="deleteProduct"/>
             <deleteData createDataKey="createCategory" stepKey="deleteCategory"/>

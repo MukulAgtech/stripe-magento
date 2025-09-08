@@ -5,7 +5,6 @@ namespace StripeIntegration\Payments\Api\Response;
 use Magento\Framework\Exception\CouldNotSaveException;
 use Magento\Store\Model\ScopeInterface;
 use Magento\Framework\Pricing\PriceCurrencyInterface;
-use Magento\Sales\Model\Order\Shipment;
 
 class ECEResponse
 {
@@ -20,22 +19,18 @@ class ECEResponse
     private $shipmentEstimation;
     private $taxCalculation;
     private $allowedCountries;
-    private $region;
     private $shippingInformationFactory;
     private $shippingInformationManagement;
-    private $config;
     private $initParams;
     private $helper;
     private $addressHelper;
     private $quoteHelper;
     private $productHelper;
-    private $subscriptionsHelper;
 
     // Local data
     private $resolvePayload = [];
     private $elementOptions = [];
     private $quote;
-    private $storeId;
     private $location;
 
     public function __construct(
@@ -49,13 +44,10 @@ class ECEResponse
         \Magento\Quote\Api\ShipmentEstimationInterface $shipmentEstimation,
         \Magento\Tax\Api\TaxCalculationInterface $taxCalculation,
         \Magento\Directory\Model\AllowedCountries $allowedCountries,
-        \Magento\Directory\Model\Region $region,
         \Magento\Checkout\Api\Data\ShippingInformationInterfaceFactory $shippingInformationFactory,
         \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement,
-        \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Helper\InitParams $initParams,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Address $addressHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Product $productHelper,
@@ -72,12 +64,8 @@ class ECEResponse
         $this->shipmentEstimation = $shipmentEstimation;
         $this->taxCalculation = $taxCalculation;
         $this->allowedCountries = $allowedCountries;
-        $this->region = $region;
         $this->shippingInformationFactory = $shippingInformationFactory;
         $this->shippingInformationManagement = $shippingInformationManagement;
-        $this->subscriptionsHelper = $subscriptionsHelper;
-
-        $this->config = $config;
         $this->initParams = $initParams;
         $this->helper = $helper;
         $this->addressHelper = $addressHelper;
@@ -86,7 +74,6 @@ class ECEResponse
 
         // Local data
         $this->quote = $this->quoteHelper->getQuote();
-        $this->storeId = $this->helper->getStoreId();
         $this->location = $location;
     }
 
@@ -129,10 +116,6 @@ class ECEResponse
 
         // Save the quote and shipping address and collect new shipping rates
         $shippingAddress->setCollectShippingRates(true);
-        $this->quoteHelper->saveQuote($this->quote);
-
-        // Reload the shipping address after the quote save
-        $shippingAddress = $this->quote->getShippingAddress()->load($this->quote->getShippingAddress()->getId());
 
         $shippingRates = $this->getShippingRatesForQuoteShippingAddress();
         if (count($shippingRates) > 0)
@@ -146,10 +129,8 @@ class ECEResponse
             $shippingAddress->setShippingMethod(null);
         }
 
+        $this->quoteHelper->reCollectTotals($this->quote);
         $this->quoteHelper->saveQuote($this->quote);
-
-        $this->quote = $this->quoteHelper->reloadQuote($this->quote);
-        $this->quote = $this->quoteHelper->reCalculateQuoteTotals($this->quote);
 
         $this->resolvePayload = $this->getShippingResolvePayload();
 
@@ -186,9 +167,7 @@ class ECEResponse
             $this->shippingInformationManagement->saveAddressInformation($quote->getId(), $shippingInformation);
 
             // Update totals
-            $quote->setTotalsCollectedFlag(false);
-            // $quote->collectTotals();
-            $this->quoteHelper->saveQuote($quote);
+            $this->quoteHelper->reCollectTotals($quote);
         }
 
         $this->resolvePayload = $this->getShippingResolvePayload();
@@ -226,23 +205,6 @@ class ECEResponse
         return false;
     }
 
-    public function quoteHasCompleteBillingAddress()
-    {
-        $billingAddress = $this->quote->getBillingAddress();
-
-        $address = $this->addressHelper->getStripeAddressFromMagentoAddress($billingAddress);
-        if (!empty($address["address"]["line1"])
-            && !empty($address["address"]["city"])
-            && !empty($address["address"]["country"])
-            && !empty($address["address"]["postal_code"])
-        )
-        {
-            return true;
-        }
-
-        return false;
-    }
-
     protected function getClickResolvePayload($location = null)
     {
         $quoteHasItems = count($this->quote->getAllVisibleItems()) > 0;
@@ -265,7 +227,7 @@ class ECEResponse
         if ($requestShipping)
         {
             // The shipping address was not yet specified, or the quote is empty
-            $params['shippingRates'] = $this->getShippingAddressRequiredRate();
+            $params['shippingRates'] = $this->getDefaultShippingRates();
         }
 
         return $params;
@@ -330,11 +292,15 @@ class ECEResponse
      */
     protected function getProductResolvePayload($productId, $attribute)
     {
-        /** @var \Magento\Catalog\Model\Product $product */
-        $product = $this->helper->loadProductById($productId);
-
-        if (!$product || !$product->getId())
+        try
+        {
+            /** @var \Magento\Catalog\Model\Product $product */
+            $product = $this->productHelper->getProduct($productId);
+        }
+        catch (\Exception $e)
+        {
             return [];
+        }
 
         $currency = $this->getCurrencyFromQuote();
 
@@ -389,7 +355,7 @@ class ECEResponse
         if ($requestShipping)
         {
             // The shipping address was not yet specified, or the quote is empty
-            $params['shippingRates'] = $this->getShippingAddressRequiredRate();
+            $params['shippingRates'] = $this->getDefaultShippingRates();
         }
         else
         {
@@ -400,7 +366,7 @@ class ECEResponse
         return $params;
     }
 
-    protected function getShippingRatesForQuoteShippingAddress()
+    public function getShippingRatesForQuoteShippingAddress()
     {
         $quote = $this->quote;
         $rates = [];
@@ -433,7 +399,13 @@ class ECEResponse
             ];
         }
 
-        return $result;
+        return $this->getLimitedShippingRates($result);
+    }
+
+    // The maximum amount of shipping rates for Express Checkout is 9
+    public function getLimitedShippingRates($rates, $limit = 9)
+    {
+        return array_slice($rates, 0, $limit);
     }
 
     protected function getFreeDeliveryRate()
@@ -447,16 +419,6 @@ class ECEResponse
         return $shippingRates;
     }
 
-    protected function getShippingAddressRequiredRate()
-    {
-        $shippingRates[] = [
-            'id' => 'freeshipping_freeshipping',
-            'amount' => 0,
-            'displayName' => __('A shipping address is required')
-        ];
-
-        return $shippingRates;
-    }
     protected function getDefaultShippingRates()
     {
         $countryCode = $this->getCountry();
@@ -475,7 +437,7 @@ class ECEResponse
             ];
         }
 
-        return $shippingRates;
+        return $this->getLimitedShippingRates($shippingRates);
     }
 
     /**
@@ -563,7 +525,7 @@ class ECEResponse
      * @return array
      * @throws \Magento\Framework\Exception\NoSuchEntityException
      */
-    private function getLineItems()
+    public function getLineItems()
     {
         // Get Currency
         $currency = $this->quote->getQuoteCurrencyCode();
@@ -572,78 +534,40 @@ class ECEResponse
         }
 
         // Get Quote Items
-        $shouldInclTax = $this->shouldCartPriceInclTax();
         $lineItems = [];
-        $taxAmount = 0;
-        $initialFee = 0;
-        $initialFeeTax = 0;
-        $isSubscriptionsEnabled = $this->config->isSubscriptionsEnabled();
-        $items = $this->quote->getAllVisibleItems();
-        foreach ($items as $item)
+        $this->quote->collectTotals();
+        $totals = $this->quote->getTotals();
+        $grandTotal = 0;
+
+        foreach ($totals as $total)
         {
-            $rowTotal = $shouldInclTax ? $item->getRowTotalInclTax() : $item->getRowTotal();
+            $code = $total->getCode();
+            $title = $total->getTitle();
+            $value = $total->getValue();
 
-            if (!$shouldInclTax) {
-                $taxAmount += $item->getTaxAmount();
-            }
+            if ($code == "grand_total")
+                continue;
 
-            $label = $item->getName();
-            if ($item->getQty() > 1) {
-                $label .= sprintf(' (%s)', $item->getQty());
-            }
+            if (!is_numeric($value))
+                continue;
+
+            if ($value == 0 && $code != "tax")
+                continue;
 
             $lineItems[] = [
-                'name' => $label,
-                'amount' => $this->helper->convertMagentoAmountToStripeAmount($rowTotal, $currency),
+                'name' => $title,
+                'amount' => $this->helper->convertMagentoAmountToStripeAmount($value, $currency, true),
             ];
 
-            if ($isSubscriptionsEnabled)
-            {
-                $initialFeeDetails = $this->subscriptionsHelper->getInitialFeeDetails($item->getProduct(), $this->quote, $item);
-                if ($initialFeeDetails['initial_fee'] > 0)
-                {
-                    $initialFee += $initialFeeDetails['initial_fee'];
-                    $initialFeeTax += $initialFeeDetails['tax'];
-                }
-            }
+            $grandTotal += $value;
         }
 
-        // Add the initial fee
-        if ($initialFee > 0)
+        if ($this->quote->getGrandTotal() != $grandTotal)
         {
-            $lineItems[] = [
-                'name' => __('Initial Fee'),
-                'amount' => $this->helper->convertMagentoAmountToStripeAmount($initialFee, $currency),
-            ];
-        }
-
-        // Add Shipping
-        if (!$this->quote->getIsVirtual()) {
-            $address = $this->quote->getShippingAddress();
-            if ($address->getShippingInclTax() > 0) {
-                $price = $shouldInclTax ? $address->getShippingInclTax() : $address->getShippingAmount();
-                $lineItems[] = [
-                    'name' => (string)__('Shipping'),
-                    'amount' => $this->helper->convertMagentoAmountToStripeAmount($price, $currency),
-                ];
-            }
-        }
-
-        // Add Tax
-        if ($taxAmount > 0) {
-            $lineItems[] = [
-                'name' => __('Tax'),
-                'amount' => $this->helper->convertMagentoAmountToStripeAmount($taxAmount + $initialFeeTax, $currency),
-            ];
-        }
-
-        // Add Discount
-        $discount = $this->quote->getSubtotal() - $this->quote->getSubtotalWithDiscount();
-        if ($discount > 0) {
-            $lineItems[] = [
-                'name' => __('Discount'),
-                'amount' => -$this->helper->convertMagentoAmountToStripeAmount($discount, $currency),
-            ];
+            return [[
+                'name' => __('Grand Total'),
+                'amount' => $this->helper->convertMagentoAmountToStripeAmount($this->quote->getGrandTotal(), $currency, true),
+            ]];
         }
 
         return $lineItems;
@@ -703,29 +627,5 @@ class ECEResponse
                 unset($countries[$countryCode]);
         }
         return $countries;
-    }
-
-    /**
-     * Get Default Shipping Address
-     * @return array
-     * @throws \Magento\Framework\Exception\NoSuchEntityException
-     */
-    protected function getDefaultShippingAddress()
-    {
-        $address = [];
-        $address['country'] = $this->config->getValue(Shipment::XML_PATH_STORE_COUNTRY_ID, ScopeInterface::SCOPE_STORE, $this->storeId);
-        $address['postalCode'] = $this->config->getValue(Shipment::XML_PATH_STORE_ZIP, ScopeInterface::SCOPE_STORE, $this->storeId);
-        $address['city'] = $this->config->getValue(Shipment::XML_PATH_STORE_CITY, ScopeInterface::SCOPE_STORE, $this->storeId);
-        $address['addressLine'] = [];
-        $address['addressLine'][0] = $this->config->getValue(Shipment::XML_PATH_STORE_ADDRESS1, ScopeInterface::SCOPE_STORE, $this->storeId);
-        $address['addressLine'][1] = $this->config->getValue(Shipment::XML_PATH_STORE_ADDRESS2, ScopeInterface::SCOPE_STORE, $this->storeId);
-        $regionId = $this->config->getValue(Shipment::XML_PATH_STORE_REGION_ID, ScopeInterface::SCOPE_STORE, $this->storeId);
-        if ($regionId) {
-            $region = $this->region->load($regionId);
-            $address['region_id'] = $region->getRegionId();
-            $address['region'] = $region->getName();
-        }
-
-        return $address;
     }
 }

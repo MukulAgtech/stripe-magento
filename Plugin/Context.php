@@ -21,6 +21,7 @@ class Context
     private $helper;
     private $subscriptionsHelper;
     private $config;
+    private $processed = false;
 
     /**
      * @param SessionManagerInterface $session
@@ -58,6 +59,11 @@ class Context
         AbstractAction $subject,
         RequestInterface $request
     ) {
+        if ($this->processed) {
+            return;
+        }
+        $this->processed = true;
+
         /** @var string|array|null $storeCode */
         $storeCode = $request->getParam(
             StoreManagerInterface::PARAM_NAME,
@@ -129,7 +135,7 @@ class Context
      * @throws NotFoundException
      */
     private function processInvalidStoreRequested(
-        NoSuchEntityException $previousException = null
+        ?NoSuchEntityException $previousException = null
     ) {
         $store = $this->storeManager->getStore();
         $this->updateContext($store);

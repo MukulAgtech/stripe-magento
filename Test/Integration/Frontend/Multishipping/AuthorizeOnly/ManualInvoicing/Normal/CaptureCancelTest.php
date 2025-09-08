@@ -54,22 +54,17 @@ class CaptureCancelTest extends \PHPUnit\Framework\TestCase
         $this->tests->orderHelper->saveOrder($order2);
 
         // Payment intent checks
-
-        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, []);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->retrieve($paymentIntentId, ['expand' => ['latest_charge']]);
         $ordersTotal = ($order1->getGrandTotal() * 100 + $order2->getGrandTotal() * 100);
 
         $this->tests->compare($paymentIntent, [
             "amount" => $ordersTotal,
             "amount_capturable" => 0,
             "capture_method" => "manual",
-            "charges" => [
-                "data" => [
-                    0 => [
-                        "amount" => $ordersTotal,
-                        "amount_captured" => ($order1->getGrandTotal() * 100),
-                        "amount_refunded" => $ordersTotal - ($order1->getGrandTotal() * 100)
-                    ]
-                ]
+            "latest_charge" => [
+                "amount" => $ordersTotal,
+                "amount_captured" => ($order1->getGrandTotal() * 100),
+                "amount_refunded" => $ordersTotal - ($order1->getGrandTotal() * 100)
             ],
             "status" => "succeeded"
         ]);

@@ -10,11 +10,15 @@ class PaymentIntentPartiallyFunded
 
     private $webhooksHelper;
     private $helper;
+    private $currencyHelper;
+    private $convert;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Stripe\Service\StripeObjectServicePool $stripeObjectServicePool,
         \StripeIntegration\Payments\Helper\Webhooks $webhooksHelper,
-        \StripeIntegration\Payments\Helper\Generic $helper
+        \StripeIntegration\Payments\Helper\Generic $helper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
+        \StripeIntegration\Payments\Helper\Convert $convert
     )
     {
         $stripeObjectService = $stripeObjectServicePool->getStripeObjectService('events');
@@ -22,6 +26,8 @@ class PaymentIntentPartiallyFunded
 
         $this->webhooksHelper = $webhooksHelper;
         $this->helper = $helper;
+        $this->currencyHelper = $currencyHelper;
+        $this->convert = $convert;
     }
 
     public function process($arrEvent, $object)
@@ -39,10 +45,10 @@ class PaymentIntentPartiallyFunded
         if ($remainingAmount == 0)
             return;
 
-        $orderAmountPaid = $this->helper->convertStripeAmountToOrderAmount($totalAmount - $remainingAmount, $currency, $order);
-        $orderAmountRemaining = $this->helper->convertStripeAmountToOrderAmount($remainingAmount, $currency, $order);
-        $humanReadablePaidAmount = $this->helper->addCurrencySymbol($orderAmountPaid, $currency);
-        $humanReadableRemainingAmount = $this->helper->addCurrencySymbol($orderAmountRemaining, $currency);
+        $orderAmountPaid = $this->convert->stripeAmountToOrderAmount($totalAmount - $remainingAmount, $currency, $order);
+        $orderAmountRemaining = $this->convert->stripeAmountToOrderAmount($remainingAmount, $currency, $order);
+        $humanReadablePaidAmount = $this->currencyHelper->addCurrencySymbol($orderAmountPaid, $currency);
+        $humanReadableRemainingAmount = $this->currencyHelper->addCurrencySymbol($orderAmountRemaining, $currency);
 
         $comment = __("Customer paid %1 using bank transfer. To complete payment, ask the customer to transfer %2 more.", $humanReadablePaidAmount, $humanReadableRemainingAmount);
         $this->webhooksHelper->addOrderComment($order, $comment);

@@ -37,8 +37,6 @@ define(
             },
             currentTotals: null,
             newPrice: ko.observable("--"),
-            prorationFee: ko.observable("--"),
-            unusedTime: ko.observable("--"),
             isPlaceOrderEnabled: ko.observable(false),
             credit: ko.observable(null),
 
@@ -59,10 +57,6 @@ define(
                 upcomingInvoice.initialize();
                 var onUpcomingInvoiceChanged = this.onUpcomingInvoiceChanged.bind(this);
                 upcomingInvoice.onChange(onUpcomingInvoiceChanged);
-
-                this.hasProrationFee = ko.computed(function(){
-                    return self.prorationFee() && self.prorationFee() != "--";
-                });
 
                 return this;
             },
@@ -224,20 +218,6 @@ define(
                         this.newPrice(params.upcomingInvoice.new_price.label);
                     }
 
-                    if (params.upcomingInvoice.proration_fee &&
-                        params.upcomingInvoice.proration_fee.label &&
-                        params.upcomingInvoice.proration_fee.label.length > 0)
-                    {
-                        this.prorationFee(params.upcomingInvoice.proration_fee.label);
-                    }
-
-                    if (params.upcomingInvoice.unused_time &&
-                        params.upcomingInvoice.unused_time.label &&
-                        params.upcomingInvoice.unused_time.label.length > 0)
-                    {
-                        this.unusedTime(params.upcomingInvoice.unused_time.label);
-                    }
-
                     if (params.upcomingInvoice.credit)
                     {
                         this.credit(params.upcomingInvoice.credit);
@@ -255,8 +235,6 @@ define(
             resetTotals: function()
             {
                 this.newPrice("--");
-                this.prorationFee("--");
-                this.unusedTime("--");
             },
 
             getCancelUrl: function()

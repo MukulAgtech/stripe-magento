@@ -41,4 +41,23 @@ class PaymentMethod
 
         return $this->getStripeObject()->customer;
     }
+
+    public function getPaymentMethodType()
+    {
+        return $this->getStripeObject()->type ?? null;
+    }
+
+    public function getCardData()
+    {
+        if (empty($this->getStripeObject()->card))
+        {
+            return null;
+        }
+
+        return [
+            'brand' => $this->getStripeObject()->card->brand,
+            'last4' => $this->getStripeObject()->card->last4,
+            'wallet' => $this->getStripeObject()->card->wallet->type ?? null,
+        ];
+    }
 }

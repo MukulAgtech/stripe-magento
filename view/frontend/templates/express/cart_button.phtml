@@ -1,7 +1,7 @@
 <?php if ($block->isEnabled("shopping_cart_page")) : ?>
-    <div id="payment-request-button-cart" class="payment-request-button cart">&nbsp;</div>
+    <div id="payment-request-button-cart" class="payment-request-button cart"></div>
     <script>
-        require(['domReady!', 'StripeIntegration_Payments/js/stripe_payments_express', 'Magento_Customer/js/customer-data'], function(domReady, stripeExpress, customerData)
+        require(['StripeIntegration_Payments/js/stripe_payments_express', 'Magento_Customer/js/customer-data'], function(stripeExpress, customerData)
         {
             var cart = customerData.get('cart');
 
@@ -12,9 +12,9 @@
                 };
                 stripeExpress.initStripeExpress(
                     '#payment-request-button-cart',
-                    <?= $block->initParams->getWalletParams(); // phpcs:ignore ?>,
+                    <?= /* @noEscape */ $block->initParams->getWalletParams(); ?>,
                     locationDetails,
-                    <?= $block->getButtonConfig(); //phpcs:ignore ?>,
+                    <?= /* @noEscape */ $block->getButtonConfig(); ?>,
                     stripeExpress.initCartWidget.bind(stripeExpress)
                 );
             };

@@ -29,6 +29,7 @@ class LoggedInCustomerTest extends \PHPUnit\Framework\TestCase
      * @magentoConfigFixture current_store currency/options/default EUR
      *
      * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/Customer.php
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testLoggedInCustomer()
     {
@@ -40,12 +41,8 @@ class LoggedInCustomerTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
-
-        // Ensure that we re-used the cached session from the api
         $this->tests->assertCheckoutSessionsCountEquals(1);
 
         $lastCheckoutSession = $this->tests->getLastCheckoutSession();
@@ -54,13 +51,6 @@ class LoggedInCustomerTest extends \PHPUnit\Framework\TestCase
 
         $this->tests->compare($lastCheckoutSession, [
             "amount_total" => $order->getGrandTotal() * 100,
-            "payment_intent" => [
-                "amount" => $order->getGrandTotal() * 100,
-                "capture_method" => "automatic",
-                "description" => "Order #" . $order->getIncrementId() . " by Mr. John Smith Esq.",
-                "setup_future_usage" => "on_session",
-                "customer" => $customer->id
-            ],
             "customer_email" => "unset",
             "customer" => $customer->id,
             "submit_type" => "pay"
@@ -89,12 +79,8 @@ class LoggedInCustomerTest extends \PHPUnit\Framework\TestCase
             ->setBillingAddress("Berlin")
             ->setPaymentMethod("StripeCheckout");
 
-        $this->tests->assertCheckoutSessionsCountEquals(1);
-
         // Place the order
         $order = $this->quote->placeOrder();
-
-        // Ensure that we re-used the cached session from the api
         $this->tests->assertCheckoutSessionsCountEquals(1);
 
         $lastCheckoutSession = $this->tests->getLastCheckoutSession();
@@ -103,13 +89,6 @@ class LoggedInCustomerTest extends \PHPUnit\Framework\TestCase
 
         $this->tests->compare($lastCheckoutSession, [
             "amount_total" => $order->getGrandTotal() * 100,
-            "payment_intent" => [
-                "amount" => $order->getGrandTotal() * 100,
-                "capture_method" => "automatic",
-                "description" => "Order #" . $order->getIncrementId() . " by Mr. John Smith Esq.",
-                "setup_future_usage" => "unset",
-                "customer" => $customer->id
-            ],
             "customer_email" => "unset",
             "customer" => $customer->id,
             "submit_type" => "pay"

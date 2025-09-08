@@ -2,6 +2,7 @@
 
 namespace StripeIntegration\Payments\Model\Stripe\Event;
 
+use StripeIntegration\Payments\Exception\OrderNotFoundException;
 use StripeIntegration\Payments\Model\Stripe\StripeObjectTrait;
 
 class PaymentIntentPaymentFailed
@@ -26,7 +27,16 @@ class PaymentIntentPaymentFailed
 
     public function process($arrEvent, $object)
     {
-        $orders = $this->webhooksHelper->loadOrderFromEvent($arrEvent, true);
+        try
+        {
+            $orders = $this->webhooksHelper->loadOrderFromEvent($arrEvent, true);
+        }
+        catch (OrderNotFoundException $e)
+        {
+            // We should not add payment failed comments to the order *after* payment succeeded messages.
+            // We return without errors so that the event is not queued for later processing.
+            return;
+        }
 
         foreach ($orders as $order)
         {

@@ -209,17 +209,20 @@ class Account
         {
             if ($endpoint->getUrl() == $url && !$endpoint->isKnown())
             {
-                $this->stripeClient->webhookEndpoints->delete($id, []);
+                $this->deleteWebhookEndpointById($id);
                 $deleted[] = $id;
             }
         }
 
-        foreach ($deleted as $id)
-        {
-            unset($this->webhookEndpoints[$id]);
-        }
-
         return $deleted;
+    }
+
+    public function deleteWebhookEndpointById($id)
+    {
+        $this->stripeClient->webhookEndpoints->delete($id, []);
+
+        if (isset($this->webhookEndpoints[$id]))
+            unset($this->webhookEndpoints[$id]);
     }
 
     public function configureWebhooks($url)
@@ -239,7 +242,7 @@ class Account
                 // We have no record of this endpoint, so we should delete it and re-create it
                 try
                 {
-                    $this->stripeClient->webhookEndpoints->delete($matchingEndpoint->getId(), []);
+                    $this->deleteWebhookEndpointById($matchingEndpoint->getId());
                 }
                 catch (\Exception $e) {
 

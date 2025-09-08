@@ -15,26 +15,32 @@ class Checkout extends \Magento\Payment\Model\Method\Adapter
 {
     private $config;
     private $helper;
-    private $subscriptionsHelper;
+    private $checkoutSessionHelper;
+    private $quoteHelper;
+    private $checkoutFlow;
 
     public function __construct(
         \StripeIntegration\Payments\Model\Config $config,
+        \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
         \StripeIntegration\Payments\Helper\Generic $helper,
-        \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
+        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSessionHelper,
+        \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         ManagerInterface $eventManager,
         ValueHandlerPoolInterface $valueHandlerPool,
         PaymentDataObjectFactory $paymentDataObjectFactory,
         $code,
         $formBlockType,
         $infoBlockType,
-        CommandPoolInterface $commandPool = null,
-        ValidatorPoolInterface $validatorPool = null,
-        CommandManagerInterface $commandExecutor = null,
-        LoggerInterface $logger = null
+        ?CommandPoolInterface $commandPool = null,
+        ?ValidatorPoolInterface $validatorPool = null,
+        ?CommandManagerInterface $commandExecutor = null,
+        ?LoggerInterface $logger = null
     ) {
         $this->config = $config;
+        $this->checkoutFlow = $checkoutFlow;
         $this->helper = $helper;
-        $this->subscriptionsHelper = $subscriptionsHelper;
+        $this->checkoutSessionHelper = $checkoutSessionHelper;
+        $this->quoteHelper = $quoteHelper;
 
         parent::__construct(
             $eventManager,
@@ -61,18 +67,34 @@ class Checkout extends \Magento\Payment\Model\Method\Adapter
             $this->config->isRedirectPaymentFlow() &&
             !$this->helper->isAdmin() &&
             !$this->helper->isMultiShipping() &&
-            !$this->subscriptionsHelper->isSubscriptionUpdate();
+            !$this->checkoutSessionHelper->isSubscriptionUpdate();
     }
 
-    public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
+    public function isAvailable(?\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
-        if ($this->helper->isRecurringOrder($this))
+        if ($this->checkoutFlow->isPaymentMethodAvailable())
             return true;
 
         if (!$this->isEnabled($quote))
             return false;
 
-        return parent::isAvailable($quote);
+        if ($quote && $this->getConfigPaymentAction() == 'order')
+        {
+            $hasNonBillableSubscriptionItems = !empty($this->quoteHelper->getNonBillableSubscriptionItems($quote->getAllItems()));
+            $hasFullyDiscountedSubscriptions = $this->quoteHelper->hasFullyDiscountedSubscriptions($quote);
+            $isZeroTotalSubscriptionFromAdjustment = $this->quoteHelper->isZeroTotalSubscriptionFromAdjustment($quote);
+        }
+        else
+        {
+            $hasNonBillableSubscriptionItems = false;
+            $hasFullyDiscountedSubscriptions = false;
+            $isZeroTotalSubscriptionFromAdjustment = false;
+        }
+
+        return $hasNonBillableSubscriptionItems ||
+            $hasFullyDiscountedSubscriptions ||
+            $isZeroTotalSubscriptionFromAdjustment ||
+            parent::isAvailable($quote);
     }
 
     public function getConfigPaymentAction()

@@ -67,18 +67,12 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEmpty($data["resolvePayload"]['shippingRates']);
 
         $stripe = $this->tests->stripe();
-        $paymentMethod = $stripe->paymentMethods->create([
-          'type' => 'card',
-          'card' => [
-            'number' => '4242424242424242',
-            'exp_month' => 7,
-            'exp_year' => date("Y", time()) + 1,
-            'cvc' => '314',
-          ],
-          'billing_details' => $this->tests->address()->getStripeFormat("NewYork")
+        $confirmationToken = $stripe->testHelpers->confirmationTokens->create([
+            'payment_method' => 'pm_card_visa',
+            'setup_future_usage' => 'off_session'
         ]);
-        $this->assertNotEmpty($paymentMethod);
-        $this->assertNotEmpty($paymentMethod->id);
+        $this->assertNotEmpty($confirmationToken);
+        $this->assertNotEmpty($confirmationToken->id);
 
         $address = $this->tests->address()->getStripeFormat("NewYork");
         $result = [
@@ -87,10 +81,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
             "billingDetails" => $address,
             "shippingAddress" => $address,
             "shippingRate" =>  $selectedShippingMethod,
-            "paymentMethod" =>  $paymentMethod
+            "confirmationToken" =>  $confirmationToken
         ];
 
-        $this->markTestIncomplete('$result["confirmationToken"] must be created and passed to the API');
         $result = $this->apiService->place_order($result, "product");
         $this->assertNotEmpty($result);
 
@@ -108,7 +101,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
 
         // Load the customer
         $customerId = $order->getPayment()->getAdditionalInformation("customer_stripe_id");
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Stripe checks
@@ -162,7 +157,9 @@ class SubscriptionPriceCommandTest extends \PHPUnit\Framework\TestCase
         $this->assertNotEquals($order->getIncrementId(), $newOrder->getIncrementId());
 
         // Stripe checks
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
 
         // Trigger webhooks

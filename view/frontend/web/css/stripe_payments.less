@@ -43,25 +43,23 @@
     margin-bottom: 10px;
 }
 .stripe-permanent-error {
-    text-align: center;
-    padding: 0 2em 2em 2em;
-    font-size: large;
+    font-size: 1.5rem;
 }
 
 /* My Subscriptions customer account section */
 a.subscription-name {
     display: block;
 }
-.subscription-card input {
+.subscription-payment-method input {
     margin-right: 5px;
 }
-.subscription-card {
+.subscription-payment-method {
     padding: 5px 0 0 5px;
 }
-.subscription-card .exp, .details.stripe-payments .exp {
+.subscription-payment-method .exp, .details.stripe-payments .exp {
     color: #aaa;
 }
-.subscription-card.add-new {
+.subscription-payment-method.add-new {
     padding: 10px;
     text-align: center;
 }
@@ -166,7 +164,7 @@ body.stripe_payments-customer-subscriptions {
                         border-top: 1px solid #ccc;
                         padding-top: 10px;
 
-                        a.delete {
+                        a.delete, button.delete {
                             color: red;
                         }
                     }
@@ -211,9 +209,12 @@ body.stripe_payments-customer-subscriptions {
                     padding: 9px 15px 4px 15px;
                 }
             }
-            a {
-                text-decoration: none;
-            }
+        }
+    }
+
+    .stripe-actions-dropdown {
+        a, .stripe-link {
+            text-decoration: none;
         }
     }
 }
@@ -411,4 +412,12 @@ ul.stripe-dropdown-list a {
 .trialing_tax .mark::before,
 .trialing_discount .mark::before {
     content: "- ";
+}
+
+button.stripe-link {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    font-weight: normal;
 }

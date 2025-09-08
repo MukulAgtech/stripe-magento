@@ -1,20 +1,20 @@
 <?php if ($block->isEnabled("product_page")) : ?>
-    <div id="payment-request-button" class="payment-request-button action tocart"></div>
+    <div id="payment-request-button" class="payment-request-button"></div>
     <script>
-        require(['domReady!', 'StripeIntegration_Payments/js/stripe_payments_express', 'Magento_Customer/js/customer-data'], function(domReady, stripeExpress, customerData)
+        require(['StripeIntegration_Payments/js/stripe_payments_express', 'Magento_Customer/js/customer-data'], function(stripeExpress, customerData)
         {
             var cart = customerData.get('cart');
             var initECE = function()
             {
                 var locationDetails = {
                     location: 'product',
-                    productId: '<?= $block->getProductId(); // phpcs:ignore ?>',
+                    productId: '<?= $block->escapeJs($block->getProductId()); ?>',
                 };
                 stripeExpress.initStripeExpress(
                     '#payment-request-button',
-                    <?= $block->initParams->getWalletParams(); // phpcs:ignore ?>,
+                    <?= /* @noEscape */ $block->initParams->getWalletParams(); ?>,
                     locationDetails,
-                    <?= $block->getButtonConfig(); // phpcs:ignore ?>,
+                    <?= /* @noEscape */ $block->getButtonConfig(); ?>,
                     stripeExpress.initProductWidget.bind(stripeExpress)
                 );
             };

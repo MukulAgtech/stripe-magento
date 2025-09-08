@@ -37,4 +37,11 @@ class CheckoutSession
 
         return $subscriptionUpdateDetails;
     }
+
+    public function getSubscriptionReactivateDetails()
+    {
+        $subscriptionReactivateDetails = $this->checkoutSession->getSubscriptionReactivateDetails();
+
+        return $subscriptionReactivateDetails;
+    }
 }

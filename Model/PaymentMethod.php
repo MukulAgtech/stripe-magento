@@ -2,7 +2,6 @@
 
 namespace StripeIntegration\Payments\Model;
 
-use Magento\Framework\Exception\LocalizedException;
 use Magento\Payment\Model\InfoInterface;
 use StripeIntegration\Payments\Exception\GenericException;
 use StripeIntegration\Payments\Exception\RefundOfflineException;
@@ -24,8 +23,15 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
     private $quoteHelper;
     private $orderHelper;
     private $checkoutFlow;
+    private $stripePaymentIntentFactory;
+    private $checkoutSessionHelper;
+    private $paymentElementResource;
+    private $paymentElementCollection;
+    private $cartInfo;
+    private $request;
 
     public function __construct(
+        \Magento\Framework\App\Action\Context $context,
         \Magento\Framework\Event\ManagerInterface $eventManager,
         \Magento\Payment\Gateway\Config\ValueHandlerPoolInterface $valueHandlerPool,
         \Magento\Payment\Gateway\Data\PaymentDataObjectFactory $paymentDataObjectFactory,
@@ -37,6 +43,10 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         \StripeIntegration\Payments\Model\PaymentIntent $paymentIntent,
         \StripeIntegration\Payments\Model\Stripe\PaymentMethod $stripePaymentMethod,
         \StripeIntegration\Payments\Model\Checkout\Flow $checkoutFlow,
+        \StripeIntegration\Payments\Model\Stripe\PaymentIntentFactory $stripePaymentIntentFactory,
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentElement $paymentElementResource,
+        \StripeIntegration\Payments\Model\ResourceModel\PaymentElement\Collection $paymentElementCollection,
+        \StripeIntegration\Payments\Model\Cart\Info $cartInfo,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Subscriptions $subscriptionsHelper,
         \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
@@ -47,9 +57,11 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         \StripeIntegration\Payments\Helper\SetupIntent $setupIntentHelper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Order $orderHelper,
-        \Magento\Payment\Gateway\Command\CommandPoolInterface $commandPool = null,
-        \Magento\Payment\Gateway\Validator\ValidatorPoolInterface $validatorPool = null
+        \StripeIntegration\Payments\Helper\CheckoutSession $checkoutSessionHelper,
+        ?\Magento\Payment\Gateway\Command\CommandPoolInterface $commandPool = null,
+        ?\Magento\Payment\Gateway\Validator\ValidatorPoolInterface $validatorPool = null
     ) {
+        $this->request = $context->getRequest();
         $this->config = $config;
         $this->paymentElement = $paymentElement;
         $this->paymentIntent = $paymentIntent;
@@ -65,6 +77,11 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         $this->quoteHelper = $quoteHelper;
         $this->orderHelper = $orderHelper;
         $this->checkoutFlow = $checkoutFlow;
+        $this->stripePaymentIntentFactory = $stripePaymentIntentFactory;
+        $this->checkoutSessionHelper = $checkoutSessionHelper;
+        $this->paymentElementResource = $paymentElementResource;
+        $this->paymentElementCollection = $paymentElementCollection;
+        $this->cartInfo = $cartInfo;
 
         if ($this->helper->isMultiShipping())
             $formBlockType = 'StripeIntegration\Payments\Block\Multishipping\Billing';
@@ -101,56 +118,60 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         return $this;
     }
 
-    public function checkIfCartIsSupported(\Magento\Payment\Model\InfoInterface $payment, $amount)
-    {
-        if (!$this->subscriptionsHelper->hasTrialSubscriptions())
-            return;
-
-        if ($this->subscriptionsHelper->isZeroAmountOrder($payment->getOrder()))
-            return;
-
-        if ($payment->getOrder()->getDiscountAmount() < 0)
-        {
-            // The cart includes both trial subscriptions and regular products. In the case of expiring discounts, the full discount will be applied
-            // on the initial payment which is incorrect. We need to apply only the discount which applies to the regular product, without applying
-            // the discount that applies on the trial subscription. Currently this is not supported.
-            if ($this->subscriptionsHelper->hasExpiringDiscountCoupons())
-            {
-                throw new LocalizedException(__("Limited-time discount coupons cannot be applied on carts that include both regular products and trial subscriptions."));
-            }
-        }
-    }
-
     public function order(\Magento\Payment\Model\InfoInterface $payment, $amount)
     {
+        if ($this->tokenHelper->isExternalPaymentMethodToken($payment->getAdditionalInformation("token")))
+        {
+            $this->paymentIntent->processPendingOrderWithoutIntent($payment->getOrder());
+            return $this;
+        }
+
         $customer = $this->helper->getCustomerModel();
         $customer->createStripeCustomerIfNotExists(false, $payment->getOrder());
 
         $createParams = $this->setupIntentHelper->getCreateParams($payment->getOrder());
         $confirmParams = $this->setupIntentHelper->getConfirmParams($payment->getOrder());
 
-        // Load the setup intent from the customer session
-        $setupIntentId = $this->helper->getCheckoutSession()->getStripeSetupIntentId();
-        if (!$setupIntentId)
+        $paymentElement = $this->paymentElementCollection->getByQuoteId($payment->getOrder()->getQuoteId());
+        if ($paymentElement->getSetupIntentId())
         {
-            $setupIntent = $this->config->getStripeClient()->setupIntents->create($createParams);
+            // Hits with 3DS2 authentication + order resubmission
+            $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($paymentElement->getSetupIntentId());
         }
         else
         {
-            $setupIntent = $this->config->getStripeClient()->setupIntents->retrieve($setupIntentId, []);
-            $this->helper->getCheckoutSession()->setStripeSetupIntentId(null);
+            $setupIntent = $this->config->getStripeClient()->setupIntents->create($createParams);
+        }
+        $paymentElement->setQuoteId($payment->getOrder()->getQuoteId());
+        $paymentElement->setSetupIntentId($setupIntent->id);
+        $paymentElement->setPaymentMethodId($setupIntent->payment_method);
+        $paymentElement->setOrderIncrementId($payment->getOrder()->getIncrementId());
+        $this->paymentElementResource->save($paymentElement);
 
-            if ($setupIntent->status == "requires_confirmation" || $setupIntent->status == "requires_payment_method")
-            {
-                $setupIntent = $this->config->getStripeClient()->setupIntents->confirm($setupIntentId, $confirmParams);
-            }
+        $payment->setAdditionalInformation("customer_stripe_id", $customer->getStripeId());
+        $payment->setAdditionalInformation("payment_action", $this->config->getPaymentAction());
+
+        // If the order was placed with a confirmation token, switch things around to a normal PM token
+        $payment->setAdditionalInformation("token", $setupIntent->payment_method);
+        $payment->setAdditionalInformation("confirmation_token", false);
+
+        if ($setupIntent->status == "requires_confirmation" || $setupIntent->status == "requires_payment_method")
+        {
+            $setupIntent = $this->config->getStripeClient()->setupIntents->confirm($setupIntent->id, $confirmParams);
         }
 
         if ($setupIntent->status == "requires_action")
         {
-            // Save the setup intent ID in the customer session
-            $this->helper->getCheckoutSession()->setStripeSetupIntentId($setupIntent->id);
-            return $this->helper->throwError("Authentication Required: " . $setupIntent->client_secret);
+            if ($setupIntent->next_action->type == "redirect_to_url")
+            {
+                // Hits with PayPal and other saveable redirect-based payment methods
+                $payment->setIsCustomerRedirected(true);
+                return $this;
+            }
+            else
+            {
+                return $this->helper->throwError("Authentication Required: " . $setupIntent->client_secret);
+            }
         }
         else if ($setupIntent->status == "canceled")
         {
@@ -158,13 +179,7 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         }
         else if (in_array($setupIntent->status, ["succeeded", "processing"]))
         {
-            // Processing or succeeded status
-            $payment->setAdditionalInformation("customer_stripe_id", $customer->getStripeId());
-            $payment->setAdditionalInformation("payment_action", $this->config->getPaymentAction());
-
-            // If the order was placed with a confirmation token, switch things around to a normal PM token
-            $payment->setAdditionalInformation("token", $setupIntent->payment_method);
-            $payment->setAdditionalInformation("confirmation_token", true);
+            return $this;
         }
         else
         {
@@ -176,26 +191,30 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
 
     public function authorize(\Magento\Payment\Model\InfoInterface $payment, $amount)
     {
-        $this->checkIfCartIsSupported($payment, $amount);
-
-        if ($amount > 0)
+        if ($this->tokenHelper->isExternalPaymentMethodToken($payment->getAdditionalInformation("token")))
         {
-            if ($this->subscriptionsHelper->isSubscriptionUpdate())
-            {
-                $this->subscriptionsHelper->updateSubscription($payment);
-            }
-            else if ($this->helper->isMultiShipping())
-            {
-                $this->doNotPay($payment);
-            }
-            else if ($payment->getAdditionalInformation('is_migrated_subscription'))
-            {
-                $this->doNotPay($payment);
-            }
-            else
-            {
-                $this->pay($payment, $amount);
-            }
+            $this->paymentIntent->processPendingOrderWithoutIntent($payment->getOrder());
+            return $this;
+        }
+        else if ($this->checkoutSessionHelper->isSubscriptionUpdate())
+        {
+            $this->subscriptionsHelper->updateSubscription($payment);
+        }
+        else if ($this->helper->isMultiShipping())
+        {
+            $this->doNotPay($payment);
+        }
+        else if ($payment->getAdditionalInformation('is_migrated_subscription'))
+        {
+            $this->doNotPay($payment);
+        }
+        else if ($this->checkoutFlow->creatingOrderFromCharge)
+        {
+            $this->createOrderFromCharge($payment);
+        }
+        else
+        {
+            $this->pay($payment, $amount);
         }
 
         return $this;
@@ -203,65 +222,72 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
 
     public function capture(\Magento\Payment\Model\InfoInterface $payment, $amount)
     {
-        $this->checkIfCartIsSupported($payment, $amount);
-
-        if ($amount > 0)
+        if ($this->tokenHelper->isExternalPaymentMethodToken($payment->getAdditionalInformation("token")))
         {
-            // We get in here when the store is configured in Authorize Only mode and we are capturing a payment from the admin
-            $token = $payment->getTransactionId();
-            if (empty($token))
-            {
-                $token = $payment->getLastTransId(); // In case where the transaction was not created during the checkout, i.e. with a Stripe Webhook redirect
-            }
+            $this->paymentIntent->processPendingOrderWithoutIntent($payment->getOrder());
+            return $this;
+        }
 
-            if ($payment->getAdditionalInformation('payment_action') == "order")
-            {
-                $this->api->createNewCharge($payment, $amount);
-            }
-            else if ($token)
-            {
-                // Capture an authorized payment from the admin area
+        $token = $payment->getTransactionId();
+        if (empty($token))
+        {
+            $token = $payment->getLastTransId(); // In case where the transaction was not created during the checkout, i.e. with a Stripe Webhook redirect
+        }
 
-                $token = $this->tokenHelper->cleanToken($token);
+        if ($payment->getAdditionalInformation('payment_action') == "order")
+        {
+            $this->api->createNewCharge($payment, $amount);
+        }
+        else if ($token)
+        {
+            // Capture an authorized payment from the admin area
+            $token = $this->tokenHelper->cleanToken($token);
 
-                $orders = $this->helper->getOrdersByTransactionId($token);
-                $quoteId = (($payment->getOrder() && $payment->getOrder()->getQuoteId()) ? $payment->getOrder()->getQuoteId() : null);
-                if ($this->multishippingHelper->isMultishippingQuote($quoteId))
+            $orders = $this->helper->getOrdersByTransactionId($token);
+            $quoteId = (($payment->getOrder() && $payment->getOrder()->getQuoteId()) ? $payment->getOrder()->getQuoteId() : null);
+            if ($this->multishippingHelper->isMultishippingQuote($quoteId))
+            {
+                if (count($orders) > 1)
                 {
-                    if (count($orders) > 1)
-                    {
-                        $this->multishippingHelper->captureOrdersFromAdminArea($orders, $token, $payment, $amount, $this->config->retryWithSavedCard());
-                    }
-                    else
-                    {
-                        return $this->helper->throwError(__("This order cannot be captured because no transactions have been recorded against it."));
-                    }
+                    $this->multishippingHelper->captureOrdersFromAdminArea($orders, $token, $payment, $amount, $this->config->retryWithSavedCard());
+                }
+                else
+                {
+                    return $this->helper->throwError(__("This order cannot be captured because no transactions have been recorded against it."));
+                }
+            }
+            else
+            {
+                $customCaptureAmount = $this->getCustomCaptureAmount($payment, $amount);
+                if ($customCaptureAmount)
+                {
+                    $this->helper->capture($token, $payment, $customCaptureAmount, false);
                 }
                 else
                 {
                     $this->helper->capture($token, $payment, $amount, $this->config->retryWithSavedCard());
                 }
             }
-            else if ($payment->getAdditionalInformation('is_migrated_subscription'))
-            {
-                return $this->helper->throwError(__("It is not possible to capture subscription orders that were created from the CLI."));
-            }
-            else if ($this->helper->isAdmin() && $payment->getOrder()->getState() == "pending_payment")
-            {
-                return $this->helper->throwError(__("It is not possible to capture the payment because the transaction has not yet been authorized."));
-            }
-            else if ($this->subscriptionsHelper->isSubscriptionUpdate())
-            {
-                $this->subscriptionsHelper->updateSubscription($payment);
-            }
-            else if ($this->helper->isMultiShipping())
-            {
-                $this->doNotPay($payment);
-            }
-            else
-            {
-                $this->pay($payment, $amount);
-            }
+        }
+        else if ($payment->getAdditionalInformation('is_migrated_subscription'))
+        {
+            return $this->helper->throwError(__("It is not possible to capture subscription orders that were created from the CLI."));
+        }
+        else if ($this->helper->isAdmin() && $payment->getOrder()->getState() == "pending_payment")
+        {
+            return $this->helper->throwError(__("It is not possible to capture the payment because the transaction has not yet been authorized."));
+        }
+        else if ($this->helper->isMultiShipping())
+        {
+            $this->doNotPay($payment);
+        }
+        else if ($this->checkoutFlow->creatingOrderFromCharge)
+        {
+            $this->createOrderFromCharge($payment);
+        }
+        else
+        {
+            $this->pay($payment, $amount);
         }
 
         return $this;
@@ -277,7 +303,7 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
 
     public function pay(InfoInterface $payment, $amount)
     {
-        if ($payment->getAdditionalInformation("is_recurring_subscription"))
+        if ($this->checkoutFlow->isRecurringSubscriptionOrderBeingPlaced)
             return $this;
 
         if (!$payment->getAdditionalInformation("token") && !$payment->getAdditionalInformation("confirmation_token"))
@@ -318,19 +344,13 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         }
         else if ($this->paymentIntent->requiresAction($result))
         {
-            if ($this->helper->isAdmin())
+            if ($this->helper->isAdmin() && $this->paymentIntentHelper->requiresOnlineAction($result))
             {
                 return $this->helper->throwError(__("This payment method cannot be used because it requires a customer authentication. To avoid authentication in the admin area, please contact Stripe support to request access to the MOTO gate for your Stripe account."));
             }
 
             if ($this->shouldAuthenticateManually($result))
             {
-                // Certain versions of Magento such as 2.4.4 and 2.4.6 cause order increment ID skipping after a payment failure.
-                // We save the quote so that the order increment ID is saved. We intentionally do not use the quotes repository,
-                // because that triggers a bug in older versions of Magento (2.4.2), where configurable products with a QTY of 1
-                // would fail order placement with an error that the product quantity is not available.
-                $this->quoteHelper->getQuote()->save();
-
                 return $this->helper->throwError("Authentication Required: {$result->client_secret}");
             }
 
@@ -370,7 +390,23 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         }
         else if ($this->paymentElement->getSetupIntent())
         {
-            $this->paymentIntent->processPendingOrder($order, $result);
+            if ($order->getGrandTotal() == 0)
+            {
+                if ($this->cartInfo->hasTrialSubscriptions())
+                {
+                    $this->paymentIntent->processTrialSubscriptionOrder($order, $this->paymentElement->getSubscription());
+                }
+                else
+                {
+                    // In theory we should never get here
+                    $this->paymentIntent->processSuccessfulOrder($order, $result);
+                }
+            }
+            else
+            {
+                // In theory we should never get here because a payment intent will be available
+                $this->paymentIntent->processPendingOrder($order, $result);
+            }
         }
     }
 
@@ -386,6 +422,10 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
             {
                 return true;
             }
+        }
+        else if (!empty($intent->payment_method->type) && in_array($intent->payment_method->type, $methods))
+        {
+            return true;
         }
 
         return false;
@@ -403,6 +443,18 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         {
             $paymentIntentId = $this->refundsHelper->getTransactionId($payment);
             $paymentIntent = $this->config->getStripeClient()->paymentIntents->retrieve($paymentIntentId, []);
+
+            if ($this->checkoutFlow->isCleaningExpiredOrders)
+            {
+                // Triggered via the Pending Payment Order Lifetime cron job.
+                if ($this->paymentIntentHelper->isSuccessful($paymentIntent) ||
+                    $this->paymentIntentHelper->requiresOfflineAction($paymentIntent) ||
+                    $this->paymentIntentHelper->isAsyncProcessing($paymentIntent))
+                {
+                    // Case where the payment succeeded but the charge.succeeded event has not yet been processed
+                    return $this->helper->throwError(__("The order could not be canceled because the payment is still being processed."));
+                }
+            }
 
             if ($this->multishippingHelper->isMultishippingPayment($paymentIntent) && $paymentIntent->status == "requires_capture")
             {
@@ -425,9 +477,19 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
             else
                 $this->orderHelper->addOrderComment($e->getMessage(), $payment->getOrder());
         }
+        catch (\Stripe\Exception\InvalidRequestException $e)
+        {
+            if ($e->getStripeCode() == "resource_missing")
+            {
+                $this->orderHelper->addOrderComment("The payment could not be refunded because the transaction was not found in Stripe.", $payment->getOrder());
+                return $this;
+            }
+
+            return $this->helper->throwError(__('Could not refund payment: %1', $e->getMessage()), $e);
+        }
         catch (\Exception $e)
         {
-            $this->helper->throwError(__('Could not refund payment: %1', $e->getMessage()), $e);
+            return $this->helper->throwError(__('Could not refund payment: %1', $e->getMessage()), $e);
         }
 
         return $this;
@@ -477,24 +539,47 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
         return parent::canCapture();
     }
 
-    public function isAvailable(\Magento\Quote\Api\Data\CartInterface $quote = null)
+    public function isAvailable(?\Magento\Quote\Api\Data\CartInterface $quote = null)
     {
-        if ($quote && $quote->getIsRecurringOrder())
+        if ($this->checkoutFlow->isPaymentMethodAvailable())
             return true;
 
-        if ($this->subscriptionsHelper->isSubscriptionUpdate())
+        if ($this->checkoutSessionHelper->isSubscriptionUpdate())
             return true;
 
         if (!$this->config->isEnabled())
             return false;
 
-        if ($this->helper->isAdmin())
-            return parent::isAvailable($quote);
+        if ($this->getConfigPaymentAction() == 'authorize')
+        {
+            $isSubscriptionUpdate = $this->checkoutSessionHelper->isSubscriptionUpdate();
+        }
+        else
+        {
+            $isSubscriptionUpdate = false;
+        }
 
-        if ($this->config->isRedirectPaymentFlow() && !$this->isExpressCheckout() && !$this->helper->isMultiShipping())
+        if ($quote && $this->getConfigPaymentAction() == 'authorize_capture')
+        {
+            $hasNonBillableSubscriptionItems = !empty($this->quoteHelper->getNonBillableSubscriptionItems($quote->getAllItems()));
+            $hasFullyDiscountedSubscriptions = $this->quoteHelper->hasFullyDiscountedSubscriptions($quote);
+            $isZeroTotalSubscriptionFromAdjustment = $this->quoteHelper->isZeroTotalSubscriptionFromAdjustment($quote);
+        }
+        else
+        {
+            $hasNonBillableSubscriptionItems = false;
+            $hasFullyDiscountedSubscriptions = false;
+            $isZeroTotalSubscriptionFromAdjustment = false;
+        }
+
+        if ($this->config->isRedirectPaymentFlow() && !$this->isExpressCheckout() && !$this->helper->isMultiShipping() && !$this->helper->isAdmin())
             return false;
 
-        return parent::isAvailable($quote);
+        return $hasNonBillableSubscriptionItems ||
+            $hasFullyDiscountedSubscriptions ||
+            $isZeroTotalSubscriptionFromAdjustment ||
+            $isSubscriptionUpdate ||
+            parent::isAvailable($quote);
     }
 
     public function isExpressCheckout()
@@ -506,7 +591,7 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
     {
         $info = $this->getInfoInstance();
         if ($info && $info->getAdditionalInformation("is_migrated_subscription") ||
-            $this->subscriptionsHelper->isSubscriptionUpdate())
+            $this->checkoutSessionHelper->isSubscriptionUpdate())
         {
             return 'authorize';
         }
@@ -547,5 +632,44 @@ class PaymentMethod extends \Magento\Payment\Model\Method\Adapter
     protected function getConfig()
     {
         return $this->config;
+    }
+
+    private function createOrderFromCharge($payment)
+    {
+        $charge = $this->checkoutFlow->creatingOrderFromCharge;
+        if (empty($charge['payment_intent']))
+        {
+            return $this->helper->throwError("The charge has no payment intent.");
+        }
+
+        $stripePaymentIntentModel = $this->stripePaymentIntentFactory->create()->fromPaymentIntentId($charge['payment_intent']);
+        $this->paymentIntent->processSuccessfulOrder($payment->getOrder(), $stripePaymentIntentModel->getStripeObject());
+    }
+
+    public function getCustomCaptureAmount($payment, $amount)
+    {
+        if (!$this->config->isOvercaptureEnabled())
+        {
+            return null;
+        }
+
+        $data = $this->request->getPost('invoice');
+
+        if (empty($data['custom_capture_amount']))
+        {
+            return null;
+        }
+
+        if (!is_numeric($data['custom_capture_amount']))
+        {
+            $this->helper->throwError("Invalid custom capture amount " . $data['custom_capture_amount']);
+        }
+
+        if ($data['custom_capture_amount'] <= 0)
+        {
+            $this->helper->throwError("Invalid custom capture amount " . $data['custom_capture_amount']);
+        }
+
+        return $data['custom_capture_amount'];
     }
 }

@@ -23,6 +23,7 @@ class CancelAbandonedPaymentsInactiveStoreTest extends \PHPUnit\Framework\TestCa
     }
 
     /**
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysIsolated.php
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 0
      * @magentoConfigFixture current_store currency/options/base USD
      * @magentoConfigFixture current_store currency/options/allow EUR,USD
@@ -36,7 +37,7 @@ class CancelAbandonedPaymentsInactiveStoreTest extends \PHPUnit\Framework\TestCa
             ->setShippingAddress("Berlin")
             ->setShippingMethod("FlatRate")
             ->setBillingAddress("Berlin")
-            ->setPaymentMethod("SOFORT");
+            ->setPaymentMethod("RedirectBasedMethod");
 
         $order = $this->quote->placeOrder();
 

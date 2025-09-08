@@ -29,12 +29,12 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
      */
     public function testPlaceOrder()
     {
+        $day = "10";
         $product = $this->tests->getProduct('simple-monthly-subscription-initial-fee-product');
         $product->setSubscriptionOptions([
             'start_on_specific_date' => 1,
-            'start_date' => "2021-01-10",
-            'first_payment' => 'on_start_date',
-            'prorate_first_payment' => 0
+            'start_date' => "2021-01-$day",
+            'first_payment' => 'on_start_date'
         ]);
         $this->tests->helper()->saveProduct($product);
 
@@ -57,22 +57,37 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
         $order = $this->tests->refreshOrder($order);
 
         $customerId = $subscription->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
 
         // Customer has one subscription
         $this->assertCount(1, $customer->subscriptions->data);
 
-        // The customer has no charges for the subscription
+        $productsAmount = 3815; // 2 x Simple product + 2 x Initial fee + tax
+        $subscriptionAmount = 3165; // 2 x Subscription product + tax
+        if (date("d") == $day)
+        {
+            $expectedChargeAmount = $productsAmount + $subscriptionAmount;
+            $expectedSubscriptionStatus = "active";
+        }
+        else
+        {
+            $expectedChargeAmount = $productsAmount;
+            $expectedSubscriptionStatus = "trialing";
+        }
+
+        // Check the charge amount
         $charges = $this->tests->stripe()->charges->all(['customer' => $customerId]);
         $this->assertCount(1, $charges->data);
-        $this->assertEquals(3815, $charges->data[0]->amount); // 2 x Simple product + 2 x Initial fee
+        $this->assertEquals($expectedChargeAmount, $charges->data[0]->amount);
 
         $subscription = $customer->subscriptions->data[0];
         // Get the subscription start date
         $subscriptionStartDate = $subscription->billing_cycle_anchor;
 
         // The subscription start date should be the 10th of the month
-        $this->assertEquals("10", date("d", $subscriptionStartDate));
+        $this->assertEquals($day, date("d", $subscriptionStartDate));
 
         $this->compare->object($subscription, [
             "items" => [
@@ -93,15 +108,16 @@ class StartDateTest extends \PHPUnit\Framework\TestCase
                 "SubscriptionProductIDs" => $product->getId(),
                 "Type" => "SubscriptionsTotal"
             ],
-            "status" => "trialing",
+            "status" => $expectedSubscriptionStatus,
             "discount" => null
         ]);
 
         // The order should be partially refunded
         $order = $this->tests->refreshOrder($order);
         $this->tests->compare($order->getData(),[
-            'total_paid' => $order->getGrandTotal(),
-            'total_refunded' => round(floatval($order->getGrandTotal()) - 38.15, 2)
+            'grand_total' => round($expectedChargeAmount / 100, 2),
+            'total_paid' => round($expectedChargeAmount / 100, 2),
+            'total_refunded' => 0
         ]);
     }
 }

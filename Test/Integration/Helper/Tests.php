@@ -238,7 +238,9 @@ class Tests
     {
         $customerModel = $this->helper->getCustomerModel();
         if ($customerModel->getStripeId())
-            return $this->stripe()->customers->retrieve($customerModel->getStripeId());
+            return $this->stripe()->customers->retrieve($customerModel->getStripeId(), [
+                'expand' => ['subscriptions']
+            ]);
 
         return null;
     }
@@ -352,9 +354,19 @@ class Tests
             $this->checkout()->authenticate($response->payment_intent, $paymentMethod);
             $paymentIntent = $this->stripe()->paymentIntents->retrieve($response->payment_intent->id);
 
+            if (!empty($response->customer->id))
+            {
+                /** @var \Stripe\StripeObject $customer */
+                $customer = $this->stripe()->customers->retrieve($response->customer->id, [
+                    'expand' => ['subscriptions']
+                ]);
+            }
+            else
+            {
+                $customer = null;
+            }
+
             // Trigger webhooks
-            /** @var \Stripe\StripeObject $customer */
-            $customer = $this->stripe()->customers->retrieve($response->customer->id);
             if (!empty($customer->subscriptions->data))
             {
                 foreach ($customer->subscriptions->data as $subscription)
@@ -376,6 +388,29 @@ class Tests
         else if (!empty($response->setup_intent))
         {
             $this->event()->triggerEvent("checkout.session.completed", $response->session_id);
+
+            if ($response->state == "processing_subscription")
+            {
+                $maxAttempts = 6;
+                do
+                {
+                    $customer = $this->stripe()->customers->retrieve($response->customer->id, [
+                        'expand' => ['subscriptions']
+                    ]);
+
+                    if ($customer->subscriptions->total_count > 0)
+                    {
+                        $this->log("Subscription created");
+                    }
+                    else
+                    {
+                        $this->log("Waiting for subscription to be created");
+                        sleep(2);
+                    }
+                }
+                while ($customer->subscriptions->total_count == 0 && $maxAttempts-- > 0);
+            }
+
             return $response;
         }
         else
@@ -470,5 +505,30 @@ class Tests
     public function log($message)
     {
         $this->logger->log($message);
+    }
+
+    public function renderPaymentInfoBlock($blockClass, $order)
+    {
+        $block = $this->objectManager->create($blockClass);
+        $block->setOrder($order);
+        $block->setInfo($order->getPayment());
+        return $block->toHtml();
+    }
+
+    /**
+     * Invoke a private or protected method of an object
+     *
+     * @param object $object The object to invoke the method on
+     * @param string $method The name of the private/protected method
+     * @param array $args The arguments to pass to the method
+     * @return mixed The return value of the invoked method
+     */
+    public function invoke($object, $method, array $args = [])
+    {
+        $reflection = new \ReflectionClass(get_class($object));
+        $reflectionMethod = $reflection->getMethod($method);
+        $reflectionMethod->setAccessible(true);
+
+        return $reflectionMethod->invokeArgs($object, $args);
     }
 }

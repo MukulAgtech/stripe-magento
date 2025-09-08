@@ -15,6 +15,7 @@ class Refunds
     private $tokenHelper;
     private $orderHelper;
     private $convert;
+    private $currencyHelper;
 
     public function __construct(
         \Magento\Framework\App\CacheInterface $cache,
@@ -23,6 +24,7 @@ class Refunds
         \StripeIntegration\Payments\Helper\Token $tokenHelper,
         \StripeIntegration\Payments\Helper\Multishipping $multishippingHelper,
         \StripeIntegration\Payments\Helper\Convert $convert,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
         \StripeIntegration\Payments\Model\Config $config
     ) {
         $this->cache = $cache;
@@ -32,6 +34,7 @@ class Refunds
         $this->multishippingHelper = $multishippingHelper;
         $this->tokenHelper = $tokenHelper;
         $this->convert = $convert;
+        $this->currencyHelper = $currencyHelper;
     }
 
     public function checkIfWeCanRefundMore($refundedAmount, $canceledAmount, $remainingAmount, $requestedAmount, $order, $currency)
@@ -42,8 +45,8 @@ class Refunds
         {
             if ($refundedAndCanceledAmount < $requestedAmount)
             {
-                $humanReadable1 = $this->helper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($requestedAmount - $refundedAndCanceledAmount, $currency), $currency);
-                $humanReadable2 = $this->helper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($requestedAmount, $currency), $currency);
+                $humanReadable1 = $this->currencyHelper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($requestedAmount - $refundedAndCanceledAmount, $currency), $currency);
+                $humanReadable2 = $this->currencyHelper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($requestedAmount, $currency), $currency);
                 $msg = __('%1 out of %2 could not be refunded online. Creating an offline refund instead.', $humanReadable1, $humanReadable2);
                 $this->helper->addWarning($msg);
                 $this->orderHelper->addOrderComment($msg, $order);
@@ -63,6 +66,7 @@ class Refunds
     public function setRefundedAmount($amount, $requestedAmount, $currency, $order)
     {
         $currency = strtolower($currency);
+        $currencyPrecision = $this->currencyHelper->getCurrencyPrecision($currency);
         $orderCurrency = strtolower($order->getOrderCurrencyCode());
         $baseCurrency = strtolower($order->getBaseCurrencyCode());
 
@@ -83,13 +87,13 @@ class Refunds
         if ($currency == $orderCurrency)
         {
             $order->setTotalRefunded($order->getTotalRefunded() + $refunded);
-            $baseRefunded = $this->helper->convertOrderAmountToBaseAmount($refunded, $currency, $order);
+            $baseRefunded = $this->convert->orderAmountToBaseAmount($refunded, $currency, $order);
             $order->setBaseTotalRefunded($order->getBaseTotalRefunded() + $baseRefunded);
         }
         else if ($currency == $baseCurrency)
         {
             $rate = ($order->getBaseToOrderRate() ? $order->getBaseToOrderRate() : 1);
-            $order->setTotalRefunded($order->getTotalRefunded() + round(floatval($refunded * $rate), 2));
+            $order->setTotalRefunded($order->getTotalRefunded() + round(floatval($refunded * $rate), $currencyPrecision));
             $order->setBaseTotalRefunded($order->getBaseTotalRefunded() + $refunded);
         }
         else
@@ -163,6 +167,8 @@ class Refunds
 
     public function getRefundAmount(\Magento\Payment\Model\InfoInterface $payment, $amount = null)
     {
+        $order = $payment->getOrder();
+
         if (empty($amount))
         {
             // Order cancelations
@@ -171,17 +177,19 @@ class Refunds
         else
         {
             // Credit memos
-            $order = $payment->getOrder();
             $creditmemo = $payment->getCreditmemo();
 
             if ($amount == $creditmemo->getBaseGrandTotal())
                 $total = $creditmemo->getGrandTotal();
             else
-                $total = $this->helper->convertBaseAmountToOrderAmount($amount, $order, $order->getOrderCurrencyCode(), $precision = 4);
+                $total = $this->convert->baseAmountToCurrencyAmount($amount, $order->getOrderCurrencyCode(), $order);
         }
 
         if (is_numeric($total))
-            return $total;
+        {
+            $currencyPrecision = $this->currencyHelper->getCurrencyPrecision($order->getOrderCurrencyCode());
+            return round($total, $currencyPrecision);
+        }
 
         return 0;
     }
@@ -192,7 +200,6 @@ class Refunds
         $currency = $payment->getOrder()->getOrderCurrencyCode();
         $transactionId = $this->getTransactionId($payment);
         $amount = $this->getRefundAmount($payment, $amount);
-        $amount = round($amount, 2);
         $requestedAmount = $this->helper->convertMagentoAmountToStripeAmount($amount, $currency);
         $paymentIntents = $this->getOrderPaymentIntents($order);
         $refundableAmount = $this->getAmountRefundable($paymentIntents);
@@ -207,8 +214,8 @@ class Refunds
 
         if ($refundableAmount < $requestedAmount)
         {
-            $humanReadable1 = $this->helper->getFormattedStripeAmount($requestedAmount, $currency, $order);
-            $humanReadable2 = $this->helper->getFormattedStripeAmount($refundableAmount, $currency, $order);
+            $humanReadable1 = $this->currencyHelper->getFormattedStripeAmount($requestedAmount, $currency, $order);
+            $humanReadable2 = $this->currencyHelper->getFormattedStripeAmount($refundableAmount, $currency, $order);
             if ($refundableAmount == 0)
             {
                 if ($this->helper->isAdmin())
@@ -248,19 +255,20 @@ class Refunds
         /** @var \Stripe\PaymentIntent $paymentIntent */
         foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
         {
-            if (empty($paymentIntent->charges))
+            $charges = $this->config->getStripeClient()->charges->all(['payment_intent' => $paymentIntentId]);
+            if (empty($charges->data))
                 continue;
 
             if ($paymentIntent->status != \StripeIntegration\Payments\Model\PaymentIntent::AUTHORIZED
                 || $paymentIntent->amount > $remainingAmount)
                 continue;
 
-            foreach ($paymentIntent->charges->data as $charge)
+            foreach ($charges->data as $charge)
             {
                 // If it is an uncaptured authorization
                 if (!$charge->captured)
                 {
-                    $humanReadable = $this->helper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($charge->amount, $currency), $currency);
+                    $humanReadable = $this->currencyHelper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($charge->amount, $currency), $currency);
 
                     // which has not expired yet
                     if (!$charge->refunded)
@@ -304,13 +312,14 @@ class Refunds
         // 2. Refund the current invoice next; there should be only one match.
         foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
         {
-            if (empty($paymentIntent->charges))
+            $charges = $this->config->getStripeClient()->charges->all(['payment_intent' => $paymentIntentId]);
+            if (empty($charges->data))
                 continue;
 
             if ($paymentIntentId != $transactionId)
                 continue;
 
-            foreach ($paymentIntent->charges->data as $charge)
+            foreach ($charges->data as $charge)
             {
                 if ($charge->captured && !$charge->invoice)
                 {
@@ -325,7 +334,7 @@ class Refunds
                         'reason' => "requested_by_customer"
                     ]);
 
-                    $humanReadable = $this->helper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($amountToRefund, $currency), $currency);
+                    $humanReadable = $this->currencyHelper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($amountToRefund, $currency), $currency);
                     $msg = __('We refunded online %1 via Stripe. Charge ID: %2', $humanReadable, $charge->id);
                     $this->orderHelper->addOrderComment($msg, $order);
 
@@ -350,10 +359,11 @@ class Refunds
         // 3. Refund amounts from subscription payments; there can be one or more depending on how many subscriptions were in the cart.
         foreach ($paymentIntents as $paymentIntentId => $paymentIntent)
         {
-            if (empty($paymentIntent->charges))
+            $charges = $this->config->getStripeClient()->charges->all(['payment_intent' => $paymentIntentId]);
+            if (empty($charges->data))
                 continue;
 
-            foreach ($paymentIntent->charges->data as $charge)
+            foreach ($charges->data as $charge)
             {
                 if ($charge->captured && $charge->invoice)
                 {
@@ -368,7 +378,7 @@ class Refunds
                         'reason' => "requested_by_customer"
                     ]);
 
-                    $humanReadable = $this->helper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($amountToRefund, $currency), $currency);
+                    $humanReadable = $this->currencyHelper->addCurrencySymbol($this->convert->stripeAmountToMagentoAmount($amountToRefund, $currency), $currency);
                     $msg = __('We refunded online %1 via Stripe. Charge ID: %2. Invoice ID: %3', $humanReadable, $charge->id, $charge->invoice);
                     $this->orderHelper->addOrderComment($msg, $order);
 
@@ -396,10 +406,11 @@ class Refunds
 
         foreach ($paymentIntents as $pi)
         {
-            if (empty($pi->charges))
+            $charges = $this->config->getStripeClient()->charges->all(['payment_intent' => $pi->id]);
+            if (empty($charges->data))
                 continue;
 
-            foreach ($pi->charges->data as $charge)
+            foreach ($charges->data as $charge)
             {
                 $amount += ($charge->amount - $charge->amount_refunded);
             }
@@ -438,7 +449,7 @@ class Refunds
 
         foreach ($paymentIntentIds as $id)
         {
-            $pi = $this->config->getStripeClient()->paymentIntents->retrieve($id, []);
+            $pi = $this->config->getStripeClient()->paymentIntents->retrieve($id, ['expand' => ['charges', 'latest_charge']]);
             $orderPaymentIntents[$id] = $pi;
         }
 
@@ -478,7 +489,7 @@ class Refunds
         $currency = $payment->getOrder()->getOrderCurrencyCode();
         $amountToRefund = $this->getRefundAmount($payment, $baseAmount);
         $baseAmountToRefund = $this->getBaseRefundAmount($payment, $baseAmount);
-        $humanReadableOrdersTotal = $this->helper->addCurrencySymbol($totalAmount, $currency);
+        $humanReadableOrdersTotal = $this->currencyHelper->addCurrencySymbol($totalAmount, $currency);
 
         if ($this->isCancelation($payment))
         {
@@ -500,19 +511,19 @@ class Refunds
 
             if ($stripeAmountToCapture < 0)
             {
-                $humanReadable = $this->helper->addCurrencySymbol($magentoAmount, $currency);
+                $humanReadable = $this->currencyHelper->addCurrencySymbol($magentoAmount, $currency);
                 throw new LocalizedException(__("Cannot refund %1.", $humanReadable));
             }
             else if ($stripeAmountToCapture == 0)
             {
                 $this->config->getStripeClient()->paymentIntents->cancel($paymentIntent->id, []);
-                $humanReadableAmount = $this->helper->getFormattedStripeAmount($paymentIntent->amount, $currency, $order);
+                $humanReadableAmount = $this->currencyHelper->getFormattedStripeAmount($paymentIntent->amount, $currency, $order);
                 $msg = __("Canceled the authorization of %1 online. This amount includes %2 multishipping orders.", $humanReadableAmount, count($orders));
                 $transactionType = "void";
             }
             else if ($stripeAmountToCapture < $paymentIntent->amount)
             {
-                $humanReadableAmount = $this->helper->addCurrencySymbol($magentoAmount, $currency);
+                $humanReadableAmount = $this->currencyHelper->addCurrencySymbol($magentoAmount, $currency);
                 $this->config->getStripeClient()->paymentIntents->capture($paymentIntent->id, ['amount_to_capture' => $stripeAmountToCapture]);
                 $msg = __("Partially captured %1 online. This amount is part of %2 multishipping orders totaling %3, and does not include cancelations and refunds.", $humanReadableAmount, count($orders), $humanReadableOrdersTotal);
 
@@ -520,12 +531,12 @@ class Refunds
             else if ($stripeAmountToCapture == $paymentIntent->amount)
             {
                 $this->config->getStripeClient()->paymentIntents->capture($paymentIntent->id, ['amount_to_capture' => $stripeAmountToCapture]);
-                $humanReadableAmount = $this->helper->addCurrencySymbol($magentoAmount, $currency);
+                $humanReadableAmount = $this->currencyHelper->addCurrencySymbol($magentoAmount, $currency);
                 $msg = __("Captured %1 online. This amount includes %2 multishipping orders.", $humanReadableAmount, count($orders));
             }
             else // $stripeAmountToCapture > $paymentIntent->amount
             {
-                $humanReadable = $this->helper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $order);
+                $humanReadable = $this->currencyHelper->getFormattedStripeAmount($paymentIntent->amount, $paymentIntent->currency, $order);
                 throw new LocalizedException(__("The most amount that can be captured online is %1.", $humanReadable));
             }
 
@@ -551,7 +562,7 @@ class Refunds
         }
         else
         {
-            $humanReadableAmount = $this->helper->addCurrencySymbol($amountToRefund, $currency);
+            $humanReadableAmount = $this->currencyHelper->addCurrencySymbol($amountToRefund, $currency);
             $humanReadableDate = $this->multishippingHelper->getFormattedCaptureDate($order);
             $msg = __("Scheduled %1 to be refunded via cron on %2. This amount is part of %3 multishipping orders totaling %4. To refund now instead, invoice or cancel all multishipping orders (%5). ", $humanReadableAmount, $humanReadableDate, count($orders), $humanReadableOrdersTotal, implode(", ", $incrementIds));
             throw new RefundOfflineException($msg);

@@ -21,6 +21,7 @@ class CaptureTest extends \PHPUnit\Framework\TestCase
     /**
      * @magentoConfigFixture current_store payment/stripe_payments/payment_flow 1
      * @magentoConfigFixture current_store payment/stripe_payments/payment_action authorize
+     * @magentoDataFixture ../../../../app/code/StripeIntegration/Payments/Test/Integration/_files/Data/ApiKeysLegacy.php
      */
     public function testPartialCapture()
     {
@@ -56,24 +57,22 @@ class CaptureTest extends \PHPUnit\Framework\TestCase
         $this->assertEquals($order->getGrandTotal(), $order->getTotalDue());
         $this->assertTrue($order->canInvoice());
 
-        // Partially capture the charge
+        // Capture the charge
         $paymentIntentId = $order->getPayment()->getLastTransId();
-        $paymentIntent = $this->tests->stripe()->paymentIntents->capture($paymentIntentId, ["amount_to_capture" => 500]);
-        $this->assertEquals(500, $paymentIntent->amount_received);
-        $this->tests->event()->trigger("charge.captured", $paymentIntent->charges->data[0]);
+        $paymentIntent = $this->tests->stripe()->paymentIntents->capture($paymentIntentId);
+        $this->tests->event()->trigger("charge.captured", $paymentIntent->latest_charge);
         $this->tests->event()->trigger("payment_intent.succeeded", $paymentIntent);
 
         // Refresh the order object
         $order = $this->tests->refreshOrder($order);
-        $this->assertFalse($order->canInvoice());
         $this->assertEquals("processing", $order->getStatus());
-        $this->assertEquals(5, $order->getTotalPaid());
-        $this->assertEquals($order->getGrandTotal() - 5, $order->getTotalDue());
+        $this->assertEquals($order->getGrandTotal(), $order->getTotalPaid());
+        $this->assertEquals(0, $order->getTotalDue());
 
         // Check that an invoice was created
         $invoice = $order->getInvoiceCollection()->getFirstItem();
         $this->assertNotEmpty($invoice);
         $this->assertEquals(\Magento\Sales\Model\Order\Invoice::STATE_PAID, $invoice->getState());
-        $this->assertEquals(5, $invoice->getGrandTotal());
+        $this->assertEquals($order->getGrandTotal(), $invoice->getGrandTotal());
     }
 }

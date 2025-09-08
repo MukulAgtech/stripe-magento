@@ -14,27 +14,39 @@ class InitParams
     private $serializer;
     private $quoteHelper;
     private $subscriptionProductFactory;
+    private $paymentMethodTypesHelper;
+    private $paymentMethodOptionsService;
+    private $productHelper;
+    private $currencyHelper;
 
     public function __construct(
         \Magento\Framework\Serialize\SerializerInterface $serializer,
         \StripeIntegration\Payments\Helper\Generic $helper,
         \StripeIntegration\Payments\Helper\Quote $quoteHelper,
         \StripeIntegration\Payments\Helper\Locale $localeHelper,
+        \StripeIntegration\Payments\Helper\PaymentMethodTypes $paymentMethodTypesHelper,
+        \StripeIntegration\Payments\Helper\Product $productHelper,
+        \StripeIntegration\Payments\Helper\Currency $currencyHelper,
         \StripeIntegration\Payments\Model\ExpressCheckout\Config $expressCheckoutConfig,
         \StripeIntegration\Payments\Model\Config $config,
         \StripeIntegration\Payments\Model\PaymentElement $paymentElement,
         \StripeIntegration\Payments\Model\SubscriptionProductFactory $subscriptionProductFactory,
-        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper
+        \StripeIntegration\Payments\Helper\PaymentMethod $paymentMethodHelper,
+        \StripeIntegration\Payments\Service\PaymentMethodOptionsService $paymentMethodOptionsService
     ) {
         $this->serializer = $serializer;
         $this->helper = $helper;
         $this->quoteHelper = $quoteHelper;
         $this->localeHelper = $localeHelper;
+        $this->paymentMethodTypesHelper = $paymentMethodTypesHelper;
+        $this->productHelper = $productHelper;
+        $this->currencyHelper = $currencyHelper;
         $this->expressCheckoutConfig = $expressCheckoutConfig;
         $this->config = $config;
         $this->paymentElement = $paymentElement;
         $this->subscriptionProductFactory = $subscriptionProductFactory;
         $this->paymentMethodHelper = $paymentMethodHelper;
+        $this->paymentMethodOptionsService = $paymentMethodOptionsService;
         $this->customer = $helper->getCustomerModel();
     }
 
@@ -57,7 +69,8 @@ class InitParams
                 "successUrl" => $this->helper->getUrl('stripe/payment/index'),
                 "savedMethods" => $this->paymentElement->getSavedPaymentMethods(),
                 "cvcIcon" => $this->paymentMethodHelper->getCVCIcon(),
-                "isOrderPlaced" => $this->paymentElement->isOrderPlaced()
+                "isOrderPlaced" => $this->paymentElement->isOrderPlaced(),
+                "externalPaymentMethods" => $this->paymentMethodHelper->getExternalPaymentMethods($this->quoteHelper->getQuote()),
             ];
 
             $this->setPaymentMethodSelectorLayout($params);
@@ -72,6 +85,15 @@ class InitParams
             }
             else
                 $params["wallets"] = null;
+
+            $paymentElementTerms = $this->paymentMethodOptionsService
+                ->setQuote($this->quoteHelper->getQuote())
+                ->getPaymentElementTerms();
+
+            if (!empty($paymentElementTerms))
+            {
+                $params["terms"] = $paymentElementTerms;
+            }
         }
 
         return $this->serializer->serialize($params);
@@ -87,7 +109,7 @@ class InitParams
                 "betas" => \StripeIntegration\Payments\Model\Config::BETAS_CLIENT,
                 "apiVersion" => $this->config->getStripeAPIVersion()
             ],
-            'elementsOptions' => $this->serializer->serialize($this->config->getElementOptions())
+            'elementsOptions' => $this->serializer->serialize($this->getElementOptions())
         ];
 
         return $this->serializer->serialize($params);
@@ -98,7 +120,17 @@ class InitParams
         $params = [
             "apiKey" => $this->config->getPublishableKey(),
             "locale" => $this->localeHelper->getStripeJsLocale(),
-            "appInfo" => $this->config->getAppInfo(true)
+            "appInfo" => $this->config->getAppInfo(true),
+            "cardElementOptions" => [
+                "hidePostalCode" => true,
+                "disableLink" => true,
+                "style" => [
+                    "base" => [
+                        "fontFamily" => '"Open Sans","Helvetica Neue", Helvetica, Arial, sans-serif',
+                        "fontSize" => "16px",
+                    ]
+                ]
+            ]
         ];
 
         return $this->serializer->serialize($params);
@@ -126,7 +158,7 @@ class InitParams
         $params = [
             "apiKey" => $this->config->getPublishableKey(),
             "locale" => $this->localeHelper->getStripeJsLocale(),
-            "currency" => strtolower($this->helper->getCurrentCurrencyCode()),
+            "currency" => strtolower($this->currencyHelper->getCurrentCurrencyCode()),
             "appInfo" => $this->config->getAppInfo(true),
             "options" => [
                 "betas" => \StripeIntegration\Payments\Model\Config::BETAS_CLIENT,
@@ -153,10 +185,11 @@ class InitParams
         return $this->serializer->serialize($params);
     }
 
+    // Used to initialize the Elements object at the checkout page
     public function getElementOptions()
     {
         $quote = $this->quoteHelper->getQuote();
-        $currency = ($quote && $quote->getQuoteCurrencyCode()) ? $quote->getQuoteCurrencyCode() : $this->helper->getCurrentCurrencyCode();
+        $currency = ($quote && $quote->getQuoteCurrencyCode()) ? $quote->getQuoteCurrencyCode() : $this->currencyHelper->getCurrentCurrencyCode();
         $amount = ($quote && $quote->getGrandTotal()) ? $quote->getGrandTotal() : 0;
         $stripeAmount = $this->helper->convertMagentoAmountToStripeAmount($amount, $currency);
 
@@ -164,7 +197,6 @@ class InitParams
             "mode" => "payment",
             "locale" => $this->localeHelper->getStripeJsLocale(),
             "paymentMethodCreation" => "manual",
-            "amount" => $stripeAmount,
             "currency" => strtolower($currency),
             "appearance" => [
                 "theme" => "stripe",
@@ -175,6 +207,16 @@ class InitParams
             ]
         ];
 
+        if ($stripeAmount > 0)
+            $options["amount"] = $stripeAmount;
+
+        if ($this->config->getPaymentAction() == "order")
+        {
+            $options["mode"] = "setup";
+            $options["setupFutureUsage"] = "off_session";
+            unset($options["amount"]);
+        }
+
         if ($this->config->isEnabled() && $this->config->isSubscriptionsEnabled())
         {
             if ($this->quoteHelper->hasSubscriptions())
@@ -184,13 +226,16 @@ class InitParams
             }
         }
 
-        if ($options["mode"] == "payment")
+        $paymentMethodTypes = $this->paymentMethodTypesHelper->getPaymentMethodTypes();
+        $pmc = $this->config->getPaymentMethodConfiguration();
+
+        if ($options["mode"] == "payment" && $paymentMethodTypes)
         {
-            $paymentMethodTypes = $this->paymentMethodHelper->getFilteredPaymentMethodTypes();
-            if (!empty($paymentMethodTypes))
-            {
-                $options["payment_method_types"] = $paymentMethodTypes;
-            }
+            $options["paymentMethodTypes"] = $paymentMethodTypes;
+        }
+        else if ($pmc)
+        {
+            $options['paymentMethodConfiguration'] = $pmc;
         }
 
         return $options;
@@ -199,7 +244,7 @@ class InitParams
     public function getExpressCheckoutElementsOptions($resolvePayload, $viewingProductId = null)
     {
         $quote = $this->quoteHelper->getQuote();
-        $currency = ($quote && $quote->getQuoteCurrencyCode()) ? $quote->getQuoteCurrencyCode() : $this->helper->getCurrentCurrencyCode();
+        $currency = ($quote && $quote->getQuoteCurrencyCode()) ? $quote->getQuoteCurrencyCode() : $this->currencyHelper->getCurrentCurrencyCode();
 
         if (!empty($resolvePayload['lineItems']))
         {
@@ -218,14 +263,15 @@ class InitParams
         $options = [
             "mode" => $this->getECEMode($viewingProductId),
             "locale" => $this->localeHelper->getStripeJsLocale(),
-            "paymentMethodTypes" => $this->config->getECEPaymentMethodTypes(),
+            // "paymentMethodTypes" => $this->paymentMethodTypesHelper->getPaymentMethodTypes($isExpressCheckout = true),
             "appearance" => [
                 "theme" => "stripe",
                 "variables" => [
                     "colorText" => "#32325d",
                     "fontFamily" => '"Open Sans","Helvetica Neue", Helvetica, Arial, sans-serif'
                 ],
-            ]
+            ],
+            "currency" => strtolower($currency)
         ];
 
         if ($options["mode"] == "setup")
@@ -235,7 +281,6 @@ class InitParams
         else
         {
             $options["amount"] = $stripeAmount;
-            $options["currency"] = strtolower($currency);
         }
 
         return $options;
@@ -255,7 +300,14 @@ class InitParams
         if ($this->subscriptionProductFactory->create()->fromProductId($productId)->isSubscriptionProduct())
             return true;
 
-        $product = $this->helper->loadProductById($productId);
+        try
+        {
+            $product = $this->productHelper->getProduct($productId);
+        }
+        catch (\Exception $e)
+        {
+            return false;
+        }
 
         // If it is a configurable product, and any of its configurable options is a subscription product, return true
         if ($product && $product->getTypeId() == "configurable")
@@ -271,14 +323,18 @@ class InitParams
         // If it is a bundle product, and any of its bundle options is a subscription product, return true
         if ($product && $product->getTypeId() == "bundle")
         {
-            $options = $product->getTypeInstance()->getOptionsCollection($product);
-            foreach ($options as $option)
+            $bundleType = $product->getTypeInstance();
+
+            // Load the selections (sub-products) for the bundle product
+            $optionIds = $bundleType->getOptionsIds($product);
+            $selections = $bundleType->getSelectionsCollection($optionIds, $product);
+
+            foreach ($selections as $selection)
             {
-                $selections = $option->getSelections();
-                foreach ($selections as $selection)
+                $productId = $selection->getProductId();
+                if ($this->subscriptionProductFactory->create()->fromProductId($productId)->isSubscriptionProduct())
                 {
-                    if ($this->subscriptionProductFactory->create()->fromProductId($selection->getProductId())->isSubscriptionProduct())
-                        return true;
+                    return true;
                 }
             }
         }
@@ -292,7 +348,6 @@ class InitParams
         {
             $params["layout"] = [
                 "type" => "accordion",
-                "defaultCollapsed" => false,
                 "radios" => true,
                 "spacedAccordionItems" => false,
                 "visibleAccordionItemsCount" => 0

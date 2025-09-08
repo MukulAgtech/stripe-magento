@@ -76,7 +76,9 @@ class PlaceOrderTest extends \PHPUnit\Framework\TestCase
         ]);
 
         $customerId = $paymentIntent->customer;
-        $customer = $this->tests->stripe()->customers->retrieve($customerId);
+        $customer = $this->tests->stripe()->customers->retrieve($customerId, [
+            'expand' => ['subscriptions']
+        ]);
         $this->assertCount(1, $customer->subscriptions->data);
         $this->tests->compare($customer->subscriptions->data[0], [
             "items" => [
